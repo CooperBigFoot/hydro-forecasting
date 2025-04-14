@@ -12,3 +12,6 @@ wheels/
 # VSCode settings
 .vscode/
 .pytest_cache/
+
+# Ruff
+.ruff_cache/

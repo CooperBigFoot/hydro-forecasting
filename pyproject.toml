@@ -8,12 +8,15 @@ authors = [
 ]
 requires-python = ">=3.12"
 dependencies = [
+    "geopandas>=1.0.1",
+    "ipykernel>=6.29.5",
     "lightning>=2.5.1",
     "matplotlib>=3.10.1",
     "numpy>=2.2.4",
     "pandas>=2.2.3",
-    "polars>=1.27.1",
+    "pyarrow>=19.0.1",
     "returns>=0.25.0",
+    "ruff>=0.11.5",
     "seaborn>=0.13.2",
     "torch>=2.6.0",
 ]
@@ -25,7 +28,21 @@ hydro-forecasting = "hydro_forecasting:main"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.build]
+# Tell hatchling to use the src layout
+sources = ["src"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.envs.default.dependencies]
+pytest = ">=8.3.5"
+
 [dependency-groups]
 dev = [
     "pytest>=8.3.5",
 ]
+
+# ✅ Add this section for pytest to include src/
+[tool.pytest.ini_options]
+pythonpath = ["src"]
