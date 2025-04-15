@@ -5,6 +5,8 @@ from returns.result import Result, Success, Failure
 from returns.pipeline import is_successful
 from returns.curry import curry
 
+pd.set_option('future.no_silent_downcasting', True)
+
 # Type definitions
 T = TypeVar("T")
 E = TypeVar("E")
@@ -189,34 +191,30 @@ def find_gaps(
     if not is_missing.any():
         return Success((np.array([]), np.array([])))
 
-    # Find starts of runs
-    gap_starts = np.where(is_missing & ~is_missing.shift(1).fillna(False))[0]
-
-    # Find ends of runs (add 1 to make exclusive)
-    gap_ends = np.where(is_missing & ~is_missing.shift(-1).fillna(False))[0] + 1
-
-    # Handle case where first element is NaN
-    if is_missing.iloc[0] and len(gap_starts) > 0 and gap_starts[0] != 0:
-        gap_starts = np.insert(gap_starts, 0, 0)
-
-    # Handle case where last element is NaN
-    if is_missing.iloc[-1] and len(gap_ends) > 0 and gap_ends[-1] != len(series):
-        gap_ends = np.append(gap_ends, len(series))
-
-    # Ensure equal number of starts and ends
-    if len(gap_starts) != len(gap_ends):
-        # Try to correct by detecting continuous runs
-        if len(gap_starts) > len(gap_ends):
-            # More starts than ends, append series length as last end
-            gap_ends = np.append(gap_ends, len(series))
-        else:
-            # More ends than starts, insert 0 as first start
-            gap_starts = np.insert(gap_starts, 0, 0)
-
-        # Final check to ensure equal numbers
-        if len(gap_starts) != len(gap_ends):
-            return Failure("Unequal number of gap starts and ends detected")
-
+    # Get indices of all NaN values
+    nan_indices = np.where(is_missing)[0]
+    
+    if len(nan_indices) == 0:
+        return Success((np.array([]), np.array([])))
+        
+    # Find discontinuities in the sequence of indices
+    # which indicate separate gap regions
+    gap_boundaries = np.where(np.diff(nan_indices) > 1)[0]
+    
+    # Create gap start indices
+    gap_starts = np.array([nan_indices[0]])
+    if len(gap_boundaries) > 0:
+        # Add starts of new gaps (after each discontinuity)
+        gap_starts = np.append(gap_starts, nan_indices[gap_boundaries + 1])
+    
+    # Create gap end indices (exclusive, so add 1)
+    gap_ends = np.array([])
+    if len(gap_boundaries) > 0:
+        # Add ends of gaps before new ones start
+        gap_ends = np.append(gap_ends, nan_indices[gap_boundaries] + 1)
+    # Add the end of the last gap
+    gap_ends = np.append(gap_ends, nan_indices[-1] + 1)
+    
     return Success((gap_starts, gap_ends))
 
 
@@ -516,7 +514,7 @@ def check_missing_gaps(
                     start_idx_int = int(start_idx)
                     end_idx_int = int(end_idx)
 
-                    # Calculate gap length as (end - start) to match test expectations
+                    # Calculate gap length (end - start + 1 for inclusive length)
                     gap_length = end_idx_int - start_idx_int
 
                     # Get dates for reporting
@@ -547,7 +545,7 @@ def check_missing_gaps(
                 "gaps_exceeding_max": gaps,
             }
 
-            if max_gap > max_gap_length:
+            if gaps:  # If any gaps exceed max_gap_length
                 failed_columns.append(
                     {"column": column, "max_gap": max_gap, "gaps": gaps}
                 )
@@ -714,7 +712,7 @@ def impute_short_gaps(
                 if gap_length <= max_imputation_gap_size:
                     short_gaps.append((start_idx, end_idx))
                     # Add all indices in this gap
-                    short_gap_indices.extend(range(start_idx, end_idx))
+                    short_gap_indices.extend(range(int(start_idx), int(end_idx)))
                 else:
                     long_gaps.append((start_idx, end_idx))
 
@@ -723,16 +721,27 @@ def impute_short_gaps(
 
             if not clean_series.empty and short_gap_indices:
                 # Get indices in the original series
-                orig_indices = series.index.values
-
-                # Apply interpolation to entire series for continuity
-                temp_series = series.interpolate(method="linear")
-
-                # Only update values for short gaps in the original dataframe
+                orig_indices = group_data.index.values
+                
+                # Apply interpolation to short gaps only
+                temp_series = series.copy()
+                
+                # Create a mask for values we want to interpolate
+                interpolate_mask = pd.Series(False, index=temp_series.index)
                 for idx in short_gap_indices:
                     if idx < len(orig_indices):
-                        orig_idx = orig_indices[idx]
-                        imputed_df.loc[orig_idx, column] = temp_series.iloc[idx]
+                        interpolate_mask.iloc[idx] = True
+                
+                # Apply interpolation method='linear' only where our mask is True
+                if interpolate_mask.any():
+                    temp_series_interp = temp_series.interpolate(method='linear')
+                    temp_series.loc[interpolate_mask] = temp_series_interp.loc[interpolate_mask]
+                    
+                    # Update the original DataFrame with our interpolated values
+                    for idx in short_gap_indices:
+                        if idx < len(orig_indices):
+                            orig_idx = orig_indices[idx]
+                            imputed_df.loc[orig_idx, column] = temp_series.iloc[idx]
 
             # Record imputation statistics
             quality_report["basins"][group_id]["imputation_info"][column] = {
