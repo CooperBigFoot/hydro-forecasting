@@ -111,7 +111,7 @@ The framework supports both pandas DataFrames and numpy arrays. Your transformer
 To apply different transformations for each catchment:
 
 ```python
-from preprocessing.grouped import GroupedTransformer
+from preprocessing.grouped import GroupedPipeline
 from sklearn.pipeline import Pipeline
 from preprocessing.standard_scale import StandardScaleTransformer
 from preprocessing.log_scale import LogTransformer
@@ -123,7 +123,7 @@ pipeline = Pipeline([
 ])
 
 # Create a grouped transformer
-grouped_transformer = GroupedTransformer(
+grouped_transformer = GroupedPipeline(
     pipeline=pipeline,
     columns=['streamflow', 'precipitation'],
     group_identifier='gauge_id'
@@ -147,7 +147,7 @@ preprocessing_config = {
         ])
     },
     "target": {
-        "pipeline": GroupedTransformer(
+        "pipeline": GroupedPipeline(
             pipeline=Pipeline([
                 ("log", LogTransformer()),
                 ("scale", StandardScaleTransformer())
@@ -163,7 +163,7 @@ preprocessing_config = {
 
 - **StandardScaleTransformer**: Standardize features by removing mean and scaling to unit variance
 - **LogTransformer**: Apply log transformation to features, with handling for negative values
-- **GroupedTransformer**: Apply a transformer separately to each group (e.g., catchment)
+- **GroupedPipeline**: Apply a transformer separately to each group (e.g., catchment)
 
 ## Best Practices
 

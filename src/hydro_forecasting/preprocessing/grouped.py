@@ -137,7 +137,7 @@ def _process_groups_inverse_transform(
     return result
 
 
-class GroupedTransformer(BaseEstimator, TransformerMixin):
+class GroupedPipeline(BaseEstimator, TransformerMixin):
     """Applies transformations by group (e.g., by catchment).
 
     This transformer fits and applies a separate pipeline for each unique value in
@@ -161,7 +161,7 @@ class GroupedTransformer(BaseEstimator, TransformerMixin):
         n_jobs: int = 1,
         chunk_size: Optional[int] = None,
     ):
-        """Initialize GroupedTransformer.
+        """Initialize GroupedPipeline.
 
         Args:
             pipeline: sklearn Pipeline to apply
@@ -205,7 +205,7 @@ class GroupedTransformer(BaseEstimator, TransformerMixin):
 
     def fit(
         self, X: pd.DataFrame, y: Optional[pd.Series] = None
-    ) -> "GroupedTransformer":
+    ) -> "GroupedPipeline":
         """Fit a separate pipeline for each group.
 
         Args:
