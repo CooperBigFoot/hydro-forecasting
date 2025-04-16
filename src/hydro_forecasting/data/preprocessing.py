@@ -1,4 +1,3 @@
-import argparse
 import json
 import duckdb
 import pandas as pd
@@ -41,80 +40,6 @@ class Config:
         self.train_prop = train_prop
         self.val_prop = val_prop
         self.test_prop = test_prop
-
-
-def parse_args():
-    parser = argparse.ArgumentParser(
-        description="Process hydrological time series data with DuckDB"
-    )
-
-    # Required arguments
-    parser.add_argument(
-        "--input-dir",
-        type=str,
-        required=True,
-        help="Directory containing parquet files",
-    )
-    parser.add_argument(
-        "--output-dir",
-        type=str,
-        required=True,
-        help="Directory for processed parquet files and reports",
-    )
-    parser.add_argument(
-        "--required-columns",
-        type=str,
-        required=True,
-        nargs="+",
-        help="List of required data columns for quality checking",
-    )
-
-    # Optional arguments with defaults
-    parser.add_argument(
-        "--min-train-years",
-        type=float,
-        default=5.0,
-        help="Minimum required years for training",
-    )
-    parser.add_argument(
-        "--max-imputation-gap-size",
-        type=int,
-        default=5,
-        help="Maximum gap length to impute with interpolation",
-    )
-    parser.add_argument(
-        "--group-identifier",
-        type=str,
-        default="gauge_id",
-        help="Column name identifying the basin",
-    )
-    parser.add_argument(
-        "--train-prop", type=float, default=0.6, help="Proportion of data for training"
-    )
-    parser.add_argument(
-        "--val-prop", type=float, default=0.2, help="Proportion of data for validation"
-    )
-    parser.add_argument(
-        "--test-prop", type=float, default=0.2, help="Proportion of data for testing"
-    )
-    parser.add_argument(
-        "--processes", type=int, default=4, help="Number of parallel processes to use"
-    )
-
-    args = parser.parse_args()
-
-    # Create config object
-    config = Config(
-        required_columns=args.required_columns,
-        min_train_years=args.min_train_years,
-        max_imputation_gap_size=args.max_imputation_gap_size,
-        group_identifier=args.group_identifier,
-        train_prop=args.train_prop,
-        val_prop=args.val_prop,
-        test_prop=args.test_prop,
-    )
-
-    return args, config
 
 
 def find_gaps(series: pd.Series) -> Tuple[np.ndarray, np.ndarray]:
@@ -393,13 +318,15 @@ def process_basin(
             con.close()
 
 
-def process_basin_worker(args: Tuple[Path, Config, Path, Path]) -> Tuple[str, bool, Optional[str], Optional[BasinQualityReport]]:
+def process_basin_worker(
+    args: Tuple[Path, Config, Path, Path],
+) -> Tuple[str, bool, Optional[str], Optional[BasinQualityReport]]:
     """
     Worker function for parallel basin processing.
-    
+
     Args:
         args: Tuple containing (basin_file, config, output_dir, reports_dir)
-        
+
     Returns:
         Tuple containing basin_id, success flag, error message, and basin report
     """
@@ -441,7 +368,9 @@ def process_basins_parallel(
     }
 
     # Create arguments list for the worker function
-    args_list = [(basin_file, config, output_dir, reports_dir) for basin_file in basin_files]
+    args_list = [
+        (basin_file, config, output_dir, reports_dir) for basin_file in basin_files
+    ]
 
     # Process basins in parallel
     with mp.Pool(processes=num_processes) as pool:
@@ -465,35 +394,73 @@ def process_basins_parallel(
     return quality_report
 
 
-def main():
-    args, config = parse_args()
+def run_hydro_processor(
+    input_dir: str,
+    output_dir: str,
+    required_columns: List[str],
+    min_train_years: float = 5.0,
+    max_imputation_gap_size: int = 5,
+    group_identifier: str = "gauge_id",
+    train_prop: float = 0.5,
+    val_prop: float = 0.25,
+    test_prop: float = 0.25,
+    processes: int = 6,
+) -> QualityReport:
+    """
+    Main function to run the hydrological data processor.
+
+    Args:
+        input_dir: Directory containing parquet files
+        output_dir: Directory for processed parquet files and reports
+        required_columns: List of required data columns for quality checking
+        min_train_years: Minimum required years for training
+        max_imputation_gap_size: Maximum gap length to impute with interpolation
+        group_identifier: Column name identifying the basin
+        train_prop: Proportion of data for training
+        val_prop: Proportion of data for validation
+        test_prop: Proportion of data for testing
+        processes: Number of parallel processes to use
+
+    Returns:
+        QualityReport object with processing results
+    """
+    # Create config object
+    config = Config(
+        required_columns=required_columns,
+        min_train_years=min_train_years,
+        max_imputation_gap_size=max_imputation_gap_size,
+        group_identifier=group_identifier,
+        train_prop=train_prop,
+        val_prop=val_prop,
+        test_prop=test_prop,
+    )
 
     # Create output directory if it doesn't exist
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    output_dir_path = Path(output_dir)
+    output_dir_path.mkdir(parents=True, exist_ok=True)
 
     # Create subdirectories for processed data and reports
-    processed_dir = output_dir / "processed_data"
-    reports_dir = output_dir / "quality_reports"
+    processed_dir = output_dir_path / "processed_data"
+    reports_dir = output_dir_path / "quality_reports"
     processed_dir.mkdir(exist_ok=True)
     reports_dir.mkdir(exist_ok=True)
 
     # Scan input directory for parquet files
-    input_dir = Path(args.input_dir)
-    basin_files = list(input_dir.glob("*.parquet"))
+    input_dir_path = Path(input_dir)
+    basin_files = list(input_dir_path.glob("*.parquet"))
     print(f"Found {len(basin_files)} basin files")
 
     if not basin_files:
         print("No parquet files found in input directory")
-        return
+        return None
 
     # Process basins in parallel
     quality_report = process_basins_parallel(
-        basin_files, config, processed_dir, reports_dir, args.processes
+        basin_files, config, processed_dir, reports_dir, processes
     )
 
     # Save overall quality report
-    with open(output_dir / "quality_summary.json", "w") as f:
+    with open(output_dir_path / "quality_summary.json", "w") as f:
         json.dump(
             quality_report, f, indent=2, default=str
         )  # default=str handles datetime objects
@@ -507,6 +474,96 @@ def main():
             f"{len(quality_report['excluded_basins'])} basins excluded due to quality issues."
         )
 
+    return quality_report
 
+
+# For backwards compatibility if someone still runs the script directly
 if __name__ == "__main__":
-    main()
+    import argparse
+
+    def parse_args():
+        parser = argparse.ArgumentParser(
+            description="Process hydrological time series data with DuckDB"
+        )
+
+        # Required arguments
+        parser.add_argument(
+            "--input-dir",
+            type=str,
+            required=True,
+            help="Directory containing parquet files",
+        )
+        parser.add_argument(
+            "--output-dir",
+            type=str,
+            required=True,
+            help="Directory for processed parquet files and reports",
+        )
+        parser.add_argument(
+            "--required-columns",
+            type=str,
+            required=True,
+            nargs="+",
+            help="List of required data columns for quality checking",
+        )
+
+        # Optional arguments with defaults
+        parser.add_argument(
+            "--min-train-years",
+            type=float,
+            default=5.0,
+            help="Minimum required years for training",
+        )
+        parser.add_argument(
+            "--max-imputation-gap-size",
+            type=int,
+            default=5,
+            help="Maximum gap length to impute with interpolation",
+        )
+        parser.add_argument(
+            "--group-identifier",
+            type=str,
+            default="gauge_id",
+            help="Column name identifying the basin",
+        )
+        parser.add_argument(
+            "--train-prop",
+            type=float,
+            default=0.6,
+            help="Proportion of data for training",
+        )
+        parser.add_argument(
+            "--val-prop",
+            type=float,
+            default=0.2,
+            help="Proportion of data for validation",
+        )
+        parser.add_argument(
+            "--test-prop",
+            type=float,
+            default=0.2,
+            help="Proportion of data for testing",
+        )
+        parser.add_argument(
+            "--processes",
+            type=int,
+            default=4,
+            help="Number of parallel processes to use",
+        )
+
+        return parser.parse_args()
+
+    args = parse_args()
+
+    run_hydro_processor(
+        input_dir=args.input_dir,
+        output_dir=args.output_dir,
+        required_columns=args.required_columns,
+        min_train_years=args.min_train_years,
+        max_imputation_gap_size=args.max_imputation_gap_size,
+        group_identifier=args.group_identifier,
+        train_prop=args.train_prop,
+        val_prop=args.val_prop,
+        test_prop=args.test_prop,
+        processes=args.processes,
+    )
