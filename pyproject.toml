@@ -18,6 +18,7 @@ dependencies = [
     "pyarrow>=19.0.1",
     "returns>=0.25.0",
     "ruff>=0.11.5",
+    "scikit-learn>=1.6.1",
     "seaborn>=0.13.2",
     "torch>=2.6.0",
 ]

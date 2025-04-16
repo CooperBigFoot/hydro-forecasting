@@ -3,9 +3,12 @@ import duckdb
 import pandas as pd
 import numpy as np
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, TypedDict
+from typing import Dict, List, Optional, Tuple, TypedDict, Union, Any
 import multiprocessing as mp
 from tqdm import tqdm
+from sklearn.base import clone
+from sklearn.pipeline import Pipeline
+from ..preprocessing.grouped import GroupedTransformer
 
 
 class BasinQualityReport(TypedDict):
@@ -22,10 +25,20 @@ class QualityReport(TypedDict):
     split_method: str
 
 
+class ProcessingResult(TypedDict):
+    """Result of the hydro processor execution."""
+
+    quality_report: QualityReport
+    fitted_pipelines: Dict[str, Any]  # Pipeline or GroupedTransformer instances
+    processed_dir: Path  # Directory with processed files
+    processed_static_dir: Optional[Path]  # Directory with processed static data
+
+
 class Config:
     def __init__(
         self,
         required_columns: List[str],
+        preprocessing_config: Optional[Dict[str, Dict[str, Any]]] = None,
         min_train_years: float = 5.0,
         max_imputation_gap_size: int = 5,
         group_identifier: str = "gauge_id",
@@ -33,7 +46,21 @@ class Config:
         val_prop: float = 0.2,
         test_prop: float = 0.2,
     ):
+        """
+        Configuration for hydro data processing.
+
+        Args:
+            required_columns: List of required data columns for quality checking
+            preprocessing_config: Configuration for data preprocessing pipelines
+            min_train_years: Minimum required years for training
+            max_imputation_gap_size: Maximum gap length to impute with interpolation
+            group_identifier: Column name identifying the basin
+            train_prop: Proportion of data for training
+            val_prop: Proportion of data for validation
+            test_prop: Proportion of data for testing
+        """
         self.required_columns = required_columns
+        self.preprocessing_config = preprocessing_config or {}
         self.min_train_years = min_train_years
         self.max_imputation_gap_size = max_imputation_gap_size
         self.group_identifier = group_identifier
@@ -52,35 +79,23 @@ def find_gaps(series: pd.Series) -> Tuple[np.ndarray, np.ndarray]:
     Returns:
         Tuple containing arrays with gap start and end indices
     """
-    # Find missing value runs
     is_missing = series.isna()
-
-    # Edge case: no gaps
     if not is_missing.any():
         return np.array([]), np.array([])
 
-    # Get indices of all NaN values
     nan_indices = np.where(is_missing)[0]
-
     if len(nan_indices) == 0:
         return np.array([]), np.array([])
 
-    # Find discontinuities in the sequence of indices
-    # which indicate separate gap regions
     gap_boundaries = np.where(np.diff(nan_indices) > 1)[0]
 
-    # Create gap start indices
     gap_starts = np.array([nan_indices[0]])
     if len(gap_boundaries) > 0:
-        # Add starts of new gaps (after each discontinuity)
         gap_starts = np.append(gap_starts, nan_indices[gap_boundaries + 1])
 
-    # Create gap end indices (exclusive, so add 1)
     gap_ends = np.array([])
     if len(gap_boundaries) > 0:
-        # Add ends of gaps before new ones start
         gap_ends = np.append(gap_ends, nan_indices[gap_boundaries] + 1)
-    # Add the end of the last gap
     gap_ends = np.append(gap_ends, nan_indices[-1] + 1)
 
     return gap_starts, gap_ends
@@ -104,11 +119,9 @@ def impute_short_gaps(
     Returns:
         Tuple of imputed DataFrame and updated basin report
     """
-    # Create a copy to avoid modifying the input
     imputed_df = df.copy()
 
     for column in columns:
-        # Current column data
         series = imputed_df[column]
         is_nan = series.isna()
 
@@ -119,58 +132,249 @@ def impute_short_gaps(
             }
             continue
 
-        # Find gaps
         gap_starts, gap_ends = find_gaps(series)
-
-        # Track which gaps are short vs long
         short_gaps = []
         short_gap_indices = []
 
         for start_idx, end_idx in zip(gap_starts, gap_ends):
-            # Calculate gap length
             gap_length = end_idx - start_idx
-
             if gap_length <= max_imputation_gap_size:
                 short_gaps.append((start_idx, end_idx))
-                # Add all indices in this gap
                 short_gap_indices.extend(range(int(start_idx), int(end_idx)))
 
-        # Create sorted series without NaNs for interpolation reference
         clean_series = series.dropna()
 
         if not clean_series.empty and short_gap_indices:
-            # Apply interpolation to short gaps only
             temp_series = series.copy()
-
-            # Create a mask for values we want to interpolate
             interpolate_mask = pd.Series(False, index=temp_series.index)
             for idx in short_gap_indices:
                 if idx < len(interpolate_mask):
                     interpolate_mask.iloc[idx] = True
 
-            # Apply interpolation method='linear' only where our mask is True
             if interpolate_mask.any():
                 temp_series_interp = temp_series.interpolate(method="linear")
                 temp_series.loc[interpolate_mask] = temp_series_interp.loc[
                     interpolate_mask
                 ]
-
-                # Update the original DataFrame with our interpolated values
                 imputed_df[column] = temp_series
 
-        # Record imputation statistics
         basin_report["imputation_info"][column] = {
             "short_gaps_count": len(short_gaps),
             "imputed_values_count": len(short_gap_indices),
         }
 
     basin_report["processing_steps"].append("Applied imputation to short gaps")
-
     return imputed_df, basin_report
 
 
+def split_data(
+    df: pd.DataFrame, config: Config
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """
+    Split data into training, validation, and test sets based on proportions.
+    Filters out NaN values first to ensure splits contain only valid data points.
+
+    Args:
+        df: DataFrame with data
+        config: Configuration object
+
+    Returns:
+        Tuple of (train_df, val_df, test_df)
+    """
+    train_data, val_data, test_data = [], [], []
+    target_col = config.preprocessing_config.get("target", {}).get(
+        "column", "streamflow"
+    )
+
+    for gauge_id, basin_data in df.groupby(config.group_identifier):
+        basin_data = basin_data.sort_values("date").reset_index(drop=True)
+        valid_mask = ~basin_data[target_col].isna()
+        valid_data = basin_data[valid_mask].reset_index(drop=True)
+        n_valid = len(valid_data)
+
+        if n_valid == 0:
+            print(f"Warning: Basin {gauge_id} has no valid points, skipping")
+            continue
+
+        train_size = int(n_valid * config.train_prop)
+        val_size = int(n_valid * config.val_prop)
+        train_valid = valid_data.iloc[:train_size]
+        val_valid = valid_data.iloc[train_size : train_size + val_size]
+        test_valid = valid_data.iloc[train_size + val_size :]
+        train_data.append(train_valid)
+        val_data.append(val_valid)
+        test_data.append(test_valid)
+
+    return (
+        pd.concat(train_data, ignore_index=True) if train_data else pd.DataFrame(),
+        pd.concat(val_data, ignore_index=True) if val_data else pd.DataFrame(),
+        pd.concat(test_data, ignore_index=True) if test_data else pd.DataFrame(),
+    )
+
+
+def fit_pipelines(
+    train_df: pd.DataFrame,
+    all_data: pd.DataFrame,
+    static_df: Optional[pd.DataFrame],
+    config: Config,
+) -> Dict[str, Union[Pipeline, GroupedTransformer]]:
+    """
+    Fit preprocessing pipelines on training data to prevent data leakage.
+
+    Args:
+        train_df: Training data
+        all_data: All data (train + val + test)
+        static_df: Static features data (if available)
+        config: Configuration object
+
+    Returns:
+        Dictionary of fitted pipeline instances
+    """
+    fitted_pipelines = {}
+
+    # Process features
+    if "features" in config.preprocessing_config:
+        pipeline_config = config.preprocessing_config["features"]
+        pipeline = clone(pipeline_config["pipeline"])
+
+        if isinstance(pipeline, GroupedTransformer):
+            feature_cols = pipeline.columns
+            train_features = train_df[feature_cols + [config.group_identifier]]
+            pipeline.fit(train_features)
+            fitted_pipelines["features"] = pipeline
+        else:
+            target_col = config.preprocessing_config.get("target", {}).get(
+                "column", "streamflow"
+            )
+            feature_cols = [col for col in config.required_columns if col != target_col]
+            train_features = train_df[feature_cols]
+            pipeline.fit(train_features)
+            fitted_pipelines["features"] = pipeline
+
+    # Process target
+    if "target" in config.preprocessing_config:
+        pipeline_config = config.preprocessing_config["target"]
+        pipeline = clone(pipeline_config["pipeline"])
+        target_col = pipeline_config.get("column", "streamflow")
+
+        if isinstance(pipeline, GroupedTransformer):
+            train_target = train_df[pipeline.columns + [config.group_identifier]]
+        else:
+            train_target = train_df[[target_col]]
+        pipeline.fit(train_target)
+        fitted_pipelines["target"] = pipeline
+
+    # Process static features (if static data is available)
+    if "static_features" in config.preprocessing_config and static_df is not None:
+        static_cfg = config.preprocessing_config["static_features"]
+        static_pipeline = static_cfg["pipeline"]
+        static_columns = static_cfg.get("columns")
+        if static_columns is None:
+            raise ValueError(
+                "You must specify 'columns' for static_features in preprocessing_config."
+            )
+        missing_cols = [col for col in static_columns if col not in static_df.columns]
+        if missing_cols:
+            raise ValueError(f"Static columns not found in static_df: {missing_cols}")
+        # Fit only on the specified columns
+        static_pipeline.fit(static_df[static_columns])
+        fitted_pipelines["static"] = static_pipeline
+
+    return fitted_pipelines
+
+
+def apply_transformations(
+    df: pd.DataFrame,
+    config: Config,
+    fitted_pipelines: Dict[str, Union[Pipeline, GroupedTransformer]],
+    basin_id: Optional[str] = None,
+    static_data: bool = False,
+) -> pd.DataFrame:
+    """
+    Apply fitted transformations to a DataFrame.
+
+    Args:
+        df: DataFrame to transform.
+        config: Configuration object.
+        fitted_pipelines: Fitted pipeline instances.
+        basin_id: Basin identifier (if applicable).
+        static_data: Flag to indicate whether processing static features.
+
+    Returns:
+        Transformed DataFrame.
+    """
+    transformed_df = df.copy()
+
+    if static_data:
+        # Only static_features uses the "columns" key
+        static_cfg = config.preprocessing_config.get("static_features", {})
+        pipeline = fitted_pipelines.get("static")
+        static_columns = static_cfg.get("columns")
+        if pipeline is None or static_columns is None:
+            print(
+                "Static transformation pipeline or columns not available; returning data unchanged."
+            )
+            return transformed_df
+        transformed_static = pipeline.transform(transformed_df[static_columns])
+        if isinstance(transformed_static, np.ndarray):
+            for i, col in enumerate(static_columns):
+                transformed_df[col] = transformed_static[:, i]
+        else:
+            for col in static_columns:
+                transformed_df[col] = transformed_static[col]
+        return transformed_df
+
+    # For time series, keep existing logic (no "columns" key)
+    if config.group_identifier not in transformed_df.columns and basin_id is not None:
+        transformed_df[config.group_identifier] = basin_id
+
+    # Features
+    if "features" in fitted_pipelines:
+        pipeline = fitted_pipelines["features"]
+        target_col = config.preprocessing_config.get("target", {}).get(
+            "column", "streamflow"
+        )
+        feature_cols = [col for col in config.required_columns if col != target_col]
+        if feature_cols:
+            if isinstance(pipeline, GroupedTransformer):
+                features_data = transformed_df[feature_cols + [config.group_identifier]]
+                transformed_features = pipeline.transform(features_data)
+            else:
+                features_data = transformed_df[feature_cols]
+                transformed_features = pipeline.transform(features_data)
+            if isinstance(transformed_features, np.ndarray):
+                for i, col in enumerate(feature_cols):
+                    transformed_df[col] = transformed_features[:, i]
+            else:
+                for col in feature_cols:
+                    transformed_df[col] = transformed_features[col]
+
+    # Target
+    if "target" in fitted_pipelines:
+        pipeline = fitted_pipelines["target"]
+        target_col = config.preprocessing_config.get("target", {}).get(
+            "column", "streamflow"
+        )
+        if isinstance(pipeline, GroupedTransformer):
+            target_data = transformed_df[[target_col, config.group_identifier]]
+            transformed_target = pipeline.transform(target_data)
+        else:
+            target_data = transformed_df[[target_col]]
+            transformed_target = pipeline.transform(target_data)
+        if isinstance(transformed_target, np.ndarray):
+            transformed_df[target_col] = transformed_target[:, 0]
+        else:
+            transformed_df[target_col] = transformed_target[target_col]
+
+    return transformed_df
+
+
 def process_basin(
-    basin_file: Path, config: Config, output_dir: Path, reports_dir: Path
+    basin_file: Path,
+    config: Config,
+    output_dir: Path,
+    reports_dir: Path,
+    fitted_pipelines: Optional[Dict[str, Union[Pipeline, GroupedTransformer]]] = None,
 ) -> Tuple[bool, Optional[str], Optional[BasinQualityReport]]:
     """
     Process a single basin file using DuckDB and pandas.
@@ -180,6 +384,7 @@ def process_basin(
         config: Configuration parameters
         output_dir: Directory to save processed data
         reports_dir: Directory to save quality reports
+        fitted_pipelines: Dictionary of fitted pipeline instances
 
     Returns:
         Tuple containing:
@@ -189,7 +394,6 @@ def process_basin(
     """
     basin_id = basin_file.stem  # Get gauge_id from filename
 
-    # Initialize quality report for this basin
     basin_report: BasinQualityReport = {
         "valid_period": {},
         "processing_steps": [],
@@ -197,11 +401,9 @@ def process_basin(
     }
 
     try:
-        # Step 1: Load basin data using DuckDB
         con = duckdb.connect(database=":memory:")
         con.execute(f"CREATE TABLE basin AS SELECT * FROM read_parquet('{basin_file}')")
 
-        # Make sure required columns exist
         columns = con.execute("PRAGMA table_info(basin)").fetchall()
         column_names = [col[1] for col in columns]
 
@@ -212,7 +414,6 @@ def process_basin(
             error_msg = f"Missing required columns: {missing_cols + (['date'] if 'date' not in column_names else [])}"
             return False, error_msg, basin_report
 
-        # Step 2: Find valid periods for each required column (first/last non-NULL value)
         basin_report["processing_steps"].append("Loaded basin data")
 
         for column in config.required_columns:
@@ -230,7 +431,6 @@ def process_basin(
                 "end": end_date.strftime("%Y-%m-%d") if end_date else None,
             }
 
-        # Find overall valid period (overlap of all required columns)
         valid_starts = [
             val["start"]
             for col, val in basin_report["valid_period"].items()
@@ -245,14 +445,11 @@ def process_basin(
         if not valid_starts or not valid_ends:
             return False, "No valid data period found", basin_report
 
-        # Convert string dates back to datetime for comparison
         start_dates = [pd.to_datetime(date) for date in valid_starts]
         end_dates = [pd.to_datetime(date) for date in valid_ends]
-
         overall_start = max(start_dates)
         overall_end = min(end_dates)
 
-        # Check if period meets minimum requirements
         total_days = (overall_end - overall_start).days + 1
         total_years = total_days / 365.25
         train_days = int(total_days * config.train_prop)
@@ -268,7 +465,6 @@ def process_basin(
             )
             return False, error_msg, basin_report
 
-        # Step 3: Filter to valid period with SQL
         con.execute(f"""
             CREATE TABLE filtered_basin AS
             SELECT * FROM basin
@@ -277,31 +473,30 @@ def process_basin(
         """)
 
         basin_report["processing_steps"].append("Filtered to valid period")
-
-        # Step 4: Transfer to pandas for imputation
         df = con.execute("SELECT * FROM filtered_basin").df()
         basin_report["processing_steps"].append("Transferred to pandas for imputation")
 
-        # Initialize imputation info
         for column in config.required_columns:
             basin_report["imputation_info"][column] = {
                 "short_gaps_count": 0,
                 "imputed_values_count": 0,
             }
 
-        # Apply imputation to the DataFrame
         imputed_df, basin_report = impute_short_gaps(
-            df,
-            config.required_columns,
-            config.max_imputation_gap_size,
-            basin_report,
+            df, config.required_columns, config.max_imputation_gap_size, basin_report
         )
 
-        # Save processed basin data
-        output_file = output_dir / f"{basin_id}.parquet"
-        imputed_df.to_parquet(output_file)
+        transformed_df = imputed_df
+        if fitted_pipelines:
+            basin_report["processing_steps"].append("Applying transformations")
+            transformed_df = apply_transformations(
+                imputed_df, config, fitted_pipelines, basin_id
+            )
+            basin_report["processing_steps"].append("Transformations applied")
 
-        # Save basin quality report
+        output_file = output_dir / f"{basin_id}.parquet"
+        transformed_df.to_parquet(output_file)
+
         report_file = reports_dir / f"{basin_id}_report.json"
         with open(report_file, "w") as f:
             json.dump(basin_report, f, indent=2, default=str)
@@ -313,26 +508,25 @@ def process_basin(
         error_msg = f"Error processing basin {basin_id}: {str(e)}"
         return False, error_msg, basin_report
     finally:
-        # Close DuckDB connection
         if "con" in locals():
             con.close()
 
 
 def process_basin_worker(
-    args: Tuple[Path, Config, Path, Path],
+    args: Tuple[Path, Config, Path, Path, Dict],
 ) -> Tuple[str, bool, Optional[str], Optional[BasinQualityReport]]:
     """
     Worker function for parallel basin processing.
 
     Args:
-        args: Tuple containing (basin_file, config, output_dir, reports_dir)
+        args: Tuple containing (basin_file, config, output_dir, reports_dir, fitted_pipelines)
 
     Returns:
         Tuple containing basin_id, success flag, error message, and basin report
     """
-    basin_file, config, output_dir, reports_dir = args
+    basin_file, config, output_dir, reports_dir, fitted_pipelines = args
     success, error_msg, basin_report = process_basin(
-        basin_file, config, output_dir, reports_dir
+        basin_file, config, output_dir, reports_dir, fitted_pipelines
     )
     basin_id = basin_file.stem
     return basin_id, success, error_msg, basin_report
@@ -343,6 +537,7 @@ def process_basins_parallel(
     config: Config,
     output_dir: Path,
     reports_dir: Path,
+    fitted_pipelines: Dict[str, Union[Pipeline, GroupedTransformer]],
     num_processes: int,
 ) -> QualityReport:
     """
@@ -353,12 +548,12 @@ def process_basins_parallel(
         config: Configuration parameters
         output_dir: Directory to save processed data
         reports_dir: Directory to save quality reports
+        fitted_pipelines: Dictionary of fitted pipeline instances
         num_processes: Number of parallel processes to use
 
     Returns:
         Overall quality report
     """
-    # Initialize overall quality report
     quality_report: QualityReport = {
         "original_basins": len(basin_files),
         "retained_basins": 0,
@@ -367,12 +562,11 @@ def process_basins_parallel(
         "split_method": "proportional",
     }
 
-    # Create arguments list for the worker function
     args_list = [
-        (basin_file, config, output_dir, reports_dir) for basin_file in basin_files
+        (basin_file, config, output_dir, reports_dir, fitted_pipelines)
+        for basin_file in basin_files
     ]
 
-    # Process basins in parallel
     with mp.Pool(processes=num_processes) as pool:
         results = list(
             tqdm(
@@ -382,10 +576,8 @@ def process_basins_parallel(
             )
         )
 
-    # Combine results into overall quality report
     for basin_id, success, error_msg, basin_report in results:
         quality_report["basins"][basin_id] = basin_report
-
         if not success:
             quality_report["excluded_basins"][basin_id] = error_msg
         else:
@@ -394,10 +586,127 @@ def process_basins_parallel(
     return quality_report
 
 
+def load_all_basins(input_dir: Path, config: Config) -> pd.DataFrame:
+    """
+    Load all basin files to create training data for fitting pipelines.
+
+    Args:
+        input_dir: Directory containing parquet files
+        config: Configuration parameters
+
+    Returns:
+        DataFrame containing data from all basins
+    """
+    basin_files = list(input_dir.glob("*.parquet"))
+    if not basin_files:
+        raise ValueError("No parquet files found in input directory")
+
+    all_data = []
+    for basin_file in tqdm(basin_files, desc="Loading basin data for fitting"):
+        try:
+            df = pd.read_parquet(basin_file)
+            df[config.group_identifier] = basin_file.stem  # Ensure gauge_id is set
+            all_data.append(df)
+        except Exception as e:
+            print(f"Error loading {basin_file}: {str(e)}")
+
+    if not all_data:
+        raise ValueError("Failed to load any basin files")
+
+    return pd.concat(all_data, ignore_index=True)
+
+
+def load_static_attributes(
+    static_dir: Path, gauge_id_prefix: str = None, basin_ids: List[str] = None
+) -> Optional[pd.DataFrame]:
+    """
+    Load static attribute data from multiple parquet files.
+
+    Looks for three types of attribute files:
+    - attributes_caravan_{gauge_id_prefix}.parquet
+    - attributes_hydroatlas_{gauge_id_prefix}.parquet
+    - attributes_other_{gauge_id_prefix}.parquet
+
+    Args:
+        static_dir: Directory containing static attribute files
+        gauge_id_prefix: Prefix for gauge IDs (e.g., "CA" for Canadian basins)
+        basin_ids: Optional list of basin IDs to filter attributes for
+
+    Returns:
+        DataFrame with merged static attributes or None if no files found
+    """
+    if not static_dir.exists():
+        print(f"Static directory {static_dir} not found")
+        return None
+
+    if gauge_id_prefix is None and basin_ids:
+        first_id = basin_ids[0]
+        if "_" in first_id:
+            gauge_id_prefix = first_id.split("_")[0]
+            print(f"Extracted gauge ID prefix: {gauge_id_prefix}")
+        else:
+            print("Could not extract gauge ID prefix from basin IDs")
+            return None
+
+    if gauge_id_prefix is None:
+        parquet_files = list(static_dir.glob("attributes_*.parquet"))
+        if parquet_files:
+            filename = parquet_files[0].stem
+            parts = filename.split("_")
+            if len(parts) >= 3:
+                gauge_id_prefix = parts[2]
+                print(f"Inferred gauge ID prefix: {gauge_id_prefix}")
+
+    basin_id_set = set(basin_ids) if basin_ids else None
+    dfs = []
+
+    def load_attribute_file(file_type: str) -> Optional[pd.DataFrame]:
+        filename = f"attributes_{file_type}_{gauge_id_prefix}.parquet"
+        file_path = static_dir / filename
+
+        if not file_path.exists():
+            print(f"Attribute file {filename} not found")
+            return None
+
+        try:
+            print(f"Loading {file_type} attributes from {file_path}")
+            df = pd.read_parquet(file_path, engine="pyarrow")
+            if "gauge_id" in df.columns:
+                df["gauge_id"] = df["gauge_id"].astype(str)
+            if basin_id_set:
+                df = df[df["gauge_id"].isin(basin_id_set)]
+            df.set_index("gauge_id", inplace=True)
+            return df
+        except Exception as e:
+            print(f"Error loading {filename}: {str(e)}")
+            return None
+
+    caravan_df = load_attribute_file("caravan")
+    if caravan_df is not None:
+        dfs.append(caravan_df)
+    hydroatlas_df = load_attribute_file("hydroatlas")
+    if hydroatlas_df is not None:
+        dfs.append(hydroatlas_df)
+    other_df = load_attribute_file("other")
+    if other_df is not None:
+        dfs.append(other_df)
+
+    if dfs:
+        print(f"Merging {len(dfs)} attribute DataFrames")
+        merged_df = pd.concat(dfs, axis=1, join="outer").reset_index()
+        print(f"Loaded static attributes for {len(merged_df)} basins")
+        return merged_df
+    else:
+        print("No static attribute files found or loaded")
+        return None
+
+
 def run_hydro_processor(
     input_dir: str,
     output_dir: str,
     required_columns: List[str],
+    preprocessing_config: Optional[Dict[str, Dict[str, Any]]] = None,
+    static_dir: Optional[str] = None,
     min_train_years: float = 5.0,
     max_imputation_gap_size: int = 5,
     group_identifier: str = "gauge_id",
@@ -405,14 +714,17 @@ def run_hydro_processor(
     val_prop: float = 0.25,
     test_prop: float = 0.25,
     processes: int = 6,
-) -> QualityReport:
+    basin_ids: Optional[List[str]] = None,
+) -> ProcessingResult:
     """
-    Main function to run the hydrological data processor.
+    Main function to run the hydrological data processor with pipeline fitting.
 
     Args:
         input_dir: Directory containing parquet files
         output_dir: Directory for processed parquet files and reports
         required_columns: List of required data columns for quality checking
+        preprocessing_config: Configuration for data preprocessing pipelines
+        static_dir: Optional directory containing static attribute files
         min_train_years: Minimum required years for training
         max_imputation_gap_size: Maximum gap length to impute with interpolation
         group_identifier: Column name identifying the basin
@@ -420,13 +732,13 @@ def run_hydro_processor(
         val_prop: Proportion of data for validation
         test_prop: Proportion of data for testing
         processes: Number of parallel processes to use
-
+        basin_ids: Optional list of basin (gauge) IDs to process. If None, process all found.
     Returns:
-        QualityReport object with processing results
+        ProcessingResult containing quality report, fitted pipelines, and processed directories
     """
-    # Create config object
     config = Config(
         required_columns=required_columns,
+        preprocessing_config=preprocessing_config,
         min_train_years=min_train_years,
         max_imputation_gap_size=max_imputation_gap_size,
         group_identifier=group_identifier,
@@ -435,35 +747,82 @@ def run_hydro_processor(
         test_prop=test_prop,
     )
 
-    # Create output directory if it doesn't exist
     output_dir_path = Path(output_dir)
     output_dir_path.mkdir(parents=True, exist_ok=True)
 
-    # Create subdirectories for processed data and reports
     processed_dir = output_dir_path / "processed_data"
+    processed_static_dir = output_dir_path / "processed_static_data"
     reports_dir = output_dir_path / "quality_reports"
     processed_dir.mkdir(exist_ok=True)
+    processed_static_dir.mkdir(exist_ok=True)
     reports_dir.mkdir(exist_ok=True)
 
-    # Scan input directory for parquet files
     input_dir_path = Path(input_dir)
     basin_files = list(input_dir_path.glob("*.parquet"))
+    if basin_ids:
+        basin_files = [f for f in basin_files if f.stem in basin_ids]
     print(f"Found {len(basin_files)} basin files")
 
     if not basin_files:
         print("No parquet files found in input directory")
         return None
 
-    # Process basins in parallel
+    basin_ids = [basin_file.stem for basin_file in basin_files]
+
+    static_df = None
+    if static_dir:
+        static_path = Path(static_dir)
+        gauge_id_prefix = basin_ids[0].split("_")[0] if "_" in basin_ids[0] else None
+        static_df = load_static_attributes(static_path, gauge_id_prefix, basin_ids)
+
+    fitted_pipelines = {}
+
+    if preprocessing_config:
+        print("Fitting preprocessing pipelines on all basins...")
+        try:
+            sample_data = load_all_basins(input_dir_path, config)
+            print(f"Loaded {len(basin_files)} basins for pipeline fitting")
+            train_df, val_df, test_df = split_data(sample_data, config)
+            print(
+                f"Split data into train ({len(train_df)} rows), val ({len(val_df)} rows), test ({len(test_df)} rows)"
+            )
+            fitted_pipelines = fit_pipelines(train_df, sample_data, static_df, config)
+            print(f"Fitted {len(fitted_pipelines)} pipelines")
+        except Exception as e:
+            print(f"Error during pipeline fitting: {str(e)}")
+
     quality_report = process_basins_parallel(
-        basin_files, config, processed_dir, reports_dir, processes
+        basin_files, config, processed_dir, reports_dir, fitted_pipelines, processes
     )
 
-    # Save overall quality report
+    # Process static attributes using the extended apply_transformations function
+    if static_df is not None and "static" in fitted_pipelines:
+        print("Processing static attributes...")
+        # Only keep static attributes for retained basins
+        retained_basins = [
+            basin_id
+            for basin_id in quality_report["basins"]
+            if basin_id not in quality_report["excluded_basins"]
+        ]
+        filtered_static_df = static_df[static_df["gauge_id"].isin(retained_basins)]
+        transformed_static = apply_transformations(
+            filtered_static_df, config, fitted_pipelines, static_data=True
+        )
+        output_file = processed_static_dir / "static_attributes.parquet"
+        transformed_static.to_parquet(output_file)
+        print(
+            f"Saved transformed static attributes for {len(transformed_static)} basins to {output_file}"
+        )
+
     with open(output_dir_path / "quality_summary.json", "w") as f:
-        json.dump(
-            quality_report, f, indent=2, default=str
-        )  # default=str handles datetime objects
+        json.dump(quality_report, f, indent=2, default=str)
+
+    pipeline_info = {
+        name: f"{type(pipeline).__name__}"
+        for name, pipeline in fitted_pipelines.items()
+    }
+    with open(output_dir_path / "pipeline_info.json", "w") as f:
+        json.dump(pipeline_info, f, indent=2)
 
     print(
         f"Processing complete. {quality_report['retained_basins']} basins retained out of {quality_report['original_basins']}."
@@ -474,96 +833,9 @@ def run_hydro_processor(
             f"{len(quality_report['excluded_basins'])} basins excluded due to quality issues."
         )
 
-    return quality_report
-
-
-# For backwards compatibility if someone still runs the script directly
-if __name__ == "__main__":
-    import argparse
-
-    def parse_args():
-        parser = argparse.ArgumentParser(
-            description="Process hydrological time series data with DuckDB"
-        )
-
-        # Required arguments
-        parser.add_argument(
-            "--input-dir",
-            type=str,
-            required=True,
-            help="Directory containing parquet files",
-        )
-        parser.add_argument(
-            "--output-dir",
-            type=str,
-            required=True,
-            help="Directory for processed parquet files and reports",
-        )
-        parser.add_argument(
-            "--required-columns",
-            type=str,
-            required=True,
-            nargs="+",
-            help="List of required data columns for quality checking",
-        )
-
-        # Optional arguments with defaults
-        parser.add_argument(
-            "--min-train-years",
-            type=float,
-            default=5.0,
-            help="Minimum required years for training",
-        )
-        parser.add_argument(
-            "--max-imputation-gap-size",
-            type=int,
-            default=5,
-            help="Maximum gap length to impute with interpolation",
-        )
-        parser.add_argument(
-            "--group-identifier",
-            type=str,
-            default="gauge_id",
-            help="Column name identifying the basin",
-        )
-        parser.add_argument(
-            "--train-prop",
-            type=float,
-            default=0.6,
-            help="Proportion of data for training",
-        )
-        parser.add_argument(
-            "--val-prop",
-            type=float,
-            default=0.2,
-            help="Proportion of data for validation",
-        )
-        parser.add_argument(
-            "--test-prop",
-            type=float,
-            default=0.2,
-            help="Proportion of data for testing",
-        )
-        parser.add_argument(
-            "--processes",
-            type=int,
-            default=4,
-            help="Number of parallel processes to use",
-        )
-
-        return parser.parse_args()
-
-    args = parse_args()
-
-    run_hydro_processor(
-        input_dir=args.input_dir,
-        output_dir=args.output_dir,
-        required_columns=args.required_columns,
-        min_train_years=args.min_train_years,
-        max_imputation_gap_size=args.max_imputation_gap_size,
-        group_identifier=args.group_identifier,
-        train_prop=args.train_prop,
-        val_prop=args.val_prop,
-        test_prop=args.test_prop,
-        processes=args.processes,
-    )
+    return {
+        "quality_report": quality_report,
+        "fitted_pipelines": fitted_pipelines,
+        "processed_dir": processed_dir,
+        "processed_static_dir": processed_static_dir if static_df is not None else None,
+    }
