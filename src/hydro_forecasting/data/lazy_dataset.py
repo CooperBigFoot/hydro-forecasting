@@ -4,6 +4,7 @@ from typing import Union
 import numpy as np
 import polars as pl
 from pathlib import Path
+from .file_cache import FileCache
 
 
 class HydroLazyDataset(Dataset):
@@ -20,7 +21,7 @@ class HydroLazyDataset(Dataset):
         group_identifier: str = "gauge_id",
         domain_id: str = "source",
         domain_type: str = "source",  # Either 'source' or 'target'
-        is_autoregressive: bool = False,  # New parameter
+        is_autoregressive: bool = False,
     ):
         """Initialize the lazy dataset with precomputed index entries.
 
@@ -45,7 +46,7 @@ class HydroLazyDataset(Dataset):
         self.group_identifier = group_identifier
         self.domain_id = domain_id
         self.domain_type = domain_type
-        self.is_autoregressive = is_autoregressive  # Store the new parameter
+        self.is_autoregressive = is_autoregressive
 
         # Determine forcing indices (all features except target) if not autoregressive
         if not self.is_autoregressive:
@@ -62,51 +63,45 @@ class HydroLazyDataset(Dataset):
             ]
             self.forcing_indices = list(range(len(self.features)))
 
+        # Phase 1: preload static and init file cache
+        self.file_cache = FileCache(max_files=50)
+        self._preload_static_data()
+
+    def _preload_static_data(self) -> None:
+        """
+        Read all static attributes once and cache by gauge_id.
+        """
+        if not self.batch_index_entries:
+            self.static_data_cache = {}
+            return
+
+        path0 = self.batch_index_entries[0]["static_file_path"]
+        gids = {e["gauge_id"] for e in self.batch_index_entries}
+        cols = list({self.group_identifier, *self.static_features})
+
+        df = pl.read_parquet(path0, columns=cols)
+
+        self.static_data_cache = {}
+
+        # Create lookup for static features
+        for gid in gids:
+            sub = df.filter(pl.col(self.group_identifier) == gid)
+            if not sub.is_empty():
+                arr = (
+                    sub.select(
+                        [c for c in self.static_features if c != self.group_identifier]
+                    )
+                    .to_numpy()
+                    .flatten()
+                    .astype(np.float32)
+                )
+
+            else:
+                arr = np.zeros(len(self.static_features), dtype=np.float32)
+            self.static_data_cache[gid] = arr
+
     def __len__(self):
         return len(self.batch_index_entries)
-
-    def _read_parquet_range(
-        self, file_path: Union[Path, str], start_idx: int, end_idx: int
-    ) -> pl.DataFrame:
-        """
-        Efficiently read a row slice from a Parquet file using Polars.
-
-        Args:
-            file_path: Path to the Parquet file.
-            start_idx: Start row index (inclusive).
-            end_idx: End row index (exclusive).
-
-        Returns:
-            Polars DataFrame with the selected rows.
-        """
-        # Include all required columns including target and forcing features
-        columns = ["date"] + [self.target] + self.forcing_features
-        # Remove duplicates while preserving order
-        columns = list(dict.fromkeys(columns))
-
-        return pl.read_parquet(
-            file_path, columns=columns, row_count_name=None, use_pyarrow=False
-        ).slice(start_idx, end_idx - start_idx)
-
-    def _get_static_attributes_from_id(
-        self, path_to_static: Union[Path, str], gauge_id: str, static_columns: list[str]
-    ) -> pl.DataFrame:
-        """
-        Retrieve static attributes for a specific gauge ID from a Polars DataFrame.
-
-        Args:
-            path_to_static: Path to the static attributes parquet file.
-            gauge_id: The gauge ID to filter for.
-            static_columns: List of static attributes to retrieve.
-
-        Returns:
-            Polars DataFrame with static attributes for the specified gauge.
-        """
-        # Ensure gauge_id column is included in the columns to read
-        columns_to_read = list(set([self.group_identifier] + static_columns))
-        static_df = pl.read_parquet(str(path_to_static), columns=columns_to_read)
-        filtered_df = static_df.filter(pl.col(self.group_identifier) == gauge_id)
-        return filtered_df
 
     def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
         """
@@ -120,92 +115,47 @@ class HydroLazyDataset(Dataset):
         """
         # Get the batch index entry for this idx
         entry = self.batch_index_entries[idx]
-        gauge_id = entry["gauge_id"]
-        start_idx = entry["start_idx"]
-        end_idx = entry["end_idx"]
-        input_end_date = entry["input_end_date"]
 
-        # Read time series data: this is where the lazy magic happens
-        time_series = self._read_parquet_range(
-            file_path=entry["file_path"],
-            start_idx=start_idx,
-            end_idx=end_idx,
+        df = self.file_cache.get_file(
+            entry["file_path"], columns=["date", self.target, *self.forcing_features]
+        )
+        # slice input/output
+        ts = df.slice(entry["start_idx"], entry["end_idx"] - entry["start_idx"])
+        inp = ts.slice(0, self.input_length)
+        out = ts.slice(self.input_length, self.output_length)
+
+        # static
+        static_arr = self.static_data_cache.get(
+            entry["gauge_id"], np.zeros(len(self.static_features), dtype=np.float32)
         )
 
-        # Split into input and output periods
-        input_data = time_series.slice(0, self.input_length)
-        output_data = time_series.slice(self.input_length, self.output_length)
-
-        # Get static attributes: more lazy magic
-        static_df = self._get_static_attributes_from_id(
-            path_to_static=entry["static_file_path"],
-            gauge_id=gauge_id,
-            static_columns=self.static_features,
-        )
-
-        # Prepare input tensor X (with target in first position if in forcing_features)
-        features_list = []
-
-        # First add target if it's in the forcing features
+        feats = []
         if self.target in self.forcing_features:
-            features_list.append(input_data[self.target].to_numpy())
+            feats.append(inp[self.target].to_numpy())
 
-        # Then add all other forcing features
-        for feat in self.forcing_features:
-            if feat != self.target or self.target not in self.forcing_features:
-                features_list.append(input_data[feat].to_numpy())
+        for f in self.forcing_features:
+            if f != self.target or self.target not in self.forcing_features:
+                feats.append(inp[f].to_numpy())
 
-        # Stack all features along the column axis
-        X = np.column_stack(features_list)
+        X = torch.tensor(np.stack(feats, axis=1), dtype=torch.float32)
+        y = torch.tensor(out[self.target].to_numpy(), dtype=torch.float32)
 
-        # Prepare target tensor y for the output period
-        y = output_data[self.target].to_numpy()
+        # build future forcing features for decoder
+        future_arr = out.select(self.forcing_features).to_numpy().astype(np.float32)
+        future = torch.tensor(future_arr, dtype=torch.float32)
 
-        # Prepare future forcing features (excluding target)
-        future_features = []
-        for feat in self.forcing_features:
-            if feat != self.target:
-                future_features.append(output_data[feat].to_numpy())
-
-        # Stack future features along the column axis
-        future = np.column_stack(future_features) if future_features else np.array([])
-
-        # Prepare static features
-        if not static_df.is_empty():
-            # Extract only the features, not the gauge_id
-            static_values = (
-                static_df.select(
-                    [
-                        col
-                        for col in self.static_features
-                        if col != self.group_identifier
-                    ]
-                )
-                .to_numpy()
-                .flatten()
-            )
-        else:
-            # Empty static tensor if no data available
-            static_values = np.zeros(len(self.static_features), dtype=np.float32)
-
-        # Convert numpy arrays to PyTorch tensors
-        X_tensor = torch.tensor(X, dtype=torch.float32)
-        y_tensor = torch.tensor(y, dtype=torch.float32)
-        future_tensor = torch.tensor(future, dtype=torch.float32)
-        static_tensor = torch.tensor(static_values, dtype=torch.float32)
-
-        # Create domain tensor (1.0 for target, 0.0 for source)
-        domain_tensor = torch.tensor(
-            [1.0 if self.domain_type == "target" else 0.0], dtype=torch.float32
+        # convert input_end_date -> nanoseconds since epoch as Python int
+        input_end = entry["input_end_date"]
+        input_end_ts = (
+            input_end.astype(np.int64)
+            if isinstance(input_end, np.datetime64)
+            else np.datetime64(input_end).astype(np.int64)
         )
-
         return {
-            "X": X_tensor,
-            "y": y_tensor,
-            "future": future_tensor,
-            "static": static_tensor,
-            "domain_id": domain_tensor,
-            "domain_name": self.domain_id,
-            self.group_identifier: gauge_id,
-            "input_end_date": str(input_end_date),
+            "X": X,
+            "y": y,
+            "static": torch.tensor(static_arr, dtype=torch.float32),
+            "future": future,
+            "gauge_id": entry["gauge_id"],
+            "input_end_date": int(input_end_ts),
         }

@@ -5,16 +5,28 @@ from torch.utils.data import DataLoader
 from returns.result import Result, Success, Failure
 from returns.pipeline import is_successful
 import math
+import torch
 
 from sklearn.pipeline import Pipeline
 from .lazy_dataset import HydroLazyDataset
 from .preprocessing import run_hydro_processor
 from .index_entry_creator import (
-    SPLIT_CONFIG,
     create_index_entries,
     split_index_entries_by_stage,
 )
 from ..preprocessing.grouped import GroupedPipeline
+from .batch_sampler import FileGroupedBatchSampler
+
+
+def worker_init_fn(worker_id: int) -> None:
+    """
+    Adjust cache settings for each worker to avoid thrashing.
+    """
+    info = torch.utils.data.get_worker_info()
+    if info is None:
+        return
+    ds = info.dataset
+    ds.file_cache.max_memory_mb = 800
 
 
 class HydroLazyDataModule(pl.LightningDataModule):
@@ -45,6 +57,7 @@ class HydroLazyDataModule(pl.LightningDataModule):
         domain_id: str = "source",
         domain_type: str = "source",
         is_autoregressive: bool = False,
+        files_per_batch: int = 20,
     ):
         super().__init__()
 
@@ -73,6 +86,7 @@ class HydroLazyDataModule(pl.LightningDataModule):
         self.domain_id = domain_id
         self.domain_type = domain_type
         self.is_autoregressive = is_autoregressive
+        self.files_per_batch = files_per_batch
 
         # Post initialization
         self.quality_report = {}
@@ -327,14 +341,19 @@ class HydroLazyDataModule(pl.LightningDataModule):
         """
         if self.train_dataset is None:
             raise RuntimeError("setup() must be called before train_dataloader()")
-
+        sampler = FileGroupedBatchSampler(
+            self.train_dataset.batch_index_entries,
+            self.batch_size,
+            shuffle=True,
+            files_per_batch=self.files_per_batch,
+        )
         return DataLoader(
             self.train_dataset,
-            batch_size=self.batch_size,
-            shuffle=True,  # Shuffle training data
+            batch_sampler=sampler,
             num_workers=self.num_workers,
             pin_memory=True,
-            persistent_workers=True if self.num_workers > 0 else False,
+            persistent_workers=self.num_workers > 0,
+            worker_init_fn=worker_init_fn,
         )
 
     def val_dataloader(self) -> DataLoader:
@@ -350,7 +369,7 @@ class HydroLazyDataModule(pl.LightningDataModule):
         return DataLoader(
             self.val_dataset,
             batch_size=self.batch_size,
-            shuffle=False,  # Don't shuffle validation data
+            shuffle=False,
             num_workers=self.num_workers,
             pin_memory=True,
             persistent_workers=True if self.num_workers > 0 else False,
