@@ -113,13 +113,10 @@ class HydroLazyDataModule(pl.LightningDataModule):
         Returns:
             Success(None) if valid, Failure(str) with error message otherwise.
         """
-        required_keys = ["pipeline"]
-        required_pipeline_keys = ["columns"]
-
         for data_type, cfg in config.items():
-            missing = [k for k in required_keys if k not in ["static_features"]]
-            if missing:
-                return Failure(f"Missing required keys {missing} in {data_type} config")
+            # Check if 'pipeline' exists in the config dictionary
+            if "pipeline" not in cfg:
+                return Failure(f"Missing 'pipeline' key in {data_type} config")
 
             pipeline = cfg["pipeline"]
 
@@ -128,15 +125,7 @@ class HydroLazyDataModule(pl.LightningDataModule):
                     f"Pipeline for {data_type} must be Pipeline or GroupedPipeline, got {type(pipeline)}"
                 )
 
-            if isinstance(pipeline, Pipeline):
-                missing_pipeline_keys = [
-                    k for k in required_pipeline_keys if k not in pipeline.get_params()
-                ]
-                if missing_pipeline_keys:
-                    return Failure(
-                        f"Missing required keys {missing_pipeline_keys} in {data_type} pipeline"
-                    )
-
+            # Check GroupedPipeline compatibility
             if isinstance(pipeline, GroupedPipeline):
                 if pipeline.group_identifier != self.group_identifier:
                     return Failure(
@@ -144,6 +133,10 @@ class HydroLazyDataModule(pl.LightningDataModule):
                         f"'{pipeline.group_identifier}' but data module uses "
                         f"'{self.group_identifier}'"
                     )
+
+            # Validate static_features has columns specified
+            if data_type == "static_features" and "columns" not in cfg:
+                return Failure("static_features config must include 'columns' key")
 
             result = self._validate_pipeline_compatibility(pipeline)
             if not is_successful(result):
