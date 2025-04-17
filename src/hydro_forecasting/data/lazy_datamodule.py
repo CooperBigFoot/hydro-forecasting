@@ -187,11 +187,17 @@ class HydroLazyDataModule(pl.LightningDataModule):
         Process the data, apply preprocessing, and create index entries.
         This method is called only once on a single GPU.
         """
+
+        required_columns = list(dict.fromkeys(self.forcing_features + [self.target]))
+
+        # DEBUG
+        print(f"Required columns: {required_columns}")
+
         results = run_hydro_processor(
             path_to_time_series_directory=self.path_to_time_series_directory,
             path_to_preprocessing_output_directory=self.path_to_preprocessing_output_directory,
             path_to_static_attributes_directory=self.path_to_static_attributes_directory,
-            required_columns=self.forcing_features + [self.target],
+            required_columns=required_columns,
             preprocessing_config=self.preprocessing_configs,
             min_train_years=self.min_train_years,
             max_imputation_gap_size=self.max_imputation_gap_size,
@@ -209,6 +215,13 @@ class HydroLazyDataModule(pl.LightningDataModule):
         self.processed_static_attributes_dir = results[
             "processed_static_attributes_dir"
         ]
+
+        # DEBUG
+        print(f"Fitted pipelines: {self.fitted_pipelines}")
+        print(f"Processed time series directory: {self.processed_time_series_dir}")
+        print(
+            f"Processed static attributes directory: {self.processed_static_attributes_dir}"
+        )
 
         # Create index entries with explicit split proportions
         self.index_entries = create_index_entries(

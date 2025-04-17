@@ -1,4 +1,4 @@
-# TODO: Implement Railway Oriented Programming 
+# TODO: Implement Railway Oriented Programming
 # TODO: Fix Print Statements
 
 import json
@@ -34,7 +34,9 @@ class ProcessingResult(TypedDict):
     quality_report: QualityReport
     fitted_pipelines: Dict[str, Any]  # Pipeline or GroupedPipeline instances
     processed_dir: Path  # Directory with processed files
-    processed_path_to_static_attributes_directory: Optional[Path]  # Directory with processed static data
+    processed_path_to_static_attributes_directory: Optional[
+        Path
+    ]  # Directory with processed static data
 
 
 class Config:
@@ -527,9 +529,19 @@ def process_basin_worker(
     Returns:
         Tuple containing basin_id, success flag, error message, and basin report
     """
-    basin_file, config, path_to_preprocessing_output_directory, reports_dir, fitted_pipelines = args
+    (
+        basin_file,
+        config,
+        path_to_preprocessing_output_directory,
+        reports_dir,
+        fitted_pipelines,
+    ) = args
     success, error_msg, basin_report = process_basin(
-        basin_file, config, path_to_preprocessing_output_directory, reports_dir, fitted_pipelines
+        basin_file,
+        config,
+        path_to_preprocessing_output_directory,
+        reports_dir,
+        fitted_pipelines,
     )
     basin_id = basin_file.stem
     return basin_id, success, error_msg, basin_report
@@ -566,7 +578,13 @@ def process_basins_parallel(
     }
 
     args_list = [
-        (basin_file, config, path_to_preprocessing_output_directory, reports_dir, fitted_pipelines)
+        (
+            basin_file,
+            config,
+            path_to_preprocessing_output_directory,
+            reports_dir,
+            fitted_pipelines,
+        )
         for basin_file in basin_files
     ]
 
@@ -589,7 +607,9 @@ def process_basins_parallel(
     return quality_report
 
 
-def load_all_basins(path_to_time_series_directory: Path, config: Config) -> pd.DataFrame:
+def load_all_basins(
+    path_to_time_series_directory: Path, config: Config
+) -> pd.DataFrame:
     """
     Load all basin files to create training data for fitting pipelines.
 
@@ -620,7 +640,9 @@ def load_all_basins(path_to_time_series_directory: Path, config: Config) -> pd.D
 
 
 def load_static_attributes(
-    path_to_static_attributes_directory: Path, gauge_id_prefix: str = None, list_of_gauge_ids_to_process: List[str] = None
+    path_to_static_attributes_directory: Path,
+    gauge_id_prefix: str = None,
+    list_of_gauge_ids_to_process: List[str] = None,
 ) -> Optional[pd.DataFrame]:
     """
     Load static attribute data from multiple parquet files.
@@ -652,7 +674,9 @@ def load_static_attributes(
             return None
 
     if gauge_id_prefix is None:
-        parquet_files = list(path_to_static_attributes_directory.glob("attributes_*.parquet"))
+        parquet_files = list(
+            path_to_static_attributes_directory.glob("attributes_*.parquet")
+        )
         if parquet_files:
             filename = parquet_files[0].stem
             parts = filename.split("_")
@@ -660,7 +684,9 @@ def load_static_attributes(
                 gauge_id_prefix = parts[2]
                 print(f"Inferred gauge ID prefix: {gauge_id_prefix}")
 
-    basin_id_set = set(list_of_gauge_ids_to_process) if list_of_gauge_ids_to_process else None
+    basin_id_set = (
+        set(list_of_gauge_ids_to_process) if list_of_gauge_ids_to_process else None
+    )
     dfs = []
 
     def load_attribute_file(file_type: str) -> Optional[pd.DataFrame]:
@@ -750,11 +776,15 @@ def run_hydro_processor(
         test_prop=test_prop,
     )
 
-    path_to_preprocessing_output_directory_path = Path(path_to_preprocessing_output_directory)
+    path_to_preprocessing_output_directory_path = Path(
+        path_to_preprocessing_output_directory
+    )
     path_to_preprocessing_output_directory_path.mkdir(parents=True, exist_ok=True)
 
     processed_dir = path_to_preprocessing_output_directory_path / "processed_data"
-    processed_path_to_static_attributes_directory = path_to_preprocessing_output_directory_path / "processed_static_data"
+    processed_path_to_static_attributes_directory = (
+        path_to_preprocessing_output_directory_path / "processed_static_data"
+    )
     reports_dir = path_to_preprocessing_output_directory_path / "quality_reports"
     processed_dir.mkdir(exist_ok=True)
     processed_path_to_static_attributes_directory.mkdir(exist_ok=True)
@@ -775,8 +805,14 @@ def run_hydro_processor(
     static_df = None
     if path_to_static_attributes_directory:
         static_path = Path(path_to_static_attributes_directory)
-        gauge_id_prefix = list_of_gauge_ids_to_process[0].split("_")[0] if "_" in list_of_gauge_ids_to_process[0] else None
-        static_df = load_static_attributes(static_path, gauge_id_prefix, list_of_gauge_ids_to_process)
+        gauge_id_prefix = (
+            list_of_gauge_ids_to_process[0].split("_")[0]
+            if "_" in list_of_gauge_ids_to_process[0]
+            else None
+        )
+        static_df = load_static_attributes(
+            static_path, gauge_id_prefix, list_of_gauge_ids_to_process
+        )
 
     fitted_pipelines = {}
 
@@ -784,6 +820,10 @@ def run_hydro_processor(
         print("Fitting preprocessing pipelines on all basins...")
         try:
             sample_data = load_all_basins(path_to_time_series_directory_path, config)
+
+            # DEBUG
+            print(f"Found following uniquwe columns in sample data: {sample_data.columns.tolist()}")
+
             print(f"Loaded {len(basin_files)} basins for pipeline fitting")
             train_df, val_df, test_df = split_data(sample_data, config)
             print(
@@ -811,20 +851,26 @@ def run_hydro_processor(
         transformed_static = apply_transformations(
             filtered_static_df, config, fitted_pipelines, static_data=True
         )
-        output_file = processed_path_to_static_attributes_directory / "static_attributes.parquet"
+        output_file = (
+            processed_path_to_static_attributes_directory / "static_attributes.parquet"
+        )
         transformed_static.to_parquet(output_file)
         print(
             f"Saved transformed static attributes for {len(transformed_static)} basins to {output_file}"
         )
 
-    with open(path_to_preprocessing_output_directory_path / "quality_summary.json", "w") as f:
+    with open(
+        path_to_preprocessing_output_directory_path / "quality_summary.json", "w"
+    ) as f:
         json.dump(quality_report, f, indent=2, default=str)
 
     pipeline_info = {
         name: f"{type(pipeline).__name__}"
         for name, pipeline in fitted_pipelines.items()
     }
-    with open(path_to_preprocessing_output_directory_path / "pipeline_info.json", "w") as f:
+    with open(
+        path_to_preprocessing_output_directory_path / "pipeline_info.json", "w"
+    ) as f:
         json.dump(pipeline_info, f, indent=2)
 
     print(
@@ -840,5 +886,7 @@ def run_hydro_processor(
         "quality_report": quality_report,
         "fitted_pipelines": fitted_pipelines,
         "processed_time_series_dir": processed_dir,
-        "processed_static_attributes_dir": processed_path_to_static_attributes_directory if static_df is not None else None,
+        "processed_static_attributes_dir": processed_path_to_static_attributes_directory
+        if static_df is not None
+        else None,
     }

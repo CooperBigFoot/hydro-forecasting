@@ -18,3 +18,5 @@ wheels/
 
 # Mac OS
 .DS_Store
+
+tests
