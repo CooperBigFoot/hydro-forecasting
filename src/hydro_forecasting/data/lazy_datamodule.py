@@ -44,6 +44,7 @@ class HydroLazyDataModule(pl.LightningDataModule):
         list_of_gauge_ids_to_process: Optional[list[str]] = None,
         domain_id: str = "source",
         domain_type: str = "source",
+        is_autoregressive: bool = False,
     ):
         super().__init__()
 
@@ -71,6 +72,7 @@ class HydroLazyDataModule(pl.LightningDataModule):
         self.list_of_gauge_ids_to_process = list_of_gauge_ids_to_process
         self.domain_id = domain_id
         self.domain_type = domain_type
+        self.is_autoregressive = is_autoregressive
 
         # Post initialization
         self.quality_report = {}
@@ -96,6 +98,7 @@ class HydroLazyDataModule(pl.LightningDataModule):
                 )
             )
             .bind(lambda _: self._validate_train_val_test_prop())
+            .bind(lambda _: self._validate_target_not_in_forcing_features())
         )
 
         if not is_successful(validation_result):
@@ -182,6 +185,19 @@ class HydroLazyDataModule(pl.LightningDataModule):
             f"Training, validation, and test proportions must sum to 1. Current sum: {total_prop}"
         )
 
+    def _validate_target_not_in_forcing_features(self) -> Result[None, str]:
+        """
+        Validates that the target variable is not included in the forcing features.
+
+        Returns:
+            Success(None) if valid, Failure(str) with error message otherwise.
+        """
+        if self.target in self.forcing_features:
+            return Failure(
+                f"Target variable '{self.target}' should not be included in forcing features."
+            )
+        return Success(None)
+
     def prepare_data(self):
         """
         Process the data, apply preprocessing, and create index entries.
@@ -189,9 +205,6 @@ class HydroLazyDataModule(pl.LightningDataModule):
         """
 
         required_columns = list(dict.fromkeys(self.forcing_features + [self.target]))
-
-        # DEBUG
-        print(f"Required columns: {required_columns}")
 
         results = run_hydro_processor(
             path_to_time_series_directory=self.path_to_time_series_directory,
@@ -215,13 +228,6 @@ class HydroLazyDataModule(pl.LightningDataModule):
         self.processed_static_attributes_dir = results[
             "processed_static_attributes_dir"
         ]
-
-        # DEBUG
-        print(f"Fitted pipelines: {self.fitted_pipelines}")
-        print(f"Processed time series directory: {self.processed_time_series_dir}")
-        print(
-            f"Processed static attributes directory: {self.processed_static_attributes_dir}"
-        )
 
         # Create index entries with explicit split proportions
         self.index_entries = create_index_entries(
@@ -270,6 +276,7 @@ class HydroLazyDataModule(pl.LightningDataModule):
             "group_identifier": self.group_identifier,
             "domain_id": self.domain_id,
             "domain_type": self.domain_type,
+            "is_autoregressive": self.is_autoregressive,
         }
 
         # Create datasets based on stage

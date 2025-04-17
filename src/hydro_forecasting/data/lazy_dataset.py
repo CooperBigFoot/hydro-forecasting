@@ -20,6 +20,7 @@ class HydroLazyDataset(Dataset):
         group_identifier: str = "gauge_id",
         domain_id: str = "source",
         domain_type: str = "source",  # Either 'source' or 'target'
+        is_autoregressive: bool = False,  # New parameter
     ):
         """Initialize the lazy dataset with precomputed index entries.
 
@@ -33,6 +34,7 @@ class HydroLazyDataset(Dataset):
             group_identifier: Column name identifying the grouping variable
             domain_id: Specific identifier for the domain (e.g., "CH", "US")
             domain_type: General type of domain - "source" or "target"
+            is_autoregressive: If True, include past target values in input features
         """
         self.batch_index_entries = batch_index_entries
         self.target = target
@@ -43,12 +45,22 @@ class HydroLazyDataset(Dataset):
         self.group_identifier = group_identifier
         self.domain_id = domain_id
         self.domain_type = domain_type
+        self.is_autoregressive = is_autoregressive  # Store the new parameter
 
-        # Determine forcing indices (all features except target)
-        self.features = [self.target] + [
-            f for f in forcing_features if f != self.target
-        ]
-        self.forcing_indices = [i for i, f in enumerate(self.features) if f != target]
+        # Determine forcing indices (all features except target) if not autoregressive
+        if not self.is_autoregressive:
+            self.features = [self.target] + [
+                f for f in forcing_features if f != self.target
+            ]
+            self.forcing_indices = [
+                i for i, f in enumerate(self.features) if f != target
+            ]
+        else:
+            # For autoregressive models, include all features including target
+            self.features = [self.target] + [
+                f for f in forcing_features if f != self.target
+            ]
+            self.forcing_indices = list(range(len(self.features)))
 
     def __len__(self):
         return len(self.batch_index_entries)
