@@ -198,7 +198,7 @@ def split_data(
         n_valid = len(valid_data)
 
         if n_valid == 0:
-            print(f"Warning: Basin {gauge_id} has no valid points, skipping")
+            print(f"WARNING: Basin {gauge_id} has no valid points, skipping")
             continue
 
         train_size = int(n_valid * config.train_prop)
@@ -631,7 +631,7 @@ def load_all_basins(
             df[config.group_identifier] = basin_file.stem  # Ensure gauge_id is set
             all_data.append(df)
         except Exception as e:
-            print(f"Error loading {basin_file}: {str(e)}")
+            print(f"ERROR: Error loading {basin_file}: {str(e)}")
 
     if not all_data:
         raise ValueError("Failed to load any basin files")
@@ -661,16 +661,16 @@ def load_static_attributes(
         DataFrame with merged static attributes or None if no files found
     """
     if not path_to_static_attributes_directory.exists():
-        print(f"Static directory {path_to_static_attributes_directory} not found")
+        print(f"ERROR: Static directory {path_to_static_attributes_directory} not found")
         return None
 
     if gauge_id_prefix is None and list_of_gauge_ids_to_process:
         first_id = list_of_gauge_ids_to_process[0]
         if "_" in first_id:
             gauge_id_prefix = first_id.split("_")[0]
-            print(f"Extracted gauge ID prefix: {gauge_id_prefix}")
+            print(f"INFO: Extracted gauge ID prefix: {gauge_id_prefix}")
         else:
-            print("Could not extract gauge ID prefix from basin IDs")
+            print("WARNING: Could not extract gauge ID prefix from basin IDs")
             return None
 
     if gauge_id_prefix is None:
@@ -682,7 +682,7 @@ def load_static_attributes(
             parts = filename.split("_")
             if len(parts) >= 3:
                 gauge_id_prefix = parts[2]
-                print(f"Inferred gauge ID prefix: {gauge_id_prefix}")
+                print(f"INFO: Inferred gauge ID prefix: {gauge_id_prefix}")
 
     basin_id_set = (
         set(list_of_gauge_ids_to_process) if list_of_gauge_ids_to_process else None
@@ -694,11 +694,11 @@ def load_static_attributes(
         file_path = path_to_static_attributes_directory / filename
 
         if not file_path.exists():
-            print(f"Attribute file {filename} not found")
+            print(f"WARNING: Attribute file {filename} not found")
             return None
 
         try:
-            print(f"Loading {file_type} attributes from {file_path}")
+            print(f"INFO: Loading {file_type} attributes from {file_path}")
             df = pd.read_parquet(file_path, engine="pyarrow")
             if "gauge_id" in df.columns:
                 df["gauge_id"] = df["gauge_id"].astype(str)
@@ -707,7 +707,7 @@ def load_static_attributes(
             df.set_index("gauge_id", inplace=True)
             return df
         except Exception as e:
-            print(f"Error loading {filename}: {str(e)}")
+            print(f"ERROR: Error loading {filename}: {str(e)}")
             return None
 
     caravan_df = load_attribute_file("caravan")
@@ -721,12 +721,12 @@ def load_static_attributes(
         dfs.append(other_df)
 
     if dfs:
-        print(f"Merging {len(dfs)} attribute DataFrames")
+        print(f"INFO: Merging {len(dfs)} attribute DataFrames")
         merged_df = pd.concat(dfs, axis=1, join="outer").reset_index()
-        print(f"Loaded static attributes for {len(merged_df)} basins")
+        print(f"INFO: Loaded static attributes for {len(merged_df)} basins")
         return merged_df
     else:
-        print("No static attribute files found or loaded")
+        print("WARNING: No static attribute files found or loaded")
         return None
 
 
@@ -765,6 +765,7 @@ def run_hydro_processor(
     Returns:
         ProcessingResult containing quality report, fitted pipelines, and processed directories
     """
+    print("\n================ STARTING PREPROCESSING PIPELINE ================")
     config = Config(
         required_columns=required_columns,
         preprocessing_config=preprocessing_config,
@@ -794,10 +795,11 @@ def run_hydro_processor(
     basin_files = list(path_to_time_series_directory_path.glob("*.parquet"))
     if list_of_gauge_ids_to_process:
         basin_files = [f for f in basin_files if f.stem in list_of_gauge_ids_to_process]
-    print(f"Found {len(basin_files)} basin files")
+    print("\n================ LOADING BASIN DATA ================")
+    print(f"INFO: Found {len(basin_files)} basin files")
 
     if not basin_files:
-        print("No parquet files found in input directory")
+        print("ERROR: No parquet files found in input directory")
         return None
 
     list_of_gauge_ids_to_process = [basin_file.stem for basin_file in basin_files]
@@ -817,22 +819,23 @@ def run_hydro_processor(
     fitted_pipelines = {}
 
     if preprocessing_config:
-        print("Fitting preprocessing pipelines on all basins...")
+        print("\n================ FITTING PREPROCESSING PIPELINES ================")
+        print(f"INFO: Loading data from {len(basin_files)} basins for pipeline fitting")
         try:
             sample_data = load_all_basins(path_to_time_series_directory_path, config)
 
             # DEBUG
-            print(f"Found following uniquwe columns in sample data: {sample_data.columns.tolist()}")
+            print(f"INFO: Unique columns in sample data: {sample_data.columns.tolist()}")
 
-            print(f"Loaded {len(basin_files)} basins for pipeline fitting")
+            print(f"INFO: Loaded {len(basin_files)} basins for pipeline fitting")
             train_df, val_df, test_df = split_data(sample_data, config)
             print(
-                f"Split data into train ({len(train_df)} rows), val ({len(val_df)} rows), test ({len(test_df)} rows)"
+                f"INFO: Split into train ({len(train_df)}), val ({len(val_df)}), test ({len(test_df)})"
             )
             fitted_pipelines = fit_pipelines(train_df, sample_data, static_df, config)
-            print(f"Fitted {len(fitted_pipelines)} pipelines")
+            print(f"INFO: Fitted {len(fitted_pipelines)} pipelines")
         except Exception as e:
-            print(f"Error during pipeline fitting: {str(e)}")
+            print(f"ERROR: Error during pipeline fitting: {str(e)}")
 
     quality_report = process_basins_parallel(
         basin_files, config, processed_dir, reports_dir, fitted_pipelines, processes
@@ -840,7 +843,8 @@ def run_hydro_processor(
 
     # Process static attributes using the extended apply_transformations function
     if static_df is not None and "static" in fitted_pipelines:
-        print("Processing static attributes...")
+        print("\n================ PROCESSING STATIC ATTRIBUTES ================")
+        print("INFO: Processing static attributes...")
         # Only keep static attributes for retained basins
         retained_basins = [
             basin_id
@@ -856,7 +860,7 @@ def run_hydro_processor(
         )
         transformed_static.to_parquet(output_file)
         print(
-            f"Saved transformed static attributes for {len(transformed_static)} basins to {output_file}"
+            f"SUCCESS: Saved transformed static attributes for {len(transformed_static)} basins to {output_file}"
         )
 
     with open(
@@ -873,14 +877,11 @@ def run_hydro_processor(
     ) as f:
         json.dump(pipeline_info, f, indent=2)
 
-    print(
-        f"Processing complete. {quality_report['retained_basins']} basins retained out of {quality_report['original_basins']}."
-    )
+    print("\n================ PROCESSING SUMMARY ================\n"
+          f"SUCCESS: Completed processing {quality_report['retained_basins']} of {quality_report['original_basins']} basins")
 
     if quality_report["excluded_basins"]:
-        print(
-            f"{len(quality_report['excluded_basins'])} basins excluded due to quality issues."
-        )
+        print(f"WARNING: {len(quality_report['excluded_basins'])} basins excluded due to quality issues")
 
     return {
         "quality_report": quality_report,

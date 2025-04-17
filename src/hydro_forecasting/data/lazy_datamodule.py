@@ -317,8 +317,8 @@ class HydroLazyDataModule(pl.LightningDataModule):
                 **common_args,
             )
 
-            print(f"Created training dataset with {len(self.train_dataset)} samples")
-            print(f"Created validation dataset with {len(self.val_dataset)} samples")
+            print(f"INFO: Created training dataset with {len(self.train_dataset)} samples")
+            print(f"INFO: Created validation dataset with {len(self.val_dataset)} samples")
 
         if stage == "test" or stage is None:
             # Update static_file_path in each index entry
@@ -330,7 +330,7 @@ class HydroLazyDataModule(pl.LightningDataModule):
                 **common_args,
             )
 
-            print(f"Created test dataset with {len(self.test_dataset)} samples")
+            print(f"INFO: Created test dataset with {len(self.test_dataset)} samples")
 
     def train_dataloader(self) -> DataLoader:
         """
