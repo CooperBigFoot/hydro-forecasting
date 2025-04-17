@@ -244,6 +244,10 @@ class HydroLazyDataModule(pl.LightningDataModule):
             index_entries=self.index_entries,
         )
 
+        self.train_index_entries = self.index_entries_by_stage["train"]
+        self.val_index_entries = self.index_entries_by_stage["val"]
+        self.test_index_entries = self.index_entries_by_stage["test"]
+
     def setup(self, stage: Optional[str] = None):
         """
         Create datasets for training, validation, and testing.
