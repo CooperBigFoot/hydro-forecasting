@@ -1,25 +1,21 @@
+# TODO: Use python 3.12 type hints and implement ROP
+
 import numpy as np
 import pandas as pd
 from pathlib import Path
+from typing import Dict, List, Optional, Tuple, Union
 from .preprocessing import split_data, Config
 
-# Config is only needed for splitting data. Not the cleanest approach but such is life
+
+# Using a default config without immediate validation
+# We'll validate within the functions when they're actually called
 SPLIT_CONFIG = Config(
     required_columns=[""],  # Can stay empty
     preprocessing_config={},  # Can stay empty
-    train_prop=-1,
-    val_prop=-1,
-    test_prop=-1,
+    train_prop=0.6,  # Default values that will be overridden
+    val_prop=0.2,
+    test_prop=0.2,
 )
-
-if (
-    SPLIT_CONFIG.train_prop == -1
-    or SPLIT_CONFIG.val_prop == -1
-    or SPLIT_CONFIG.test_prop == -1
-):
-    raise ValueError(
-        "The train, val, and test proportions must be set in the SPLIT_CONFIG."
-    )
 
 
 def load_gauge_parquet(
@@ -160,6 +156,9 @@ def create_index_entries(
     time_series_base_dir: Path,
     input_length: int,
     output_length: int,
+    train_prop: float = None,
+    val_prop: float = None,
+    test_prop: float = None,
 ):
     """
     Create index entries for valid sequences, identifying which stage (train/val/test) each sequence belongs to.
@@ -167,16 +166,44 @@ def create_index_entries(
     Args:
         gauge_ids: List of gauge IDs to process
         time_series_base_dir: Base directory containing parquet files
-        static_file_path: Path to static attributes file
         input_length: Length of input sequence
         output_length: Length of forecast horizon
+        train_prop: Proportion of data for training (optional, uses SPLIT_CONFIG if None)
+        val_prop: Proportion of data for validation (optional, uses SPLIT_CONFIG if None)
+        test_prop: Proportion of data for testing (optional, uses SPLIT_CONFIG if None)
 
     Returns:
         List of index entries with stage identification
     """
     valid_data = load_gauge_parquet(gauge_ids, time_series_base_dir)
 
-    train, val, test = split_data(df=valid_data, config=SPLIT_CONFIG)
+    # Create a local config that either uses provided values or falls back to SPLIT_CONFIG
+    local_config = Config(
+        required_columns=SPLIT_CONFIG.required_columns,
+        preprocessing_config=SPLIT_CONFIG.preprocessing_config,
+        train_prop=train_prop if train_prop is not None else SPLIT_CONFIG.train_prop,
+        val_prop=val_prop if val_prop is not None else SPLIT_CONFIG.val_prop,
+        test_prop=test_prop if test_prop is not None else SPLIT_CONFIG.test_prop,
+    )
+
+    # Validate the split proportions
+    if (
+        local_config.train_prop <= 0
+        or local_config.val_prop <= 0
+        or local_config.test_prop <= 0
+    ):
+        raise ValueError(
+            "The train, val, and test proportions must be positive values."
+        )
+
+    # Sum should be close to 1.0 (allow for minor floating point imprecision)
+    sum_props = local_config.train_prop + local_config.val_prop + local_config.test_prop
+    if abs(sum_props - 1.0) > 1e-10:
+        raise ValueError(
+            f"The sum of train, val, and test proportions must be 1.0, got {sum_props:.10f}"
+        )
+
+    train, val, test = split_data(df=valid_data, config=local_config)
 
     # Get split boundaries for each gauge
     split_boundaries = get_split_boundaries(train, val, test, gauge_ids)

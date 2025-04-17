@@ -1,9 +1,13 @@
 import pytorch_lightning as pl
 from pathlib import Path
 from typing import Union, Optional
+from torch.utils.data import DataLoader
 from returns.result import Result, Success, Failure
+from returns.pipeline import is_successful
+import math
 
 from sklearn.pipeline import Pipeline
+from .lazy_dataset import HydroLazyDataset
 from .preprocessing import run_hydro_processor
 from .index_entry_creator import (
     SPLIT_CONFIG,
@@ -25,7 +29,7 @@ class HydroLazyDataModule(pl.LightningDataModule):
         path_to_preprocessing_output_directory: Union[str, Path],
         group_identifier: str,
         batch_size: int,
-        input_lenght: int,
+        input_length: int,
         output_length: int,
         forcing_features: list[str],
         static_features: list[str],
@@ -38,6 +42,8 @@ class HydroLazyDataModule(pl.LightningDataModule):
         test_prop: float,
         max_imputation_gap_size: int,
         list_of_gauge_ids_to_process: Optional[list[str]] = None,
+        domain_id: str = "source",
+        domain_type: str = "source",
     ):
         super().__init__()
 
@@ -50,7 +56,7 @@ class HydroLazyDataModule(pl.LightningDataModule):
         )
         self.group_identifier = group_identifier
         self.batch_size = batch_size
-        self.input_length = input_lenght
+        self.input_length = input_length
         self.output_length = output_length
         self.forcing_features = forcing_features
         self.static_features = static_features
@@ -63,6 +69,8 @@ class HydroLazyDataModule(pl.LightningDataModule):
         self.test_prop = test_prop
         self.max_imputation_gap_size = max_imputation_gap_size
         self.list_of_gauge_ids_to_process = list_of_gauge_ids_to_process
+        self.domain_id = domain_id
+        self.domain_type = domain_type
 
         # Post initialization
         self.quality_report = {}
@@ -71,6 +79,27 @@ class HydroLazyDataModule(pl.LightningDataModule):
         self.processed_static_attributes_dir = Path("")
         self.index_entries = []
         self.index_entries_by_stage = {}
+        self.train_index_entries = []
+        self.val_index_entries = []
+        self.test_index_entries = []
+
+        # Dataset instances created in setup
+        self.train_dataset = None
+        self.val_dataset = None
+        self.test_dataset = None
+
+        validation_result = (
+            Success(None)
+            .bind(
+                lambda _: self._validate_preprocessing_config(
+                    self.preprocessing_configs
+                )
+            )
+            .bind(lambda _: self._validate_train_val_test_prop())
+        )
+
+        if not is_successful(validation_result):
+            raise ValueError(f"Validation failed: {validation_result.failure()}")
 
     def _validate_preprocessing_config(
         self, config: dict[str, dict[str, object]]
@@ -88,7 +117,7 @@ class HydroLazyDataModule(pl.LightningDataModule):
         required_pipeline_keys = ["columns"]
 
         for data_type, cfg in config.items():
-            missing = [k for k in required_keys if k not in cfg]
+            missing = [k for k in required_keys if k not in ["static_features"]]
             if missing:
                 return Failure(f"Missing required keys {missing} in {data_type} config")
 
@@ -117,7 +146,7 @@ class HydroLazyDataModule(pl.LightningDataModule):
                     )
 
             result = self._validate_pipeline_compatibility(pipeline)
-            if result.is_failure:
+            if not is_successful(result):
                 return result
 
         return Success(None)
@@ -146,11 +175,29 @@ class HydroLazyDataModule(pl.LightningDataModule):
                 )
         return Success(None)
 
+    def _validate_train_val_test_prop(self) -> Result[None, str]:
+        """
+        Validates the training, validation, and test proportions.
+
+        Returns:
+            Success(None) if valid, Failure(str) with error message otherwise.
+        """
+        total_prop = math.fsum([self.train_prop, self.val_prop, self.test_prop])
+        if math.isclose(total_prop, 1.0, abs_tol=1e-6):
+            return Success(None)
+        return Failure(
+            f"Training, validation, and test proportions must sum to 1. Current sum: {total_prop}"
+        )
+
     def prepare_data(self):
+        """
+        Process the data, apply preprocessing, and create index entries.
+        This method is called only once on a single GPU.
+        """
         results = run_hydro_processor(
             path_to_time_series_directory=self.path_to_time_series_directory,
-            path_to_static_attributes_directory=self.path_to_static_attributes_directory,
             path_to_preprocessing_output_directory=self.path_to_preprocessing_output_directory,
+            path_to_static_attributes_directory=self.path_to_static_attributes_directory,
             required_columns=self.forcing_features + [self.target],
             preprocessing_config=self.preprocessing_configs,
             min_train_years=self.min_train_years,
@@ -170,28 +217,143 @@ class HydroLazyDataModule(pl.LightningDataModule):
             "processed_static_attributes_dir"
         ]
 
-        # Update the global SPLIT_CONFIG with the current instance's properties
-        SPLIT_CONFIG.train_prop = self.train_prop
-        SPLIT_CONFIG.val_prop = self.val_prop
-        SPLIT_CONFIG.test_prop = self.test_prop
-
+        # Create index entries with explicit split proportions
         self.index_entries = create_index_entries(
             gauge_ids=self.list_of_gauge_ids_to_process,
             time_series_base_dir=self.processed_time_series_dir,
             input_length=self.input_length,
             output_length=self.output_length,
+            train_prop=self.train_prop,
+            val_prop=self.val_prop,
+            test_prop=self.test_prop,
         )
 
         self.index_entries_by_stage = split_index_entries_by_stage(
             index_entries=self.index_entries,
         )
-        pass
 
-    def setup(self, stage=None):
-        # Create the train, val, and test datasets
+    def setup(self, stage: Optional[str] = None):
+        """
+        Create datasets for training, validation, and testing.
+
+        This method is called by PyTorch Lightning to set up datasets
+        for each stage of training.
+
+        Args:
+            stage: Stage of training ('fit', 'validate', 'test', or None for all)
+        """
+        # Ensure prepare_data has been called
+        if (
+            not hasattr(self, "processed_time_series_dir")
+            or not self.processed_time_series_dir
+        ):
+            raise RuntimeError("prepare_data() must be called before setup()")
+
+        # Get the path to static attributes file
+        static_file_path = (
+            self.processed_static_attributes_dir / "static_attributes.parquet"
+        )
+
+        # Common dataset arguments
+        common_args = {
+            "target": self.target,
+            "forcing_features": self.forcing_features,
+            "static_features": self.static_features,
+            "input_length": self.input_length,
+            "output_length": self.output_length,
+            "group_identifier": self.group_identifier,
+            "domain_id": self.domain_id,
+            "domain_type": self.domain_type,
+        }
+
+        # Create datasets based on stage
         if stage == "fit" or stage is None:
-            self.train_dataset = ...
-            self.val_dataset = ...
+            # Update static_file_path in each index entry
+            for entry in self.train_index_entries:
+                entry["static_file_path"] = static_file_path
+
+            self.train_dataset = HydroLazyDataset(
+                batch_index_entries=self.train_index_entries,
+                **common_args,
+            )
+
+            # Update static_file_path in each index entry
+            for entry in self.val_index_entries:
+                entry["static_file_path"] = static_file_path
+
+            self.val_dataset = HydroLazyDataset(
+                batch_index_entries=self.val_index_entries,
+                **common_args,
+            )
+
+            print(f"Created training dataset with {len(self.train_dataset)} samples")
+            print(f"Created validation dataset with {len(self.val_dataset)} samples")
 
         if stage == "test" or stage is None:
-            self.test_dataset = ...
+            # Update static_file_path in each index entry
+            for entry in self.test_index_entries:
+                entry["static_file_path"] = static_file_path
+
+            self.test_dataset = HydroLazyDataset(
+                batch_index_entries=self.test_index_entries,
+                **common_args,
+            )
+
+            print(f"Created test dataset with {len(self.test_dataset)} samples")
+
+    def train_dataloader(self) -> DataLoader:
+        """
+        Create the training data loader.
+
+        Returns:
+            DataLoader for the training dataset
+        """
+        if self.train_dataset is None:
+            raise RuntimeError("setup() must be called before train_dataloader()")
+
+        return DataLoader(
+            self.train_dataset,
+            batch_size=self.batch_size,
+            shuffle=True,  # Shuffle training data
+            num_workers=self.num_workers,
+            pin_memory=True,
+            persistent_workers=True if self.num_workers > 0 else False,
+        )
+
+    def val_dataloader(self) -> DataLoader:
+        """
+        Create the validation data loader.
+
+        Returns:
+            DataLoader for the validation dataset
+        """
+        if self.val_dataset is None:
+            raise RuntimeError("setup() must be called before val_dataloader()")
+
+        return DataLoader(
+            self.val_dataset,
+            batch_size=self.batch_size,
+            shuffle=False,  # Don't shuffle validation data
+            num_workers=self.num_workers,
+            pin_memory=True,
+            persistent_workers=True if self.num_workers > 0 else False,
+        )
+
+    def test_dataloader(self) -> DataLoader:
+        """
+        Create the test data loader.
+
+        Returns:
+            DataLoader for the test dataset
+        """
+        if self.test_dataset is None:
+            raise RuntimeError("setup() must be called before test_dataloader()")
+
+        return DataLoader(
+            self.test_dataset,
+            batch_size=self.batch_size,
+            shuffle=False,  # Don't shuffle test data
+            num_workers=self.num_workers,
+            pin_memory=True,
+            persistent_workers=True if self.num_workers > 0 else False,
+        )
