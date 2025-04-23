@@ -153,6 +153,7 @@ def determine_stage(input_end_date, boundaries):
 def create_index_entries(
     gauge_ids: list[str],
     time_series_base_dir: Path,
+    static_file_path: Path,
     input_length: int,
     output_length: int,
     train_prop: float = None,
@@ -165,6 +166,7 @@ def create_index_entries(
     Args:
         gauge_ids: List of gauge IDs to process
         time_series_base_dir: Base directory containing parquet files
+        static_file_path: Path to the unified processed static attributes file
         input_length: Length of input sequence
         output_length: Length of forecast horizon
         train_prop: Proportion of data for training (optional, uses SPLIT_CONFIG if None)
@@ -245,6 +247,7 @@ def create_index_entries(
                 "input_end_date": input_end_date,
                 "valid_sequence": True,
                 "stage": stage,
+                "static_file_path": str(static_file_path),
             }
 
             all_index_entries.append(entry)

@@ -1,5 +1,4 @@
 # TODO: Implement Railway Oriented Programming
-# TODO: Fix Print Statements
 
 import json
 import duckdb
@@ -520,50 +519,59 @@ def process_basin(
 
 
 def process_basin_worker(
-    args: Tuple[Path, Config, Path, Path, Dict],
-) -> Tuple[str, bool, Optional[str], Optional[BasinQualityReport]]:
+    args: tuple,
+) -> tuple[str, bool, Optional[str], Optional[BasinQualityReport]]:
     """
     Worker function for parallel basin processing.
 
     Args:
-        args: Tuple containing (basin_file, config, path_to_preprocessing_output_directory, reports_dir, fitted_pipelines)
+        args: Tuple containing (gauge_id, config, region_time_series_base_dirs, processed_dir, reports_dir, fitted_pipelines)
 
     Returns:
-        Tuple containing basin_id, success flag, error message, and basin report
+        Tuple containing gauge_id, success flag, error message, and basin report
     """
     (
-        basin_file,
+        gauge_id,
         config,
-        path_to_preprocessing_output_directory,
+        region_time_series_base_dirs,
+        processed_dir,
         reports_dir,
         fitted_pipelines,
     ) = args
+    prefix = gauge_id.split("_")[0]
+    base_dir = region_time_series_base_dirs.get(prefix)
+    if base_dir is None:
+        return gauge_id, False, f"No base directory for region prefix '{prefix}'", None
+    basin_file = Path(base_dir) / f"{gauge_id}.parquet"
+    if not basin_file.exists():
+        return gauge_id, False, f"File {basin_file} does not exist", None
     success, error_msg, basin_report = process_basin(
         basin_file,
         config,
-        path_to_preprocessing_output_directory,
+        processed_dir,
         reports_dir,
         fitted_pipelines,
     )
-    basin_id = basin_file.stem
-    return basin_id, success, error_msg, basin_report
+    return gauge_id, success, error_msg, basin_report
 
 
 def process_basins_parallel(
-    basin_files: List[Path],
+    list_of_gauge_ids_to_process: list[str],
     config: Config,
-    path_to_preprocessing_output_directory: Path,
+    region_time_series_base_dirs: dict[str, Path],
+    processed_dir: Path,
     reports_dir: Path,
-    fitted_pipelines: Dict[str, Union[Pipeline, GroupedPipeline]],
+    fitted_pipelines: dict,
     num_processes: int,
 ) -> QualityReport:
     """
-    Process multiple basin files in parallel.
+    Process multiple basin files in parallel, supporting multi-region.
 
     Args:
-        basin_files: List of paths to basin parquet files
+        list_of_gauge_ids_to_process: List of gauge IDs to process
         config: Configuration parameters
-        path_to_preprocessing_output_directory: Directory to save processed data
+        region_time_series_base_dirs: Mapping from region prefix to base directory
+        processed_dir: Directory to save processed data
         reports_dir: Directory to save quality reports
         fitted_pipelines: Dictionary of fitted pipeline instances
         num_processes: Number of parallel processes to use
@@ -572,7 +580,7 @@ def process_basins_parallel(
         Overall quality report
     """
     quality_report: QualityReport = {
-        "original_basins": len(basin_files),
+        "original_basins": len(list_of_gauge_ids_to_process),
         "retained_basins": 0,
         "excluded_basins": {},
         "basins": {},
@@ -581,28 +589,29 @@ def process_basins_parallel(
 
     args_list = [
         (
-            basin_file,
+            gauge_id,
             config,
-            path_to_preprocessing_output_directory,
+            region_time_series_base_dirs,
+            processed_dir,
             reports_dir,
             fitted_pipelines,
         )
-        for basin_file in basin_files
+        for gauge_id in list_of_gauge_ids_to_process
     ]
 
     with mp.Pool(processes=num_processes) as pool:
         results = list(
             tqdm(
                 pool.imap(process_basin_worker, args_list),
-                total=len(basin_files),
+                total=len(args_list),
                 desc="Processing basins",
             )
         )
 
-    for basin_id, success, error_msg, basin_report in results:
-        quality_report["basins"][basin_id] = basin_report
+    for gauge_id, success, error_msg, basin_report in results:
+        quality_report["basins"][gauge_id] = basin_report
         if not success:
-            quality_report["excluded_basins"][basin_id] = error_msg
+            quality_report["excluded_basins"][gauge_id] = error_msg
         else:
             quality_report["retained_basins"] += 1
 
@@ -610,134 +619,113 @@ def process_basins_parallel(
 
 
 def load_all_basins(
-    path_to_time_series_directory: Path, config: Config
+    region_time_series_base_dirs: dict[str, Path],
+    config: Config,
+    list_of_gauge_ids_to_process: list[str],
 ) -> pd.DataFrame:
     """
-    Load all basin files to create training data for fitting pipelines.
+    Load all basin files from multiple regions to create training data for fitting pipelines.
 
     Args:
-        path_to_time_series_directory: Directory containing parquet files
+        region_time_series_base_dirs: Mapping from region prefix to directory containing parquet files
         config: Configuration parameters
+        list_of_gauge_ids_to_process: List of gauge IDs to process
 
     Returns:
         DataFrame containing data from all basins
     """
-    basin_files = list(path_to_time_series_directory.glob("*.parquet"))
-    if not basin_files:
-        raise ValueError("No parquet files found in input directory")
-
     all_data = []
-    for basin_file in tqdm(basin_files, desc="Loading basin data for fitting"):
+    for gauge_id in list_of_gauge_ids_to_process:
+        prefix = gauge_id.split("_")[0]
+        base_dir = region_time_series_base_dirs.get(prefix)
+        if base_dir is None:
+            print(f"WARNING: No base directory for region prefix '{prefix}' (gauge {gauge_id})")
+            continue
+        file_path = Path(base_dir) / f"{gauge_id}.parquet"
+        if not file_path.exists():
+            print(f"WARNING: File {file_path} does not exist for gauge {gauge_id}")
+            continue
         try:
-            df = pd.read_parquet(basin_file)
-            df[config.group_identifier] = basin_file.stem  # Ensure gauge_id is set
+            df = pd.read_parquet(file_path)
+            df[config.group_identifier] = gauge_id
             all_data.append(df)
         except Exception as e:
-            print(f"ERROR: Error loading {basin_file}: {str(e)}")
-
+            print(f"ERROR: Error loading {file_path}: {str(e)}")
     if not all_data:
         raise ValueError("Failed to load any basin files")
-
     return pd.concat(all_data, ignore_index=True)
 
 
 def load_static_attributes(
-    path_to_static_attributes_directory: Path,
-    gauge_id_prefix: str = None,
-    list_of_gauge_ids_to_process: List[str] = None,
+    region_static_attributes_base_dirs: dict[str, Path],
+    list_of_gauge_ids_to_process: list[str],
 ) -> Optional[pd.DataFrame]:
     """
-    Load static attribute data from multiple parquet files.
-
-    Looks for three types of attribute files:
-    - attributes_caravan_{gauge_id_prefix}.parquet
-    - attributes_hydroatlas_{gauge_id_prefix}.parquet
-    - attributes_other_{gauge_id_prefix}.parquet
+    Load and merge static attribute data from multiple regions vertically.
 
     Args:
-        path_to_static_attributes_directory: Directory containing static attribute files
-        gauge_id_prefix: Prefix for gauge IDs (e.g., "CA" for Canadian basins)
-        list_of_gauge_ids_to_process: Optional list of basin IDs to filter attributes for
+        region_static_attributes_base_dirs: Mapping from region prefix to static attribute directory
+        list_of_gauge_ids_to_process: List of gauge IDs to process
 
     Returns:
-        DataFrame with merged static attributes or None if no files found
+        DataFrame with merged static attributes for all gauges, or None if none found
     """
-    if not path_to_static_attributes_directory.exists():
-        print(f"ERROR: Static directory {path_to_static_attributes_directory} not found")
+    if not list_of_gauge_ids_to_process:
+        print("WARNING: No gauge IDs provided for static attribute loading")
         return None
 
-    if gauge_id_prefix is None and list_of_gauge_ids_to_process:
-        first_id = list_of_gauge_ids_to_process[0]
-        if "_" in first_id:
-            gauge_id_prefix = first_id.split("_")[0]
-            print(f"INFO: Extracted gauge ID prefix: {gauge_id_prefix}")
-        else:
-            print("WARNING: Could not extract gauge ID prefix from basin IDs")
-            return None
+    region_to_gauges = {}
+    for gid in list_of_gauge_ids_to_process:
+        prefix = gid.split("_")[0]
+        region_to_gauges.setdefault(prefix, []).append(gid)
 
-    if gauge_id_prefix is None:
-        parquet_files = list(
-            path_to_static_attributes_directory.glob("attributes_*.parquet")
-        )
-        if parquet_files:
-            filename = parquet_files[0].stem
-            parts = filename.split("_")
-            if len(parts) >= 3:
-                gauge_id_prefix = parts[2]
-                print(f"INFO: Inferred gauge ID prefix: {gauge_id_prefix}")
-
-    basin_id_set = (
-        set(list_of_gauge_ids_to_process) if list_of_gauge_ids_to_process else None
-    )
     dfs = []
-
-    def load_attribute_file(file_type: str) -> Optional[pd.DataFrame]:
-        filename = f"attributes_{file_type}_{gauge_id_prefix}.parquet"
-        file_path = path_to_static_attributes_directory / filename
-
-        if not file_path.exists():
-            print(f"WARNING: Attribute file {filename} not found")
-            return None
-
-        try:
-            print(f"INFO: Loading {file_type} attributes from {file_path}")
-            df = pd.read_parquet(file_path, engine="pyarrow")
-            if "gauge_id" in df.columns:
+    loaded_files_count = 0
+    for region, gauges in region_to_gauges.items():
+        static_dir = region_static_attributes_base_dirs.get(region)
+        if static_dir is None:
+            print(f"WARNING: No static attribute directory for region '{region}'")
+            continue
+        # Try all three types for this region
+        for file_type in ["caravan", "hydroatlas", "other"]:
+            filename = f"attributes_{file_type}_{region}.parquet"
+            file_path = Path(static_dir) / filename
+            if not file_path.exists():
+                continue
+            try:
+                df = pd.read_parquet(file_path, engine="pyarrow")
+                if "gauge_id" not in df.columns:
+                    print(f"WARNING: 'gauge_id' column missing in {file_path}, skipping.")
+                    continue
                 df["gauge_id"] = df["gauge_id"].astype(str)
-            if basin_id_set:
-                df = df[df["gauge_id"].isin(basin_id_set)]
-            df.set_index("gauge_id", inplace=True)
-            return df
-        except Exception as e:
-            print(f"ERROR: Error loading {filename}: {str(e)}")
-            return None
-
-    caravan_df = load_attribute_file("caravan")
-    if caravan_df is not None:
-        dfs.append(caravan_df)
-    hydroatlas_df = load_attribute_file("hydroatlas")
-    if hydroatlas_df is not None:
-        dfs.append(hydroatlas_df)
-    other_df = load_attribute_file("other")
-    if other_df is not None:
-        dfs.append(other_df)
-
+                # Filter for the gauges relevant to this region
+                filtered_df = df[df["gauge_id"].isin(gauges)].copy()
+                if not filtered_df.empty:
+                    dfs.append(filtered_df)
+                    loaded_files_count += 1
+            except Exception as e:
+                print(f"ERROR: Error loading {file_path}: {str(e)}")
     if dfs:
-        print(f"INFO: Merging {len(dfs)} attribute DataFrames")
-        merged_df = pd.concat(dfs, axis=1, join="outer").reset_index()
-        print(f"INFO: Loaded static attributes for {len(merged_df)} basins")
+        # Concatenate vertically, keeping only common columns if desired (join='inner')
+        # Or keep all columns, filling missing with NaN (join='outer')
+        # Using 'outer' to preserve as much info as possible, consistent with previous horizontal merge intent
+        # Using ignore_index=True to create a clean default index
+        merged_df = pd.concat(dfs, axis=0, join="outer", ignore_index=True)
+        # Drop duplicate rows just in case the same gauge appears in multiple files
+        merged_df = merged_df.drop_duplicates(subset=["gauge_id"])
+        print(f"INFO: Loaded static attributes for {len(merged_df)} unique basins from {loaded_files_count} files.")
         return merged_df
     else:
-        print("WARNING: No static attribute files found or loaded")
+        print("WARNING: No static attribute files found or loaded for any region")
         return None
 
 
 def run_hydro_processor(
-    path_to_time_series_directory: Union[str, Path],
+    region_time_series_base_dirs: dict[str, Path],
+    region_static_attributes_base_dirs: dict[str, Path],
     path_to_preprocessing_output_directory: Union[str, Path],
-    required_columns: List[str],
-    preprocessing_config: Optional[Dict[str, Dict[str, Any]]] = None,
-    path_to_static_attributes_directory: Optional[str] = None,
+    required_columns: list[str],
+    preprocessing_config: Optional[dict[str, dict[str, Any]]] = None,
     min_train_years: float = 5.0,
     max_imputation_gap_size: int = 5,
     group_identifier: str = "gauge_id",
@@ -745,17 +733,17 @@ def run_hydro_processor(
     val_prop: float = 0.25,
     test_prop: float = 0.25,
     processes: int = 6,
-    list_of_gauge_ids_to_process: Optional[List[str]] = None,
-) -> ProcessingResult:
+    list_of_gauge_ids_to_process: Optional[list[str]] = None,
+) -> dict:
     """
-    Main function to run the hydrological data processor with pipeline fitting.
+    Main function to run the hydrological data processor with pipeline fitting, supporting multi-region.
 
     Args:
-        path_to_time_series_directory: Directory containing parquet files
+        region_time_series_base_dirs: Mapping from region prefix to time series directory
+        region_static_attributes_base_dirs: Mapping from region prefix to static attribute directory
         path_to_preprocessing_output_directory: Directory for processed parquet files and reports
         required_columns: List of required data columns for quality checking
         preprocessing_config: Configuration for data preprocessing pipelines
-        path_to_static_attributes_directory: Optional directory containing static attribute files
         min_train_years: Minimum required years for training
         max_imputation_gap_size: Maximum gap length to impute with interpolation
         group_identifier: Column name identifying the basin
@@ -763,9 +751,10 @@ def run_hydro_processor(
         val_prop: Proportion of data for validation
         test_prop: Proportion of data for testing
         processes: Number of parallel processes to use
-        list_of_gauge_ids_to_process: Optional list of basin (gauge) IDs to process. If None, process all found.
+        list_of_gauge_ids_to_process: List of basin (gauge) IDs to process
+
     Returns:
-        ProcessingResult containing quality report, fitted pipelines, and processed directories
+        Dictionary containing quality report, fitted pipelines, processed data dir, and processed static attributes path
     """
     print("\n================ STARTING PREPROCESSING PIPELINE ================")
     config = Config(
@@ -785,85 +774,106 @@ def run_hydro_processor(
     path_to_preprocessing_output_directory_path.mkdir(parents=True, exist_ok=True)
 
     processed_dir = path_to_preprocessing_output_directory_path / "processed_data"
-    processed_path_to_static_attributes_directory = (
-        path_to_preprocessing_output_directory_path / "processed_static_data"
-    )
-    reports_dir = path_to_preprocessing_output_directory_path / "quality_reports"
     processed_dir.mkdir(exist_ok=True)
-    processed_path_to_static_attributes_directory.mkdir(exist_ok=True)
+    reports_dir = path_to_preprocessing_output_directory_path / "quality_reports"
     reports_dir.mkdir(exist_ok=True)
+    # Define path for processed static attributes, even if none are found initially
+    processed_static_attributes_path = path_to_preprocessing_output_directory_path / "processed_static_data.parquet"
 
-    path_to_time_series_directory_path = Path(path_to_time_series_directory)
-    basin_files = list(path_to_time_series_directory_path.glob("*.parquet"))
-    if list_of_gauge_ids_to_process:
-        basin_files = [f for f in basin_files if f.stem in list_of_gauge_ids_to_process]
-    print("\n================ LOADING BASIN DATA ================")
-    print(f"INFO: Found {len(basin_files)} basin files")
+    if not list_of_gauge_ids_to_process:
+        raise ValueError("No gauge IDs provided for processing")
 
-    if not basin_files:
-        print("ERROR: No parquet files found in input directory")
-        return None
+    print("\n================ LOADING STATIC ATTRIBUTES ================")
+    print(f"INFO: Attempting to load static attributes for {len(list_of_gauge_ids_to_process)} gauge IDs")
 
-    list_of_gauge_ids_to_process = [basin_file.stem for basin_file in basin_files]
+    static_df = load_static_attributes(
+        region_static_attributes_base_dirs, list_of_gauge_ids_to_process
+    )
+    if static_df is not None:
+        print(f"INFO: Successfully loaded static attributes for {len(static_df)} basins.")
+    else:
+        print("INFO: No static attributes found or loaded.")
 
-    static_df = None
-    if path_to_static_attributes_directory:
-        static_path = Path(path_to_static_attributes_directory)
-        gauge_id_prefix = (
-            list_of_gauge_ids_to_process[0].split("_")[0]
-            if "_" in list_of_gauge_ids_to_process[0]
-            else None
-        )
-        static_df = load_static_attributes(
-            static_path, gauge_id_prefix, list_of_gauge_ids_to_process
-        )
 
     fitted_pipelines = {}
 
     if preprocessing_config:
         print("\n================ FITTING PREPROCESSING PIPELINES ================")
-        print(f"INFO: Loading data from {len(basin_files)} basins for pipeline fitting")
         try:
-            sample_data = load_all_basins(path_to_time_series_directory_path, config)
+            # Load time series data only if needed for fitting (features or target pipelines)
+            needs_ts_data = "features" in preprocessing_config or "target" in preprocessing_config
+            sample_data = None
+            if needs_ts_data:
+                print("INFO: Loading time series data for pipeline fitting...")
+                sample_data = load_all_basins(region_time_series_base_dirs, config, list_of_gauge_ids_to_process)
+                print(f"INFO: Loaded time series data for {len(sample_data[config.group_identifier].unique())} basins")
+                train_df, val_df, test_df = split_data(sample_data, config)
+                print(
+                    f"INFO: Split time series data into train ({len(train_df)}), val ({len(val_df)}), test ({len(test_df)})"
+                )
+            else:
+                train_df = pd.DataFrame() # Pass empty df if no time series needed
 
-            # DEBUG
-            print(f"INFO: Unique columns in sample data: {sample_data.columns.tolist()}")
-
-            print(f"INFO: Loaded {len(basin_files)} basins for pipeline fitting")
-            train_df, val_df, test_df = split_data(sample_data, config)
-            print(
-                f"INFO: Split into train ({len(train_df)}), val ({len(val_df)}), test ({len(test_df)})"
-            )
-            fitted_pipelines = fit_pipelines(train_df, sample_data, static_df, config)
+            # Pass static_df to fit_pipelines regardless of whether time series data was loaded
+            fitted_pipelines = fit_pipelines(train_df, sample_data if sample_data is not None else pd.DataFrame(), static_df, config)
             print(f"INFO: Fitted {len(fitted_pipelines)} pipelines")
         except Exception as e:
             print(f"ERROR: Error during pipeline fitting: {str(e)}")
+            # Decide if processing should continue without fitted pipelines or stop
+            # For now, continue, but processing steps might fail later
+            fitted_pipelines = {} # Ensure it's an empty dict if fitting failed
 
+    print("\n================ PROCESSING BASIN TIME SERIES ================")
     quality_report = process_basins_parallel(
-        basin_files, config, processed_dir, reports_dir, fitted_pipelines, processes
+        list_of_gauge_ids_to_process,
+        config,
+        region_time_series_base_dirs,
+        processed_dir,
+        reports_dir,
+        fitted_pipelines,
+        processes,
     )
 
     # Process static attributes using the extended apply_transformations function
+    processed_static_path_result = None # Initialize path result
     if static_df is not None and "static" in fitted_pipelines:
         print("\n================ PROCESSING STATIC ATTRIBUTES ================")
         print("INFO: Processing static attributes...")
         # Only keep static attributes for retained basins
         retained_basins = [
             basin_id
-            for basin_id in quality_report["basins"]
-            if basin_id not in quality_report["excluded_basins"]
+            for basin_id, report in quality_report["basins"].items()
+            if basin_id not in quality_report["excluded_basins"] and report is not None # Check report exists
         ]
-        filtered_static_df = static_df[static_df["gauge_id"].isin(retained_basins)]
-        transformed_static = apply_transformations(
-            filtered_static_df, config, fitted_pipelines, static_data=True
-        )
-        output_file = (
-            processed_path_to_static_attributes_directory / "static_attributes.parquet"
-        )
-        transformed_static.to_parquet(output_file)
-        print(
-            f"SUCCESS: Saved transformed static attributes for {len(transformed_static)} basins to {output_file}"
-        )
+        if retained_basins:
+            # Ensure gauge_id column exists before filtering
+            if "gauge_id" in static_df.columns:
+                filtered_static_df = static_df[static_df["gauge_id"].isin(retained_basins)].copy()
+                if not filtered_static_df.empty:
+                    try:
+                        transformed_static = apply_transformations(
+                            filtered_static_df, config, fitted_pipelines, static_data=True
+                        )
+                        transformed_static.to_parquet(processed_static_attributes_path)
+                        processed_static_path_result = processed_static_attributes_path # Set path on success
+                        print(
+                            f"SUCCESS: Saved transformed static attributes for {len(transformed_static)} basins to {processed_static_attributes_path}"
+                        )
+                    except Exception as e:
+                         print(f"ERROR: Failed to transform or save static attributes: {e}")
+                else:
+                    print("INFO: No static attributes remaining after filtering for retained basins.")
+            else:
+                print("ERROR: 'gauge_id' column not found in loaded static_df, cannot filter or process.")
+        else:
+            print("INFO: No basins were retained, skipping static attribute processing.")
+    elif static_df is not None:
+         print("INFO: Static attributes loaded but no 'static' pipeline found in fitted_pipelines. Skipping transformation.")
+         # Optionally save the raw filtered static data
+         # raw_static_path = path_to_preprocessing_output_directory_path / "raw_filtered_static_data.parquet"
+         # static_df[static_df["gauge_id"].isin(retained_basins)].to_parquet(raw_static_path)
+         # print(f"INFO: Saved raw static attributes for retained basins to {raw_static_path}")
+
 
     with open(
         path_to_preprocessing_output_directory_path / "quality_summary.json", "w"
@@ -889,7 +899,5 @@ def run_hydro_processor(
         "quality_report": quality_report,
         "fitted_pipelines": fitted_pipelines,
         "processed_time_series_dir": processed_dir,
-        "processed_static_attributes_dir": processed_path_to_static_attributes_directory
-        if static_df is not None
-        else None,
+        "processed_static_attributes_path": processed_static_path_result, # Return path only if saved
     }

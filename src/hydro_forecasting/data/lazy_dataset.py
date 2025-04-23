@@ -70,6 +70,7 @@ class HydroLazyDataset(Dataset):
     def _preload_static_data(self) -> None:
         """
         Read all static attributes once and cache by gauge_id.
+        Assumes all entries share the same static_file_path (unified static file).
         """
         if not self.batch_index_entries:
             self.static_data_cache = {}

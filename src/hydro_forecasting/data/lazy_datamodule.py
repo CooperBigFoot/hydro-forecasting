@@ -36,9 +36,9 @@ class HydroLazyDataModule(pl.LightningDataModule):
 
     def __init__(
         self,
-        path_to_time_series_directory: Union[str, Path],
-        path_to_static_attributes_directory: Union[str, Path],
-        path_to_preprocessing_output_directory: Union[str, Path],
+        region_time_series_base_dirs: dict[str, Union[str, Path]],
+        region_static_attributes_base_dirs: dict[str, Union[str, Path]],
+        path_to_preprocessing_output_directory: Union[str, Union[str, Path]],
         group_identifier: str,
         batch_size: int,
         input_length: int,
@@ -61,13 +61,9 @@ class HydroLazyDataModule(pl.LightningDataModule):
     ):
         super().__init__()
 
-        self.path_to_time_series_directory = Path(path_to_time_series_directory)
-        self.path_to_static_attributes_directory = Path(
-            path_to_static_attributes_directory
-        )
-        self.path_to_preprocessing_output_directory = Path(
-            path_to_preprocessing_output_directory
-        )
+        self.region_time_series_base_dirs = region_time_series_base_dirs
+        self.region_static_attributes_base_dirs = region_static_attributes_base_dirs
+        self.path_to_preprocessing_output_directory = Path(path_to_preprocessing_output_directory)
         self.group_identifier = group_identifier
         self.batch_size = batch_size
         self.input_length = input_length
@@ -92,7 +88,7 @@ class HydroLazyDataModule(pl.LightningDataModule):
         self.quality_report = {}
         self.fitted_pipelines = {}
         self.processed_time_series_dir = Path("")
-        self.processed_static_attributes_dir = Path("")
+        self.processed_static_attributes_path = None  # Now a file, not a dir
         self.index_entries = []
         self.index_entries_by_stage = {}
         self.train_index_entries = []
@@ -367,9 +363,9 @@ class HydroLazyDataModule(pl.LightningDataModule):
         required_columns = list(dict.fromkeys(self.forcing_features + [self.target]))
 
         results = run_hydro_processor(
-            path_to_time_series_directory=self.path_to_time_series_directory,
+            region_time_series_base_dirs=self.region_time_series_base_dirs,
+            region_static_attributes_base_dirs=self.region_static_attributes_base_dirs,
             path_to_preprocessing_output_directory=self.path_to_preprocessing_output_directory,
-            path_to_static_attributes_directory=self.path_to_static_attributes_directory,
             required_columns=required_columns,
             preprocessing_config=self.preprocessing_configs,
             min_train_years=self.min_train_years,
@@ -395,14 +391,13 @@ class HydroLazyDataModule(pl.LightningDataModule):
 
         self.fitted_pipelines = results["fitted_pipelines"]
         self.processed_time_series_dir = results["processed_time_series_dir"]
-        self.processed_static_attributes_dir = results[
-            "processed_static_attributes_dir"
-        ]
+        self.processed_static_attributes_path = results["processed_static_attributes_path"]
 
-        # Create index entries with explicit split proportions
+        # Create index entries with explicit split proportions and static file path
         self.index_entries = create_index_entries(
             gauge_ids=self.list_of_gauge_ids_to_process,
             time_series_base_dir=self.processed_time_series_dir,
+            static_file_path=self.processed_static_attributes_path,
             input_length=self.input_length,
             output_length=self.output_length,
             train_prop=self.train_prop,
@@ -436,9 +431,7 @@ class HydroLazyDataModule(pl.LightningDataModule):
             raise RuntimeError("prepare_data() must be called before setup()")
 
         # Get the path to static attributes file
-        static_file_path = (
-            self.processed_static_attributes_dir / "static_attributes.parquet"
-        )
+        static_file_path = self.processed_static_attributes_path
 
         # Common dataset arguments
         common_args = {
