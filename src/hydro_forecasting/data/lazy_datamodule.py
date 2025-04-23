@@ -8,6 +8,8 @@ from returns.result import Result, Success, Failure
 from returns.pipeline import is_successful
 import math
 import torch
+import numpy as np
+import pandas as pd
 
 from sklearn.pipeline import Pipeline
 from .lazy_dataset import HydroLazyDataset
@@ -544,3 +546,37 @@ class HydroLazyDataModule(pl.LightningDataModule):
             pin_memory=True,
             persistent_workers=True if self.num_workers > 0 else False,
         )
+
+    def inverse_transform_predictions(
+        self,
+        predictions: np.ndarray,
+        basin_ids: np.ndarray,
+    ) -> np.ndarray:
+        """
+        Inverse transform the predictions using the fitted pipeline for the target. 
+
+        Args:
+            predictions: The predictions to inverse transform.
+            basin_ids: The basin IDs corresponding to the predictions.
+
+        Returns:
+            np.ndarray: The inverse transformed predictions.
+        """
+
+        if "target" not in self.fitted_pipelines:
+            raise RuntimeError("No 'target' pipeline (did you call prepare_data()?)")
+
+        orig_shape = predictions.shape
+        vals = np.asarray(predictions).ravel()
+        gids = np.asarray(basin_ids).ravel()
+
+        target_pipeline = self.fitted_pipelines["target"]
+        missing = set(np.unique(gids)) - set(target_pipeline.fitted_pipelines)
+        if missing:
+            raise RuntimeError(f"No fitted pipeline for basins: {sorted(missing)}")
+
+        df = pd.DataFrame({self.group_identifier: gids, self.target: vals})
+        inv_df = target_pipeline.inverse_transform(df)
+
+        inv_vals = inv_df[self.target].values
+        return inv_vals.reshape(orig_shape)
