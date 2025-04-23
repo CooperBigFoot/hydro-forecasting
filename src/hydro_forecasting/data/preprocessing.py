@@ -5,7 +5,7 @@ import duckdb
 import pandas as pd
 import numpy as np
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, TypedDict, Union, Any
+from typing import Optional, Tuple, TypedDict, Union, Any
 import multiprocessing as mp
 from tqdm import tqdm
 from sklearn.base import clone
@@ -14,16 +14,16 @@ from ..preprocessing.grouped import GroupedPipeline
 
 
 class BasinQualityReport(TypedDict):
-    valid_period: Dict[str, Dict[str, Optional[str]]]
-    processing_steps: List[str]
-    imputation_info: Dict[str, Dict]
+    valid_period: dict[str, dict[str, Optional[str]]]
+    processing_steps: list[str]
+    imputation_info: dict[str, dict]
 
 
 class QualityReport(TypedDict):
     original_basins: int
     retained_basins: int
-    excluded_basins: Dict[str, str]
-    basins: Dict[str, BasinQualityReport]
+    excluded_basins: dict[str, str]
+    basins: dict[str, BasinQualityReport]
     split_method: str
 
 
@@ -31,7 +31,7 @@ class ProcessingResult(TypedDict):
     """Result of the hydro processor execution."""
 
     quality_report: QualityReport
-    fitted_pipelines: Dict[str, Any]  # Pipeline or GroupedPipeline instances
+    fitted_pipelines: dict[str, Any]  # Pipeline or GroupedPipeline instances
     processed_dir: Path  # Directory with processed files
     processed_path_to_static_attributes_directory: Optional[
         Path
@@ -41,8 +41,8 @@ class ProcessingResult(TypedDict):
 class Config:
     def __init__(
         self,
-        required_columns: List[str],
-        preprocessing_config: Optional[Dict[str, Dict[str, Any]]] = None,
+        required_columns: list[str],
+        preprocessing_config: Optional[dict[str, dict[str, Any]]] = None,
         min_train_years: float = 5.0,
         max_imputation_gap_size: int = 5,
         group_identifier: str = "gauge_id",
@@ -107,7 +107,7 @@ def find_gaps(series: pd.Series) -> Tuple[np.ndarray, np.ndarray]:
 
 def impute_short_gaps(
     df: pd.DataFrame,
-    columns: List[str],
+    columns: list[str],
     max_imputation_gap_size: int,
     basin_report: BasinQualityReport,
 ) -> Tuple[pd.DataFrame, BasinQualityReport]:
@@ -221,7 +221,7 @@ def fit_pipelines(
     all_data: pd.DataFrame,
     static_df: Optional[pd.DataFrame],
     config: Config,
-) -> Dict[str, Union[Pipeline, GroupedPipeline]]:
+) -> dict[str, Union[Pipeline, GroupedPipeline]]:
     """
     Fit preprocessing pipelines on training data to prevent data leakage.
 
@@ -290,7 +290,7 @@ def fit_pipelines(
 def apply_transformations(
     df: pd.DataFrame,
     config: Config,
-    fitted_pipelines: Dict[str, Union[Pipeline, GroupedPipeline]],
+    fitted_pipelines: dict[str, Union[Pipeline, GroupedPipeline]],
     basin_id: Optional[str] = None,
     static_data: bool = False,
 ) -> pd.DataFrame:
@@ -378,7 +378,7 @@ def process_basin(
     config: Config,
     path_to_preprocessing_output_directory: Path,
     reports_dir: Path,
-    fitted_pipelines: Optional[Dict[str, Union[Pipeline, GroupedPipeline]]] = None,
+    fitted_pipelines: Optional[dict[str, Union[Pipeline, GroupedPipeline]]] = None,
 ) -> Tuple[bool, Optional[str], Optional[BasinQualityReport]]:
     """
     Process a single basin file using DuckDB and pandas.
@@ -706,12 +706,8 @@ def load_static_attributes(
             except Exception as e:
                 print(f"ERROR: Error loading {file_path}: {str(e)}")
     if dfs:
-        # Concatenate vertically, keeping only common columns if desired (join='inner')
-        # Or keep all columns, filling missing with NaN (join='outer')
-        # Using 'outer' to preserve as much info as possible, consistent with previous horizontal merge intent
-        # Using ignore_index=True to create a clean default index
         merged_df = pd.concat(dfs, axis=0, join="outer", ignore_index=True)
-        # Drop duplicate rows just in case the same gauge appears in multiple files
+        # Drop duplicate rows just in case the same gauge appears in multiple files (should not happen)
         merged_df = merged_df.drop_duplicates(subset=["gauge_id"])
         print(f"INFO: Loaded static attributes for {len(merged_df)} unique basins from {loaded_files_count} files.")
         return merged_df
