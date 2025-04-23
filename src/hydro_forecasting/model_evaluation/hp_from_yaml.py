@@ -1,8 +1,4 @@
 import os
-import sys
-from pathlib import Path
-
-sys.path.append(str(Path(__file__).resolve().parents[2]))
 import yaml
 from typing import Dict, Any, Set, Tuple
 import importlib
@@ -23,8 +19,9 @@ def get_config_class(model_type: str):
     """
     model_type = model_type.lower()
     try:
+        # Use absolute import path instead of relative
         module = importlib.import_module(
-            f"src.models.{model_type}.config", package="model_evaluation"
+            f"hydro_forecasting.models.{model_type}.config"
         )
 
         # Handle different naming conventions for config classes:

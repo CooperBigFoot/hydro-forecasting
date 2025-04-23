@@ -1,16 +1,9 @@
 import numpy as np
 import pandas as pd
+from typing import Dict, List, Tuple, Optional
 import torch
 import pytorch_lightning as pl
 import copy
-
-# Type aliases for clarity
-type Horizon = int
-type BasinID = str
-type MetricsDict = dict[str, float]
-type OverallMetrics = dict[Horizon, MetricsDict]
-type BasinMetrics = dict[BasinID, dict[Horizon, MetricsDict]]
-type TestResults = dict[str, torch.Tensor]
 
 
 class TSForecastEvaluator:
@@ -18,13 +11,13 @@ class TSForecastEvaluator:
 
     def __init__(
         self,
-        horizons: list[int],
-        models_and_datamodules: dict[
-            str, tuple[pl.LightningModule, pl.LightningDataModule]
+        horizons: List[int],
+        models_and_datamodules: Dict[
+            str, Tuple[pl.LightningModule, pl.LightningDataModule]
         ] = None,
-        default_datamodule: pl.LightningDataModule = None,
+        default_datamodule=None,  # Optional fallback datamodule
         benchmark_model: str = None,
-        trainer_kwargs: dict = None,
+        trainer_kwargs: Dict = None,
     ):
         """
         Initialize the time series forecast evaluator.
@@ -56,8 +49,8 @@ class TSForecastEvaluator:
         self,
         name: str,
         model: pl.LightningModule,
-        datamodule: pl.LightningDataModule = None,
-    ) -> None:
+        datamodule: Optional[pl.LightningDataModule] = None,
+    ):
         """
         Register a new model with its specific datamodule.
 
@@ -74,7 +67,7 @@ class TSForecastEvaluator:
                 f"Warning: No datamodule provided for model '{name}' and no default datamodule available"
             )
 
-    def test_models(self, datamodule: pl.LightningDataModule = None) -> dict:
+    def test_models(self, datamodule=None):
         """
         Test all registered models and evaluate results.
 
@@ -119,9 +112,7 @@ class TSForecastEvaluator:
 
         return self.results
 
-    def test_specific_model(
-        self, name: str, datamodule: pl.LightningDataModule = None
-    ) -> dict:
+    def test_specific_model(self, name: str, datamodule=None):
         """
         Test a specific model by name.
 
@@ -158,8 +149,8 @@ class TSForecastEvaluator:
         return self.results[name]
 
     def evaluate(
-        self, test_results: TestResults, datamodule: pl.LightningDataModule = None
-    ) -> tuple[pd.DataFrame, OverallMetrics, BasinMetrics]:
+        self, test_results: Dict[str, torch.Tensor], datamodule=None
+    ) -> Tuple[pd.DataFrame, Dict, Dict]:
         """
         Evaluate model test results and compute metrics.
 
@@ -185,7 +176,7 @@ class TSForecastEvaluator:
         return df, overall_metrics, basin_metrics
 
     def _prepare_evaluation_dataframe(
-        self, test_results: TestResults, datamodule: pl.LightningDataModule = None
+        self, test_results: Dict[str, torch.Tensor], datamodule=None
     ) -> pd.DataFrame:
         """
         Create a flattened dataframe with predictions, observations, and metadata.
@@ -265,19 +256,6 @@ class TSForecastEvaluator:
                     else:
                         input_end_dates = input_end_dates[: len(basin_ids)]
 
-                # bring everything to CPU Python ints
-                if isinstance(input_end_dates, torch.Tensor):
-                    # one Tensor → list of ints
-                    input_end_dates = input_end_dates.detach().cpu().tolist()
-                elif isinstance(input_end_dates, list):
-                    # list of (possibly GPU) tensors → list of ints
-                    input_end_dates = [
-                        int(d.detach().cpu().item())
-                        if isinstance(d, torch.Tensor)
-                        else int(d)
-                        for d in input_end_dates
-                    ]
-
                 # Create expanded dates for each horizon - use current_horizons not self.horizons
                 dates_expanded = []
                 for i, input_date in enumerate(input_end_dates):
@@ -328,7 +306,9 @@ class TSForecastEvaluator:
 
         return df
 
-    def _calculate_overall_metrics(self, df: pd.DataFrame) -> OverallMetrics:
+    def _calculate_overall_metrics(
+        self, df: pd.DataFrame
+    ) -> Dict[int, Dict[str, float]]:
         """
         Calculate overall metrics for each forecast horizon.
 
@@ -357,7 +337,9 @@ class TSForecastEvaluator:
 
         return overall_metrics
 
-    def _calculate_basin_metrics(self, df: pd.DataFrame) -> BasinMetrics:
+    def _calculate_basin_metrics(
+        self, df: pd.DataFrame
+    ) -> Dict[str, Dict[int, Dict[str, float]]]:
         """
         Calculate per-basin metrics for each forecast horizon.
 
@@ -386,7 +368,7 @@ class TSForecastEvaluator:
 
         return basin_metrics
 
-    def _calculate_metrics(self, data: pd.DataFrame) -> MetricsDict:
+    def _calculate_metrics(self, data: pd.DataFrame) -> Dict[str, float]:
         """Helper method to calculate metrics for a subset of data."""
         if len(data) == 0:
             return {metric: np.nan for metric in ["MSE", "MAE", "NSE", "RMSE"]}
@@ -401,7 +383,7 @@ class TSForecastEvaluator:
             "RMSE": self.calculate_rmse(pred, obs),
         }
 
-    def summarize_metrics(self, metrics: dict, per_basin: bool = False) -> pd.DataFrame:
+    def summarize_metrics(self, metrics: Dict, per_basin: bool = False) -> pd.DataFrame:
         """Create a summary DataFrame of metrics."""
         rows = []
 
@@ -418,7 +400,7 @@ class TSForecastEvaluator:
                 rows.append({"horizon": horizon, **horizon_metrics})
             return pd.DataFrame(rows).set_index("horizon")
 
-    def flatten_basin_metrics(self, basin_metrics: BasinMetrics) -> pd.DataFrame:
+    def flatten_basin_metrics(self, basin_metrics: Dict) -> pd.DataFrame:
         """
         Convert nested basin metrics dictionary to a flattened DataFrame.
 

@@ -661,7 +661,10 @@ def load_static_attributes(
     list_of_gauge_ids_to_process: list[str],
 ) -> Optional[pd.DataFrame]:
     """
-    Load and merge static attribute data from multiple regions vertically.
+    Load and merge static attribute data from multiple regions.
+    
+    For each region, horizontally merges different attribute file types (caravan, hydroatlas, other)
+    on gauge_id. Then vertically stacks these region-specific DataFrames into the final result.
 
     Args:
         region_static_attributes_base_dirs: Mapping from region prefix to static attribute directory
@@ -679,38 +682,88 @@ def load_static_attributes(
         prefix = gid.split("_")[0]
         region_to_gauges.setdefault(prefix, []).append(gid)
 
-    dfs = []
+    region_merged_dfs = []
     loaded_files_count = 0
+    processed_regions_count = 0
+    
     for region, gauges in region_to_gauges.items():
         static_dir = region_static_attributes_base_dirs.get(region)
         if static_dir is None:
             print(f"WARNING: No static attribute directory for region '{region}'")
             continue
+            
+        # For each region, collect DataFrames from different file types
+        region_type_dfs = []
+        print(f"INFO: Processing static attributes for region '{region}'")
+        
         # Try all three types for this region
         for file_type in ["caravan", "hydroatlas", "other"]:
             filename = f"attributes_{file_type}_{region}.parquet"
             file_path = Path(static_dir) / filename
             if not file_path.exists():
                 continue
+                
             try:
-                df = pd.read_parquet(file_path, engine="pyarrow")
-                if "gauge_id" not in df.columns:
+                df_type = pd.read_parquet(file_path, engine="pyarrow")
+                if "gauge_id" not in df_type.columns:
                     print(f"WARNING: 'gauge_id' column missing in {file_path}, skipping.")
                     continue
-                df["gauge_id"] = df["gauge_id"].astype(str)
+                    
+                df_type["gauge_id"] = df_type["gauge_id"].astype(str)
                 # Filter for the gauges relevant to this region
-                filtered_df = df[df["gauge_id"].isin(gauges)].copy()
-                if not filtered_df.empty:
-                    dfs.append(filtered_df)
+                filtered_df_type = df_type[df_type["gauge_id"].isin(gauges)].copy()
+                
+                if not filtered_df_type.empty:
+                    print(f"INFO: Loaded {file_type} attributes for {len(filtered_df_type)} gauges in {region}")
+                    region_type_dfs.append(filtered_df_type)
                     loaded_files_count += 1
+                else:
+                    print(f"INFO: No {file_type} attributes found for gauges in {region}")
+                    
             except Exception as e:
                 print(f"ERROR: Error loading {file_path}: {str(e)}")
-    if dfs:
-        merged_df = pd.concat(dfs, axis=0, join="outer", ignore_index=True)
-        # Drop duplicate rows just in case the same gauge appears in multiple files (should not happen)
-        merged_df = merged_df.drop_duplicates(subset=["gauge_id"])
-        print(f"INFO: Loaded static attributes for {len(merged_df)} unique basins from {loaded_files_count} files.")
-        return merged_df
+        
+        # Horizontally merge different attribute types for this region
+        if region_type_dfs:
+            print(f"INFO: Horizontally merging {len(region_type_dfs)} attribute files for region '{region}'")
+            merged_region_df = region_type_dfs[0]
+            
+            # If we have more than one DataFrame for this region, merge them
+            for i, df_to_merge in enumerate(region_type_dfs[1:], 1):
+                # Check for column overlap (excluding gauge_id)
+                overlap_cols = set(merged_region_df.columns) & set(df_to_merge.columns) - {"gauge_id"}
+                if overlap_cols:
+                    print(f"INFO: Found {len(overlap_cols)} overlapping columns during merge: {', '.join(overlap_cols)}")
+                    
+                # Use suffixes for any overlapping columns to avoid conflicts
+                merged_region_df = pd.merge(
+                    merged_region_df, 
+                    df_to_merge, 
+                    on="gauge_id", 
+                    how="outer",
+                    suffixes=('', f'_{i}')
+                )
+                
+            # Add the horizontally-merged region DataFrame to our collection
+            region_merged_dfs.append(merged_region_df)
+            processed_regions_count += 1
+        else:
+            print(f"INFO: No attribute files successfully loaded for region '{region}'")
+    
+    # Vertically stack all region-specific merged DataFrames
+    if region_merged_dfs:
+        print(f"INFO: Vertically stacking attribute data from {processed_regions_count} regions")
+        final_merged_df = pd.concat(region_merged_dfs, axis=0, join="outer", ignore_index=True)
+        
+        # Drop duplicate rows in case the same gauge appears in multiple regions
+        initial_len = len(final_merged_df)
+        final_merged_df = final_merged_df.drop_duplicates(subset=["gauge_id"])
+        if len(final_merged_df) < initial_len:
+            duplicates_removed = initial_len - len(final_merged_df)
+            print(f"INFO: Removed {duplicates_removed} duplicate gauge entries after stacking")
+            
+        print(f"SUCCESS: Loaded and merged static attributes for {len(final_merged_df)} unique basins from {loaded_files_count} files across {processed_regions_count} regions.")
+        return final_merged_df
     else:
         print("WARNING: No static attribute files found or loaded for any region")
         return None
