@@ -1,5 +1,3 @@
-# TODO: Use python 3.12 type hints and implement ROP
-
 import numpy as np
 import pandas as pd
 from pathlib import Path
