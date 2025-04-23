@@ -1,3 +1,5 @@
+# TODO: Add a way to prevent re-running prepare data on the same instance more than once
+
 import pytorch_lightning as pl
 from pathlib import Path
 from typing import Union, Optional
