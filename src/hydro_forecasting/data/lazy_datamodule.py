@@ -10,6 +10,7 @@ import math
 import torch
 import numpy as np
 import pandas as pd
+import logging
 
 from sklearn.pipeline import Pipeline
 from .lazy_dataset import HydroLazyDataset
@@ -87,6 +88,7 @@ class HydroLazyDataModule(pl.LightningDataModule):
         self.domain_type = domain_type
         self.is_autoregressive = is_autoregressive
         self.files_per_batch = files_per_batch
+        self._prepare_data_has_run: bool = False
 
         # Post initialization
         self.quality_report = {}
@@ -363,6 +365,9 @@ class HydroLazyDataModule(pl.LightningDataModule):
         Process the data, apply preprocessing, and create index entries.
         This method is called only once on a single GPU.
         """
+        if self._prepare_data_has_run:
+            print("INFO: prepare_data() has already been run; skipping.")
+            return
 
         required_columns = list(dict.fromkeys(self.forcing_features + [self.target]))
 
@@ -416,6 +421,8 @@ class HydroLazyDataModule(pl.LightningDataModule):
         self.train_index_entries = self.index_entries_by_stage["train"]
         self.val_index_entries = self.index_entries_by_stage["val"]
         self.test_index_entries = self.index_entries_by_stage["test"]
+
+        self._prepare_data_has_run = True
 
     def setup(self, stage: Optional[str] = None):
         """

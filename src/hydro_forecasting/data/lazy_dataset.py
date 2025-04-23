@@ -29,9 +29,12 @@ class HydroLazyDataset(Dataset):
         future_features: Ordered list of features used for future tensor.
         static_data_cache: Mapping from group_identifier to numpy array of static features.
     """
+
     def __init__(
         self,
-        batch_index_entries: list[dict[str, Path | np.int64 | np.datetime64 | str | bool]],
+        batch_index_entries: list[
+            dict[str, Path | np.int64 | np.datetime64 | str | bool]
+        ],
         target: str,
         forcing_features: list[str],
         static_features: list[str],
@@ -84,7 +87,9 @@ class HydroLazyDataset(Dataset):
 
         # define ordered feature lists for X and future
         if is_autoregressive:
-            self.input_features = [target] + [f for f in self.forcing_features if f != target]
+            self.input_features = [target] + [
+                f for f in self.forcing_features if f != target
+            ]
         else:
             self.input_features = self.forcing_features
         self.future_features = self.forcing_features
@@ -102,9 +107,11 @@ class HydroLazyDataset(Dataset):
         dfs = []
         for path in unique_paths:
             try:
-                df = pl.read_parquet(path, columns=[self.group_identifier] + self.static_features)
+                df = pl.read_parquet(
+                    path, columns=[self.group_identifier] + self.static_features
+                )
             except (FileNotFoundError, pl.ColumnNotFoundError) as e:
-                warnings.warn(f"Skipping static file {path}: {e}")
+                print(f"Skipping static file {path}: {e}")
                 continue
             dfs.append(df)
         if dfs:
@@ -146,11 +153,15 @@ class HydroLazyDataset(Dataset):
                 entry["file_path"],
                 columns=["date", self.target, *self.forcing_features],
             )
-            ts = df_full.slice(entry["start_idx"], self.input_length + self.output_length)
+            ts = df_full.slice(
+                entry["start_idx"], self.input_length + self.output_length
+            )
             inp = ts.slice(0, self.input_length)
             out = ts.slice(self.input_length, self.output_length)
         except Exception as e:
-            raise IOError(f"Error loading/slicing data for idx {idx}, path {entry['file_path']}: {e}")
+            raise IOError(
+                f"Error loading/slicing data for idx {idx}, path {entry['file_path']}: {e}"
+            )
         try:
             X_np = inp.select(self.input_features).to_numpy().astype(np.float32)
             X = torch.tensor(X_np, dtype=torch.float32)
@@ -158,6 +169,18 @@ class HydroLazyDataset(Dataset):
             y = torch.tensor(y_np, dtype=torch.float32)
             future_np = out.select(self.future_features).to_numpy().astype(np.float32)
             future = torch.tensor(future_np, dtype=torch.float32)
+
+            if torch.isnan(X).any():
+                # Throw a warning or handle NaNs in X
+                print(f"NaNs found in input tensor X for index {idx}")
+
+            if torch.isnan(y).any():
+                # Throw a warning or handle NaNs in y
+                print(f"NaNs found in target tensor y for index {idx}")
+
+            if torch.isnan(future).any():
+                print(f"NaNs found in future tensor for index {idx}")
+
         except Exception as e:
             raise ValueError(f"Error constructing tensors for idx {idx}: {e}")
         static_arr = self.static_data_cache.get(
