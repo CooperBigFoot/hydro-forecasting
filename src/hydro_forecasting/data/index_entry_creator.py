@@ -89,8 +89,6 @@ def find_valid_sequences(basin_data, input_length, output_length, cols_to_check=
     Returns:
         Tuple of (valid_positions, dates) arrays
     """
-    if cols_to_check is None:
-        cols_to_check = ["streamflow", "total_precipitation_sum"]
 
     total_seq_length = input_length + output_length
 
@@ -104,22 +102,23 @@ def find_valid_sequences(basin_data, input_length, output_length, cols_to_check=
     # Combined valid mask: 1 if all cols not NaN, 0 otherwise
     combined_valid = (~np.isnan(basin_values).any(axis=1)).astype(int)
 
-    # Convolve to find valid input sequences
+    # Input window must be valid for all features
     input_conv = np.convolve(
         combined_valid, np.ones(input_length, dtype=int), mode="valid"
     )
     input_valid = input_conv == input_length
 
-    # Convolve for output sequences, shifted by input_length
+    # Output window must also be valid for all features 
     output_conv = np.convolve(
         combined_valid, np.ones(output_length, dtype=int), mode="valid"
     )
     output_valid = output_conv == output_length
-    output_valid_shifted = np.pad(
-        output_valid, (input_length, 0), constant_values=False
-    )[: len(input_valid)]
 
-    # Find valid sequence starts
+    # Align the output validity check with input positions
+    padded = np.pad(output_valid, (0, input_length), constant_values=False)
+    output_valid_shifted = padded[input_length : input_length + len(input_valid)]
+
+    # Sequence is valid only if both input and output windows are valid
     valid_mask = input_valid & output_valid_shifted
     valid_positions = np.where(valid_mask)[0]
 

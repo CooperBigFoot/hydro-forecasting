@@ -10,7 +10,7 @@ import math
 import torch
 import numpy as np
 import pandas as pd
-import logging
+
 
 from sklearn.pipeline import Pipeline
 from .lazy_dataset import HydroLazyDataset
