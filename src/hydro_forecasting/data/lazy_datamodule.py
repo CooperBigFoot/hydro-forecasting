@@ -106,17 +106,163 @@ class HydroLazyDataModule(pl.LightningDataModule):
 
         validation_result = (
             Success(None)
-            .bind(
-                lambda _: self._validate_preprocessing_config(
-                    self.preprocessing_configs
-                )
-            )
+            .bind(lambda _: self._validate_positive_integer("batch_size", self.batch_size))
+            .bind(lambda _: self._validate_positive_integer("input_length", self.input_length))
+            .bind(lambda _: self._validate_positive_integer("output_length", self.output_length))
+            .bind(lambda _: self._validate_positive_integer("num_workers", self.num_workers))
+            .bind(lambda _: self._validate_positive_integer("files_per_batch", self.files_per_batch))
+            .bind(lambda _: self._validate_non_negative_integer("max_imputation_gap_size", self.max_imputation_gap_size))
+            .bind(lambda _: self._validate_positive_float("min_train_years", self.min_train_years))
+            .bind(lambda _: self._validate_gauge_id_list("list_of_gauge_ids_to_process", self.list_of_gauge_ids_to_process))
+            .bind(lambda _: self._validate_string_list("forcing_features", self.forcing_features))
+            .bind(lambda _: self._validate_string_list("static_features", self.static_features))
+            .bind(lambda _: self._validate_non_empty_string("target", self.target))
+            .bind(lambda _: self._validate_non_empty_string("group_identifier", self.group_identifier))
+            .bind(lambda _: self._validate_non_empty_string("domain_id", self.domain_id))
+            .bind(lambda _: self._validate_domain_type("domain_type", self.domain_type))
+            .bind(lambda _: self._validate_preprocessing_config(self.preprocessing_configs))
             .bind(lambda _: self._validate_train_val_test_prop())
             .bind(lambda _: self._validate_target_not_in_forcing_features())
         )
 
         if not is_successful(validation_result):
-            raise ValueError(f"Validation failed: {validation_result.failure()}")
+            raise ValueError(f"Invalid configuration for HydroLazyDataModule: {validation_result.failure()}")
+
+    def _validate_positive_integer(self, param_name: str, value: int) -> Result[None, str]:
+        """
+        Validates that a parameter is a positive integer (greater than 0).
+        
+        Args:
+            param_name: Name of the parameter being validated.
+            value: The value to validate.
+            
+        Returns:
+            Success(None) if valid, Failure(str) with error message otherwise.
+        """
+        if not isinstance(value, int):
+            return Failure(f"Parameter '{param_name}' must be an integer, got {type(value).__name__}")
+        if value <= 0:
+            return Failure(f"Parameter '{param_name}' must be greater than 0, got {value}")
+        return Success(None)
+    
+    def _validate_non_negative_integer(self, param_name: str, value: int) -> Result[None, str]:
+        """
+        Validates that a parameter is a non-negative integer (greater than or equal to 0).
+        
+        Args:
+            param_name: Name of the parameter being validated.
+            value: The value to validate.
+            
+        Returns:
+            Success(None) if valid, Failure(str) with error message otherwise.
+        """
+        if not isinstance(value, int):
+            return Failure(f"Parameter '{param_name}' must be an integer, got {type(value).__name__}")
+        if value < 0:
+            return Failure(f"Parameter '{param_name}' must be greater than or equal to 0, got {value}")
+        return Success(None)
+    
+    def _validate_positive_float(self, param_name: str, value: float) -> Result[None, str]:
+        """
+        Validates that a parameter is a positive float (greater than 0).
+        
+        Args:
+            param_name: Name of the parameter being validated.
+            value: The value to validate.
+            
+        Returns:
+            Success(None) if valid, Failure(str) with error message otherwise.
+        """
+        if not isinstance(value, (int, float)):
+            return Failure(f"Parameter '{param_name}' must be a number, got {type(value).__name__}")
+        if value <= 0:
+            return Failure(f"Parameter '{param_name}' must be greater than 0, got {value}")
+        return Success(None)
+    
+    def _validate_gauge_id_list(self, param_name: str, value: Optional[list[str]]) -> Result[None, str]:
+        """
+        Validates that a parameter is either None or a non-empty list of strings.
+        
+        Args:
+            param_name: Name of the parameter being validated.
+            value: The value to validate, which can be None.
+            
+        Returns:
+            Success(None) if valid, Failure(str) with error message otherwise.
+        """
+        if value is None:
+            return Success(None)  # None is allowed
+        
+        if not isinstance(value, list):
+            return Failure(f"Parameter '{param_name}' must be a list, got {type(value).__name__}")
+        
+        if len(value) == 0:
+            return Failure(f"Parameter '{param_name}' must not be an empty list")
+        
+        if not all(isinstance(item, str) for item in value):
+            return Failure(f"All items in '{param_name}' must be strings")
+        
+        return Success(None)
+    
+    def _validate_string_list(self, param_name: str, value: list[str]) -> Result[None, str]:
+        """
+        Validates that a parameter is a non-empty list of strings.
+        
+        Args:
+            param_name: Name of the parameter being validated.
+            value: The value to validate.
+            
+        Returns:
+            Success(None) if valid, Failure(str) with error message otherwise.
+        """
+        if not isinstance(value, list):
+            return Failure(f"Parameter '{param_name}' must be a list, got {type(value).__name__}")
+        
+        if len(value) == 0:
+            return Failure(f"Parameter '{param_name}' must not be an empty list")
+        
+        if not all(isinstance(item, str) for item in value):
+            return Failure(f"All items in '{param_name}' must be strings")
+        
+        return Success(None)
+    
+    def _validate_non_empty_string(self, param_name: str, value: str) -> Result[None, str]:
+        """
+        Validates that a parameter is a non-empty string.
+        
+        Args:
+            param_name: Name of the parameter being validated.
+            value: The value to validate.
+            
+        Returns:
+            Success(None) if valid, Failure(str) with error message otherwise.
+        """
+        if not isinstance(value, str):
+            return Failure(f"Parameter '{param_name}' must be a string, got {type(value).__name__}")
+        
+        if len(value) == 0:
+            return Failure(f"Parameter '{param_name}' must not be an empty string")
+        
+        return Success(None)
+    
+    def _validate_domain_type(self, param_name: str, value: str) -> Result[None, str]:
+        """
+        Validates that a domain type parameter is either 'source' or 'target'.
+        
+        Args:
+            param_name: Name of the parameter being validated.
+            value: The value to validate.
+            
+        Returns:
+            Success(None) if valid, Failure(str) with error message otherwise.
+        """
+        if not isinstance(value, str):
+            return Failure(f"Parameter '{param_name}' must be a string, got {type(value).__name__}")
+        
+        if value not in ["source", "target"]:
+            return Failure(f"Parameter '{param_name}' must be either 'source' or 'target', got '{value}'")
+        
+        return Success(None)
 
     def _validate_preprocessing_config(
         self, config: dict[str, dict[str, object]]
@@ -208,7 +354,7 @@ class HydroLazyDataModule(pl.LightningDataModule):
         """
         if self.target in self.forcing_features:
             return Failure(
-                f"Target variable '{self.target}' should not be included in forcing features."
+                f"Target variable '{self.target}' should not be included in forcing features. Set is_autoregressive=True to include it."
             )
         return Success(None)
 
@@ -237,6 +383,16 @@ class HydroLazyDataModule(pl.LightningDataModule):
         )
 
         self.quality_report = results["quality_report"]
+        # Filter out any excluded basins so we only index the valid ones
+        excluded_ids = set(self.quality_report.get("excluded_basins", {}).keys())
+        retained_ids = [
+            bid for bid in self.quality_report.get("basins", {}).keys()
+            if bid not in excluded_ids
+        ]
+        if not retained_ids:
+            raise RuntimeError("All basins excluded during preprocessing; no valid basins to process")
+        self.list_of_gauge_ids_to_process = retained_ids
+
         self.fitted_pipelines = results["fitted_pipelines"]
         self.processed_time_series_dir = results["processed_time_series_dir"]
         self.processed_static_attributes_dir = results[

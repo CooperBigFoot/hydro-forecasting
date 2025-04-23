@@ -20,3 +20,5 @@ wheels/
 **.DS_Store
 
 tests
+
+notebooks/lightning_logs

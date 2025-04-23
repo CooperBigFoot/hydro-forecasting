@@ -462,11 +462,13 @@ def process_basin(
 
         min_valid_days = 1 if config.min_train_years < 0.1 else 365
 
-        if train_years < config.min_train_years or total_days < min_valid_days:
-            required_total_years = config.min_train_years / config.train_prop
+        # minimum days required for training directly from config
+        min_required_train_days = int(config.min_train_years * 365.25)
+        # correct: ensure allocated train_days meets the config requirement
+        if train_days < min_required_train_days or total_days < min_valid_days:
             error_msg = (
-                f"Insufficient data period ({total_days} days, {train_years:.2f} training years). "
-                f"Need {required_total_years:.2f} total years with current proportions."
+                f"Insufficient training data ({train_years:.2f} years available). "
+                f"Minimum required training years: {config.min_train_years}"
             )
             return False, error_msg, basin_report
 
