@@ -222,7 +222,7 @@ def fit_pipelines(
     config: Config,
     list_of_gauge_ids_to_process: list[str],
     region_time_series_base_dirs: dict[str, Path],
-    batch_size: int = 100,
+    pipeline_fitting_batch_size: int = 1000,
 ) -> dict[str, Union[Pipeline, GroupedPipeline]]:
     """
     Fit preprocessing pipelines using batch-wise processing for time series data.
@@ -239,7 +239,7 @@ def fit_pipelines(
         config: Configuration object
         list_of_gauge_ids_to_process: List of basin IDs to process
         region_time_series_base_dirs: Mapping from region prefix to base directory
-        batch_size: Maximum number of basins to process in a single batch
+        pipeline_fitting_batch_size: Maximum number of basins to process in a single batch
 
     Returns:
         Dictionary of fitted pipeline instances
@@ -293,15 +293,15 @@ def fit_pipelines(
 
     # Determine batches for processing
     total_basins = len(list_of_gauge_ids_to_process)
-    batch_size = min(batch_size, total_basins)  # Adjust batch size if needed
-    num_batches = (total_basins + batch_size - 1) // batch_size
+    pipeline_fitting_batch_size = min(pipeline_fitting_batch_size, total_basins)  # Adjust batch size if needed
+    num_batches = (total_basins + pipeline_fitting_batch_size - 1) // pipeline_fitting_batch_size
     batches = [
-        list_of_gauge_ids_to_process[i * batch_size : (i + 1) * batch_size]
+        list_of_gauge_ids_to_process[i * pipeline_fitting_batch_size : (i + 1) * pipeline_fitting_batch_size]
         for i in range(num_batches)
     ]
 
     print(
-        f"INFO: Processing {total_basins} basins in {num_batches} batches of size {batch_size}"
+        f"INFO: Processing {total_basins} basins in {num_batches} batches of size {pipeline_fitting_batch_size}"
     )
 
     # Process each batch
@@ -405,9 +405,6 @@ def fit_pipelines(
             except Exception as e:
                 print(f"ERROR: Failed to process basin {gauge_id}: {str(e)}")
 
-        # Explicitly clean up batch data to free memory
-        del batch_data
-        gc.collect()
         print(f"INFO: Completed batch {batch_idx + 1}/{num_batches}")
 
     # Add fitted grouped pipelines to result
@@ -898,7 +895,7 @@ def run_hydro_processor(
     test_prop: float = 0.25,
     processes: int = 6,
     list_of_gauge_ids_to_process: Optional[list[str]] = None,
-    batch_size: int = 100,
+    pipeline_fitting_batch_size: int = 50,
 ) -> dict:
     """
     Main function to run the hydrological data processor with pipeline fitting, supporting multi-region.
@@ -917,7 +914,7 @@ def run_hydro_processor(
         test_prop: Proportion of data for testing
         processes: Number of parallel processes to use
         list_of_gauge_ids_to_process: List of basin (gauge) IDs to process
-        batch_size: Maximum number of basins to process in a single batch
+        pipeline_fitting_batch_size: Maximum number of basins to process in a single batch
 
     Returns:
         Dictionary containing quality report, fitted pipelines, processed data dir, and processed static attributes path
@@ -977,7 +974,7 @@ def run_hydro_processor(
                 config,
                 list_of_gauge_ids_to_process,
                 region_time_series_base_dirs,
-                batch_size=batch_size,
+                pipeline_fitting_batch_size=pipeline_fitting_batch_size,
             )
             print(f"INFO: Fitted {len(fitted_pipelines)} pipelines")
         except Exception as e:

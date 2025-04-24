@@ -80,8 +80,7 @@ for region in regions:
     config = CaravanifyParquetConfig(
         attributes_dir=attributes_dir,
         timeseries_dir=timeseries_dir,
-        # shapefile_dir=shapefile_dir, # Removed unused parameter
-        human_influence_path=str(human_influence_path),  # Ensure path is string
+        human_influence_path=str(human_influence_path),  
         gauge_id_prefix=f"{region}",
         use_hydroatlas_attributes=True,
         use_caravan_attributes=True,
@@ -89,14 +88,14 @@ for region in regions:
     )
 
     caravan = CaravanifyParquet(config)
-    region_basin_ids = caravan.get_all_gauge_ids()  # Use a temporary variable
+    region_basin_ids = caravan.get_all_gauge_ids()  
 
     filtered_ids, current_discarded_ids = caravan.filter_gauge_ids_by_human_influence(
         region_basin_ids, ["Low", "Medium"]
     )
 
     basin_ids.extend(filtered_ids)
-    discarded_ids.extend(current_discarded_ids)  # Append discarded IDs for this region
+    discarded_ids.extend(current_discarded_ids) 
 
 print(f"Total basins to process: {len(basin_ids)}")
 print(f"Total discarded basins: {len(discarded_ids)}")
@@ -157,7 +156,6 @@ preprocessing_config = {
 }
 
 print("Defining region directory maps")
-# Use absolute paths or paths relative to a known base
 region_time_series_base_dirs = {
     region: f"/workspace/CaravanifyParquet/{region}/post_processed/timeseries/csv/{region}"
     for region in regions
@@ -178,7 +176,7 @@ datamodule = HydroLazyDataModule(
     region_static_attributes_base_dirs=region_static_attributes_base_dirs,
     path_to_preprocessing_output_directory=str(
         preprocessing_output_dir
-    ),  # Use configured path
+    ),  
     group_identifier="gauge_id",
     batch_size=BATCH_SIZE,  # Use configured batch size
     input_length=tide_hp["input_len"],
