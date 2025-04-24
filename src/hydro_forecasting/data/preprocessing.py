@@ -229,10 +229,8 @@ def fit_pipelines(
 
     This function handles fitting of three types of pipelines:
     - Static feature pipelines: Fit on all static data at once
-    - Time series feature pipelines: Fit on batches of basins to manage memory
-    - Time series target pipelines: Fit on batches of basins to manage memory
-
-    For time series data, only GroupedPipeline instances are supported.
+    - Time series feature pipelines: Fit on batches of basins in parallel using GroupedPipeline
+    - Time series target pipelines: Fit on batches of basins in parallel using GroupedPipeline
 
     Args:
         static_df: Static features DataFrame (if available)
@@ -267,7 +265,7 @@ def fit_pipelines(
         fitted_pipelines["static"] = static_pipeline
         print("INFO: Successfully fitted static features pipeline")
 
-    # Process time series features and target using batch-wise loading
+    # Process time series features and target using batch-wise loading and parallel fitting
     time_series_keys = [
         k for k in ["features", "target"] if k in config.preprocessing_config
     ]
@@ -276,7 +274,8 @@ def fit_pipelines(
 
     print(f"INFO: Fitting time series pipelines: {', '.join(time_series_keys)}")
 
-    # Validate that all time series pipelines are GroupedPipeline instances
+    # Initialize cloned GroupedPipeline instances for each time series pipeline type
+    ts_pipelines: dict[str, GroupedPipeline] = {}
     for key in time_series_keys:
         pipeline_def = config.preprocessing_config[key]["pipeline"]
         if not isinstance(pipeline_def, GroupedPipeline):
@@ -284,16 +283,12 @@ def fit_pipelines(
                 f"Pipeline for '{key}' must be a GroupedPipeline instance for batch-wise fitting. "
                 f"Got {type(pipeline_def).__name__} instead."
             )
-
-    # Initialize empty GroupedPipeline instances for time series
-    ts_pipelines: dict[str, GroupedPipeline] = {}
-    for key in time_series_keys:
-        pipeline_def = config.preprocessing_config[key]["pipeline"]
+        # Clone the pipeline once before processing all batches
         ts_pipelines[key] = clone(pipeline_def)
 
     # Determine batches for processing
     total_basins = len(list_of_gauge_ids_to_process)
-    pipeline_fitting_batch_size = min(pipeline_fitting_batch_size, total_basins)  # Adjust batch size if needed
+    pipeline_fitting_batch_size = min(pipeline_fitting_batch_size, total_basins)
     num_batches = (total_basins + pipeline_fitting_batch_size - 1) // pipeline_fitting_batch_size
     batches = [
         list_of_gauge_ids_to_process[i * pipeline_fitting_batch_size : (i + 1) * pipeline_fitting_batch_size]
@@ -309,8 +304,10 @@ def fit_pipelines(
         print(
             f"INFO: Processing batch {batch_idx + 1}/{num_batches} ({len(batch_gauge_ids)} basins)"
         )
-        batch_data: dict[str, pd.DataFrame] = {}
-
+        
+        # Initialize list to collect training data from all basins in this batch
+        batch_train_data_list: list[pd.DataFrame] = []
+        
         # Load data for current batch
         for gauge_id in batch_gauge_ids:
             try:
@@ -330,20 +327,11 @@ def fit_pipelines(
                     continue
 
                 basin_df = pd.read_parquet(file_path)
+                
                 # Only add group identifier if it doesn't already exist
                 if config.group_identifier not in basin_df.columns:
                     basin_df[config.group_identifier] = gauge_id
-                batch_data[gauge_id] = basin_df
-            except Exception as e:
-                print(f"ERROR: Failed to load basin {gauge_id}: {str(e)}")
-
-        print(
-            f"INFO: Successfully loaded {len(batch_data)} basins for batch {batch_idx + 1}"
-        )
-
-        # Process each basin in the batch
-        for gauge_id, basin_df in batch_data.items():
-            try:
+                
                 # Check for required columns
                 missing_cols = [
                     col
@@ -355,56 +343,57 @@ def fit_pipelines(
                         f"WARNING: Basin {gauge_id} missing required columns: {missing_cols + (['date'] if 'date' not in basin_df.columns else [])}"
                     )
                     continue
-
-                # Split data for this basin
+                
+                # Split data for this basin (only keep training portion)
                 train_basin_df, _, _ = split_data(basin_df, config)
                 if train_basin_df.empty:
                     print(f"WARNING: No training data available for basin {gauge_id}")
                     continue
-
-                # Fit each pipeline type for this basin
-                for key in time_series_keys:
-                    try:
-                        pipeline_config = config.preprocessing_config[key]
-                        grouped_pipeline = ts_pipelines[key]
-                        template_pipeline = clone(grouped_pipeline.pipeline)
-
-                        if key == "target":
-                            target_col = pipeline_config.get("column", "streamflow")
-                            if target_col not in train_basin_df.columns:
-                                print(
-                                    f"WARNING: Target column '{target_col}' not found in basin {gauge_id}"
-                                )
-                                continue
-                            columns = [target_col]
-                        else:  # features
-                            target_col = config.preprocessing_config.get(
-                                "target", {}
-                            ).get("column", "streamflow")
-                            columns = [
-                                col
-                                for col in config.required_columns
-                                if col != target_col
-                            ]
-
-                        # Only use the exact columns needed by the template pipeline, don't include group_identifier
-                        # The individual pipeline doesn't need the group identifier for fitting
-                        basin_subset = train_basin_df[columns].copy()
-
-                        # Fit the pipeline for this basin
-                        template_pipeline.fit(basin_subset)
-
-                        # Add the fitted pipeline to the grouped pipeline
-                        grouped_pipeline.add_fitted_group(gauge_id, template_pipeline)
-
-                    except Exception as e:
-                        print(
-                            f"ERROR: Failed to fit {key} pipeline for basin {gauge_id}: {str(e)}"
-                        )
-
+                
+                # Add training data to the batch collection
+                batch_train_data_list.append(train_basin_df)
+                
             except Exception as e:
                 print(f"ERROR: Failed to process basin {gauge_id}: {str(e)}")
-
+        
+        if not batch_train_data_list:
+            print(f"WARNING: No valid training data for any basin in batch {batch_idx + 1}")
+            continue
+        
+        # Concatenate all training data from this batch into one DataFrame
+        concatenated_train_df = pd.concat(batch_train_data_list, ignore_index=True)
+        print(f"INFO: Concatenated training data shape: {concatenated_train_df.shape}")
+        
+        # Free memory
+        del batch_train_data_list
+        gc.collect()
+        
+        # Fit each pipeline type on the concatenated data
+        for key in time_series_keys:
+            try:
+                pipeline_config = config.preprocessing_config[key]
+                grouped_pipeline = ts_pipelines[key]
+                
+                if key == "target":
+                    target_col = pipeline_config.get("column", "streamflow")
+                    print(f"INFO: Fitting {key} pipeline for batch {batch_idx + 1} (target column: {target_col})")
+                else:  # features
+                    target_col = config.preprocessing_config.get("target", {}).get("column", "streamflow")
+                    feature_cols = [col for col in config.required_columns if col != target_col]
+                    print(f"INFO: Fitting {key} pipeline for batch {batch_idx + 1} (feature columns: {feature_cols})")
+                
+                # Fit the GroupedPipeline on all basin data at once
+                # GroupedPipeline.fit will handle the grouping and parallel fitting internally
+                grouped_pipeline.fit(concatenated_train_df)
+                print(f"INFO: Successfully fitted {key} pipeline for batch {batch_idx + 1}")
+                
+            except Exception as e:
+                print(f"ERROR: Failed to fit {key} pipeline for batch {batch_idx + 1}: {str(e)}")
+        
+        # Free memory after fitting all pipelines for this batch
+        del concatenated_train_df
+        gc.collect()
+        
         print(f"INFO: Completed batch {batch_idx + 1}/{num_batches}")
 
     # Add fitted grouped pipelines to result
