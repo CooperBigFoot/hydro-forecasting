@@ -412,6 +412,7 @@ class HydroLazyDataModule(pl.LightningDataModule):
             train_prop=self.train_prop,
             val_prop=self.val_prop,
             test_prop=self.test_prop,
+            cols_to_check=required_columns,
         )
 
         self.index_entries_by_stage = split_index_entries_by_stage(

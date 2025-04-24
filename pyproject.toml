@@ -4,37 +4,48 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 authors = [
-    { name = "CooperBigFoot", email = "nlazaro@student.ethz.ch" }
+  { name = "CooperBigFoot", email = "nlazaro@student.ethz.ch" },
 ]
 requires-python = ">=3.12"
 dependencies = [
-    "duckdb>=1.2.2",
-    "geopandas>=1.0.1",
-    "ipykernel>=6.29.5",
-    "lightning>=2.5.1",
-    "matplotlib>=3.10.1",
-    "numpy>=2.2.4",
-    "pandas>=2.2.3",
-    "polars>=1.27.1",
-    "pyarrow>=19.0.1",
-    "returns>=0.25.0",
-    "ruff>=0.11.5",
-    "scikit-learn>=1.6.1",
-    "seaborn>=0.13.2",
-    "tensorboard>=2.19.0",
-    "torch>=2.6.0",
+  "duckdb>=1.2.2",
+  "geopandas>=1.0.1",
+  "ipykernel>=6.29.5",
+  "lightning>=2.5.1",
+  "matplotlib>=3.10.1",
+  "numpy>=2.2.4",
+  "pandas>=2.2.3",
+  "polars>=1.27.1",
+  "pyarrow>=19.0.1",
+  "returns>=0.25.0",
+  "ruff>=0.11.5",
+  "scikit-learn>=1.6.1",
+  "seaborn>=0.13.2",
+  "tensorboard>=2.19.0",
+  "torch>=2.6.0",
 ]
 
 [project.scripts]
 hydro-forecasting = "hydro_forecasting:main"
+hii = "hydro_forecasting.human_influence_index.hii:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-[tool.hatch.build]
-# Tell hatchling to use the src layout
-sources = ["src"]
+# 💥 The critical fix: source layout + stripping "src/"
+[tool.hatch.build.targets.wheel]
+only-include = ["src/hydro_forecasting"]
+
+[tool.hatch.build.targets.wheel.sources]
+"src" = ""
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "src/hydro_forecasting/**",
+  "pyproject.toml",
+  "README.md"
+]
 
 [tool.hatch.metadata]
 allow-direct-references = true
@@ -43,9 +54,7 @@ allow-direct-references = true
 pytest = ">=8.3.5"
 
 [dependency-groups]
-dev = [
-    "pytest>=8.3.5",
-]
+dev = ["pytest>=8.3.5"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

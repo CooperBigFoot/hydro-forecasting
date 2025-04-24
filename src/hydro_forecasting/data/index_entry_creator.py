@@ -76,18 +76,24 @@ def get_split_boundaries(train, val, test, gauge_ids):
     return split_boundaries
 
 
-def find_valid_sequences(basin_data, input_length, output_length, cols_to_check=None):
+def find_valid_sequences(
+    basin_data: pd.DataFrame,
+    input_length: int,
+    output_length: int,
+    cols_to_check: list[str] = None,
+):
     """
     Find valid sequence starting positions in the basin data.
 
     Args:
-        basin_data: DataFrame containing basin time series data
-        input_length: Length of input sequence
-        output_length: Length of output sequence
-        cols_to_check: Columns to check for NaN values
+        basin_data: DataFrame containing basin time series data.
+        input_length: Length of input sequence.
+        output_length: Length of output sequence.
+        cols_to_check: List of column names to check for NaN values in both input and output windows.
+            All columns in this list must be present and non-NaN for a sequence to be considered valid.
 
     Returns:
-        Tuple of (valid_positions, dates) arrays
+        Tuple of (valid_positions, dates) arrays.
     """
 
     total_seq_length = input_length + output_length
@@ -108,7 +114,7 @@ def find_valid_sequences(basin_data, input_length, output_length, cols_to_check=
     )
     input_valid = input_conv == input_length
 
-    # Output window must also be valid for all features 
+    # Output window must also be valid for all features
     output_conv = np.convolve(
         combined_valid, np.ones(output_length, dtype=int), mode="valid"
     )
@@ -156,22 +162,25 @@ def create_index_entries(
     train_prop: float = None,
     val_prop: float = None,
     test_prop: float = None,
+    cols_to_check: list[str] = None,
 ):
     """
     Create index entries for valid sequences, identifying which stage (train/val/test) each sequence belongs to.
 
     Args:
-        gauge_ids: List of gauge IDs to process
-        time_series_base_dir: Base directory containing parquet files
-        static_file_path: Path to the unified processed static attributes file
-        input_length: Length of input sequence
-        output_length: Length of forecast horizon
-        train_prop: Proportion of data for training (optional, uses SPLIT_CONFIG if None)
-        val_prop: Proportion of data for validation (optional, uses SPLIT_CONFIG if None)
-        test_prop: Proportion of data for testing (optional, uses SPLIT_CONFIG if None)
+        gauge_ids: List of gauge IDs to process.
+        time_series_base_dir: Base directory containing parquet files.
+        static_file_path: Path to the unified processed static attributes file.
+        input_length: Length of input sequence.
+        output_length: Length of forecast horizon.
+        train_prop: Proportion of data for training (optional, uses SPLIT_CONFIG if None).
+        val_prop: Proportion of data for validation (optional, uses SPLIT_CONFIG if None).
+        test_prop: Proportion of data for testing (optional, uses SPLIT_CONFIG if None).
+        cols_to_check: List of column names to check for NaN values in sequence validity checks.
+            All columns in this list must be present and non-NaN for a sequence to be considered valid.
 
     Returns:
-        List of index entries with stage identification
+        List of index entries with stage identification.
     """
     valid_data = load_gauge_parquet(gauge_ids, time_series_base_dir)
 
@@ -221,7 +230,7 @@ def create_index_entries(
 
         # Find valid sequences in this basin's data
         valid_positions, dates = find_valid_sequences(
-            basin_data, input_length, output_length
+            basin_data, input_length, output_length, cols_to_check=cols_to_check
         )
 
         # Create index entries with stage identification
