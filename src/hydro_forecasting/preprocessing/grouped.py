@@ -450,3 +450,17 @@ class GroupedPipeline(BaseEstimator, TransformerMixin):
         # Return the input columns as output feature names, assuming the pipeline
         # doesn't change the feature names
         return self.columns.copy()
+
+    def add_fitted_group(self, group_id: Union[str, int], fitted_pipeline: Pipeline) -> None:
+        """Add a pre-fitted pipeline for a specific group.
+        
+        This method allows direct addition of a fitted pipeline for a group,
+        enabling batch-wise or incremental population of the GroupedPipeline.
+        
+        Args:
+            group_id: Identifier for the group
+            fitted_pipeline: A fitted sklearn Pipeline instance for this group
+        """
+        if group_id not in self.all_groups:
+            self.all_groups.append(group_id)
+        self.fitted_pipelines[group_id] = fitted_pipeline

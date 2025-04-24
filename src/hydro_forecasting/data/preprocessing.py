@@ -4,8 +4,9 @@ import json
 import duckdb
 import pandas as pd
 import numpy as np
+import gc
 from pathlib import Path
-from typing import Optional, Tuple, TypedDict, Union, Any
+from typing import Optional, Tuple, TypedDict, Union, Any, cast
 import multiprocessing as mp
 from tqdm import tqdm
 from sklearn.base import clone
@@ -217,61 +218,42 @@ def split_data(
 
 
 def fit_pipelines(
-    train_df: pd.DataFrame,
-    all_data: pd.DataFrame,
     static_df: Optional[pd.DataFrame],
     config: Config,
+    list_of_gauge_ids_to_process: list[str],
+    region_time_series_base_dirs: dict[str, Path],
+    batch_size: int = 100,
 ) -> dict[str, Union[Pipeline, GroupedPipeline]]:
     """
-    Fit preprocessing pipelines on training data to prevent data leakage.
+    Fit preprocessing pipelines using batch-wise processing for time series data.
+
+    This function handles fitting of three types of pipelines:
+    - Static feature pipelines: Fit on all static data at once
+    - Time series feature pipelines: Fit on batches of basins to manage memory
+    - Time series target pipelines: Fit on batches of basins to manage memory
+
+    For time series data, only GroupedPipeline instances are supported.
 
     Args:
-        train_df: Training data
-        all_data: All data (train + val + test)
-        static_df: Static features data (if available)
+        static_df: Static features DataFrame (if available)
         config: Configuration object
+        list_of_gauge_ids_to_process: List of basin IDs to process
+        region_time_series_base_dirs: Mapping from region prefix to base directory
+        batch_size: Maximum number of basins to process in a single batch
 
     Returns:
         Dictionary of fitted pipeline instances
+
+    Raises:
+        TypeError: If a non-GroupedPipeline is specified for time series data
     """
-    fitted_pipelines = {}
-
-    # Process features
-    if "features" in config.preprocessing_config:
-        pipeline_config = config.preprocessing_config["features"]
-        pipeline = clone(pipeline_config["pipeline"])
-
-        if isinstance(pipeline, GroupedPipeline):
-            feature_cols = pipeline.columns
-            train_features = train_df[feature_cols + [config.group_identifier]]
-            pipeline.fit(train_features)
-            fitted_pipelines["features"] = pipeline
-        else:
-            target_col = config.preprocessing_config.get("target", {}).get(
-                "column", "streamflow"
-            )
-            feature_cols = [col for col in config.required_columns if col != target_col]
-            train_features = train_df[feature_cols]
-            pipeline.fit(train_features)
-            fitted_pipelines["features"] = pipeline
-
-    # Process target
-    if "target" in config.preprocessing_config:
-        pipeline_config = config.preprocessing_config["target"]
-        pipeline = clone(pipeline_config["pipeline"])
-        target_col = pipeline_config.get("column", "streamflow")
-
-        if isinstance(pipeline, GroupedPipeline):
-            train_target = train_df[pipeline.columns + [config.group_identifier]]
-        else:
-            train_target = train_df[[target_col]]
-        pipeline.fit(train_target)
-        fitted_pipelines["target"] = pipeline
+    fitted_pipelines: dict[str, Union[Pipeline, GroupedPipeline]] = {}
 
     # Process static features (if static data is available)
     if "static_features" in config.preprocessing_config and static_df is not None:
+        print("INFO: Fitting pipeline for static features")
         static_cfg = config.preprocessing_config["static_features"]
-        static_pipeline = static_cfg["pipeline"]
+        static_pipeline = clone(static_cfg["pipeline"])
         static_columns = static_cfg.get("columns")
         if static_columns is None:
             raise ValueError(
@@ -283,6 +265,157 @@ def fit_pipelines(
         # Fit only on the specified columns
         static_pipeline.fit(static_df[static_columns])
         fitted_pipelines["static"] = static_pipeline
+        print("INFO: Successfully fitted static features pipeline")
+
+    # Process time series features and target using batch-wise loading
+    time_series_keys = [
+        k for k in ["features", "target"] if k in config.preprocessing_config
+    ]
+    if not time_series_keys:
+        return fitted_pipelines  # No time series pipelines to fit
+
+    print(f"INFO: Fitting time series pipelines: {', '.join(time_series_keys)}")
+
+    # Validate that all time series pipelines are GroupedPipeline instances
+    for key in time_series_keys:
+        pipeline_def = config.preprocessing_config[key]["pipeline"]
+        if not isinstance(pipeline_def, GroupedPipeline):
+            raise TypeError(
+                f"Pipeline for '{key}' must be a GroupedPipeline instance for batch-wise fitting. "
+                f"Got {type(pipeline_def).__name__} instead."
+            )
+
+    # Initialize empty GroupedPipeline instances for time series
+    ts_pipelines: dict[str, GroupedPipeline] = {}
+    for key in time_series_keys:
+        pipeline_def = config.preprocessing_config[key]["pipeline"]
+        ts_pipelines[key] = clone(pipeline_def)
+
+    # Determine batches for processing
+    total_basins = len(list_of_gauge_ids_to_process)
+    batch_size = min(batch_size, total_basins)  # Adjust batch size if needed
+    num_batches = (total_basins + batch_size - 1) // batch_size
+    batches = [
+        list_of_gauge_ids_to_process[i * batch_size : (i + 1) * batch_size]
+        for i in range(num_batches)
+    ]
+
+    print(
+        f"INFO: Processing {total_basins} basins in {num_batches} batches of size {batch_size}"
+    )
+
+    # Process each batch
+    for batch_idx, batch_gauge_ids in enumerate(batches):
+        print(
+            f"INFO: Processing batch {batch_idx + 1}/{num_batches} ({len(batch_gauge_ids)} basins)"
+        )
+        batch_data: dict[str, pd.DataFrame] = {}
+
+        # Load data for current batch
+        for gauge_id in batch_gauge_ids:
+            try:
+                prefix = gauge_id.split("_")[0]
+                base_dir = region_time_series_base_dirs.get(prefix)
+                if base_dir is None:
+                    print(
+                        f"WARNING: No base directory for region prefix '{prefix}' (gauge {gauge_id})"
+                    )
+                    continue
+
+                file_path = Path(base_dir) / f"{gauge_id}.parquet"
+                if not file_path.exists():
+                    print(
+                        f"WARNING: File {file_path} does not exist for gauge {gauge_id}"
+                    )
+                    continue
+
+                basin_df = pd.read_parquet(file_path)
+                # Only add group identifier if it doesn't already exist
+                if config.group_identifier not in basin_df.columns:
+                    basin_df[config.group_identifier] = gauge_id
+                batch_data[gauge_id] = basin_df
+            except Exception as e:
+                print(f"ERROR: Failed to load basin {gauge_id}: {str(e)}")
+
+        print(
+            f"INFO: Successfully loaded {len(batch_data)} basins for batch {batch_idx + 1}"
+        )
+
+        # Process each basin in the batch
+        for gauge_id, basin_df in batch_data.items():
+            try:
+                # Check for required columns
+                missing_cols = [
+                    col
+                    for col in config.required_columns
+                    if col not in basin_df.columns
+                ]
+                if missing_cols or "date" not in basin_df.columns:
+                    print(
+                        f"WARNING: Basin {gauge_id} missing required columns: {missing_cols + (['date'] if 'date' not in basin_df.columns else [])}"
+                    )
+                    continue
+
+                # Split data for this basin
+                train_basin_df, _, _ = split_data(basin_df, config)
+                if train_basin_df.empty:
+                    print(f"WARNING: No training data available for basin {gauge_id}")
+                    continue
+
+                # Fit each pipeline type for this basin
+                for key in time_series_keys:
+                    try:
+                        pipeline_config = config.preprocessing_config[key]
+                        grouped_pipeline = ts_pipelines[key]
+                        template_pipeline = clone(grouped_pipeline.pipeline)
+
+                        if key == "target":
+                            target_col = pipeline_config.get("column", "streamflow")
+                            if target_col not in train_basin_df.columns:
+                                print(
+                                    f"WARNING: Target column '{target_col}' not found in basin {gauge_id}"
+                                )
+                                continue
+                            columns = [target_col]
+                        else:  # features
+                            target_col = config.preprocessing_config.get(
+                                "target", {}
+                            ).get("column", "streamflow")
+                            columns = [
+                                col
+                                for col in config.required_columns
+                                if col != target_col
+                            ]
+
+                        # Only use the exact columns needed by the template pipeline, don't include group_identifier
+                        # The individual pipeline doesn't need the group identifier for fitting
+                        basin_subset = train_basin_df[columns].copy()
+
+                        # Fit the pipeline for this basin
+                        template_pipeline.fit(basin_subset)
+
+                        # Add the fitted pipeline to the grouped pipeline
+                        grouped_pipeline.add_fitted_group(gauge_id, template_pipeline)
+
+                    except Exception as e:
+                        print(
+                            f"ERROR: Failed to fit {key} pipeline for basin {gauge_id}: {str(e)}"
+                        )
+
+            except Exception as e:
+                print(f"ERROR: Failed to process basin {gauge_id}: {str(e)}")
+
+        # Explicitly clean up batch data to free memory
+        del batch_data
+        gc.collect()
+        print(f"INFO: Completed batch {batch_idx + 1}/{num_batches}")
+
+    # Add fitted grouped pipelines to result
+    for key in time_series_keys:
+        fitted_grouped_pipeline = ts_pipelines[key]
+        fitted_count = len(fitted_grouped_pipeline.fitted_pipelines)
+        print(f"INFO: Fitted {key} pipeline for {fitted_count} basins")
+        fitted_pipelines[key] = fitted_grouped_pipeline
 
     return fitted_pipelines
 
@@ -618,51 +751,13 @@ def process_basins_parallel(
     return quality_report
 
 
-def load_all_basins(
-    region_time_series_base_dirs: dict[str, Path],
-    config: Config,
-    list_of_gauge_ids_to_process: list[str],
-) -> pd.DataFrame:
-    """
-    Load all basin files from multiple regions to create training data for fitting pipelines.
-
-    Args:
-        region_time_series_base_dirs: Mapping from region prefix to directory containing parquet files
-        config: Configuration parameters
-        list_of_gauge_ids_to_process: List of gauge IDs to process
-
-    Returns:
-        DataFrame containing data from all basins
-    """
-    all_data = []
-    for gauge_id in list_of_gauge_ids_to_process:
-        prefix = gauge_id.split("_")[0]
-        base_dir = region_time_series_base_dirs.get(prefix)
-        if base_dir is None:
-            print(f"WARNING: No base directory for region prefix '{prefix}' (gauge {gauge_id})")
-            continue
-        file_path = Path(base_dir) / f"{gauge_id}.parquet"
-        if not file_path.exists():
-            print(f"WARNING: File {file_path} does not exist for gauge {gauge_id}")
-            continue
-        try:
-            df = pd.read_parquet(file_path)
-            df[config.group_identifier] = gauge_id
-            all_data.append(df)
-        except Exception as e:
-            print(f"ERROR: Error loading {file_path}: {str(e)}")
-    if not all_data:
-        raise ValueError("Failed to load any basin files")
-    return pd.concat(all_data, ignore_index=True)
-
-
 def load_static_attributes(
     region_static_attributes_base_dirs: dict[str, Path],
     list_of_gauge_ids_to_process: list[str],
 ) -> Optional[pd.DataFrame]:
     """
     Load and merge static attribute data from multiple regions.
-    
+
     For each region, horizontally merges different attribute file types (caravan, hydroatlas, other)
     on gauge_id. Then vertically stacks these region-specific DataFrames into the final result.
 
@@ -685,84 +780,104 @@ def load_static_attributes(
     region_merged_dfs = []
     loaded_files_count = 0
     processed_regions_count = 0
-    
+
     for region, gauges in region_to_gauges.items():
         static_dir = region_static_attributes_base_dirs.get(region)
         if static_dir is None:
             print(f"WARNING: No static attribute directory for region '{region}'")
             continue
-            
+
         # For each region, collect DataFrames from different file types
         region_type_dfs = []
         print(f"INFO: Processing static attributes for region '{region}'")
-        
+
         # Try all three types for this region
         for file_type in ["caravan", "hydroatlas", "other"]:
             filename = f"attributes_{file_type}_{region}.parquet"
             file_path = Path(static_dir) / filename
             if not file_path.exists():
                 continue
-                
+
             try:
                 df_type = pd.read_parquet(file_path, engine="pyarrow")
                 if "gauge_id" not in df_type.columns:
-                    print(f"WARNING: 'gauge_id' column missing in {file_path}, skipping.")
+                    print(
+                        f"WARNING: 'gauge_id' column missing in {file_path}, skipping."
+                    )
                     continue
-                    
+
                 df_type["gauge_id"] = df_type["gauge_id"].astype(str)
                 # Filter for the gauges relevant to this region
                 filtered_df_type = df_type[df_type["gauge_id"].isin(gauges)].copy()
-                
+
                 if not filtered_df_type.empty:
-                    print(f"INFO: Loaded {file_type} attributes for {len(filtered_df_type)} gauges in {region}")
+                    print(
+                        f"INFO: Loaded {file_type} attributes for {len(filtered_df_type)} gauges in {region}"
+                    )
                     region_type_dfs.append(filtered_df_type)
                     loaded_files_count += 1
                 else:
-                    print(f"INFO: No {file_type} attributes found for gauges in {region}")
-                    
+                    print(
+                        f"INFO: No {file_type} attributes found for gauges in {region}"
+                    )
+
             except Exception as e:
                 print(f"ERROR: Error loading {file_path}: {str(e)}")
-        
+
         # Horizontally merge different attribute types for this region
         if region_type_dfs:
-            print(f"INFO: Horizontally merging {len(region_type_dfs)} attribute files for region '{region}'")
+            print(
+                f"INFO: Horizontally merging {len(region_type_dfs)} attribute files for region '{region}'"
+            )
             merged_region_df = region_type_dfs[0]
-            
+
             # If we have more than one DataFrame for this region, merge them
             for i, df_to_merge in enumerate(region_type_dfs[1:], 1):
                 # Check for column overlap (excluding gauge_id)
-                overlap_cols = set(merged_region_df.columns) & set(df_to_merge.columns) - {"gauge_id"}
+                overlap_cols = set(merged_region_df.columns) & set(
+                    df_to_merge.columns
+                ) - {"gauge_id"}
                 if overlap_cols:
-                    print(f"INFO: Found {len(overlap_cols)} overlapping columns during merge: {', '.join(overlap_cols)}")
-                    
+                    print(
+                        f"INFO: Found {len(overlap_cols)} overlapping columns during merge: {', '.join(overlap_cols)}"
+                    )
+
                 # Use suffixes for any overlapping columns to avoid conflicts
                 merged_region_df = pd.merge(
-                    merged_region_df, 
-                    df_to_merge, 
-                    on="gauge_id", 
+                    merged_region_df,
+                    df_to_merge,
+                    on="gauge_id",
                     how="outer",
-                    suffixes=('', f'_{i}')
+                    suffixes=("", f"_{i}"),
                 )
-                
+
             # Add the horizontally-merged region DataFrame to our collection
             region_merged_dfs.append(merged_region_df)
             processed_regions_count += 1
         else:
             print(f"INFO: No attribute files successfully loaded for region '{region}'")
-    
+
     # Vertically stack all region-specific merged DataFrames
     if region_merged_dfs:
-        print(f"INFO: Vertically stacking attribute data from {processed_regions_count} regions")
-        final_merged_df = pd.concat(region_merged_dfs, axis=0, join="outer", ignore_index=True)
-        
+        print(
+            f"INFO: Vertically stacking attribute data from {processed_regions_count} regions"
+        )
+        final_merged_df = pd.concat(
+            region_merged_dfs, axis=0, join="outer", ignore_index=True
+        )
+
         # Drop duplicate rows in case the same gauge appears in multiple regions
         initial_len = len(final_merged_df)
         final_merged_df = final_merged_df.drop_duplicates(subset=["gauge_id"])
         if len(final_merged_df) < initial_len:
             duplicates_removed = initial_len - len(final_merged_df)
-            print(f"INFO: Removed {duplicates_removed} duplicate gauge entries after stacking")
-            
-        print(f"SUCCESS: Loaded and merged static attributes for {len(final_merged_df)} unique basins from {loaded_files_count} files across {processed_regions_count} regions.")
+            print(
+                f"INFO: Removed {duplicates_removed} duplicate gauge entries after stacking"
+            )
+
+        print(
+            f"SUCCESS: Loaded and merged static attributes for {len(final_merged_df)} unique basins from {loaded_files_count} files across {processed_regions_count} regions."
+        )
         return final_merged_df
     else:
         print("WARNING: No static attribute files found or loaded for any region")
@@ -783,6 +898,7 @@ def run_hydro_processor(
     test_prop: float = 0.25,
     processes: int = 6,
     list_of_gauge_ids_to_process: Optional[list[str]] = None,
+    batch_size: int = 100,
 ) -> dict:
     """
     Main function to run the hydrological data processor with pipeline fitting, supporting multi-region.
@@ -801,6 +917,7 @@ def run_hydro_processor(
         test_prop: Proportion of data for testing
         processes: Number of parallel processes to use
         list_of_gauge_ids_to_process: List of basin (gauge) IDs to process
+        batch_size: Maximum number of basins to process in a single batch
 
     Returns:
         Dictionary containing quality report, fitted pipelines, processed data dir, and processed static attributes path
@@ -827,50 +944,47 @@ def run_hydro_processor(
     reports_dir = path_to_preprocessing_output_directory_path / "quality_reports"
     reports_dir.mkdir(exist_ok=True)
     # Define path for processed static attributes, even if none are found initially
-    processed_static_attributes_path = path_to_preprocessing_output_directory_path / "processed_static_data.parquet"
+    processed_static_attributes_path = (
+        path_to_preprocessing_output_directory_path / "processed_static_data.parquet"
+    )
 
     if not list_of_gauge_ids_to_process:
         raise ValueError("No gauge IDs provided for processing")
 
     print("\n================ LOADING STATIC ATTRIBUTES ================")
-    print(f"INFO: Attempting to load static attributes for {len(list_of_gauge_ids_to_process)} gauge IDs")
+    print(
+        f"INFO: Attempting to load static attributes for {len(list_of_gauge_ids_to_process)} gauge IDs"
+    )
 
     static_df = load_static_attributes(
         region_static_attributes_base_dirs, list_of_gauge_ids_to_process
     )
     if static_df is not None:
-        print(f"INFO: Successfully loaded static attributes for {len(static_df)} basins.")
+        print(
+            f"INFO: Successfully loaded static attributes for {len(static_df)} basins."
+        )
     else:
         print("INFO: No static attributes found or loaded.")
-
 
     fitted_pipelines = {}
 
     if preprocessing_config:
         print("\n================ FITTING PREPROCESSING PIPELINES ================")
         try:
-            # Load time series data only if needed for fitting (features or target pipelines)
-            needs_ts_data = "features" in preprocessing_config or "target" in preprocessing_config
-            sample_data = None
-            if needs_ts_data:
-                print("INFO: Loading time series data for pipeline fitting...")
-                sample_data = load_all_basins(region_time_series_base_dirs, config, list_of_gauge_ids_to_process)
-                print(f"INFO: Loaded time series data for {len(sample_data[config.group_identifier].unique())} basins")
-                train_df, val_df, test_df = split_data(sample_data, config)
-                print(
-                    f"INFO: Split time series data into train ({len(train_df)}), val ({len(val_df)}), test ({len(test_df)})"
-                )
-            else:
-                train_df = pd.DataFrame() # Pass empty df if no time series needed
-
-            # Pass static_df to fit_pipelines regardless of whether time series data was loaded
-            fitted_pipelines = fit_pipelines(train_df, sample_data if sample_data is not None else pd.DataFrame(), static_df, config)
+            # Fit pipelines using the refactored, batch-wise approach
+            fitted_pipelines = fit_pipelines(
+                static_df,
+                config,
+                list_of_gauge_ids_to_process,
+                region_time_series_base_dirs,
+                batch_size=batch_size,
+            )
             print(f"INFO: Fitted {len(fitted_pipelines)} pipelines")
         except Exception as e:
             print(f"ERROR: Error during pipeline fitting: {str(e)}")
             # Decide if processing should continue without fitted pipelines or stop
             # For now, continue, but processing steps might fail later
-            fitted_pipelines = {} # Ensure it's an empty dict if fitting failed
+            fitted_pipelines = {}  # Ensure it's an empty dict if fitting failed
 
     print("\n================ PROCESSING BASIN TIME SERIES ================")
     quality_report = process_basins_parallel(
@@ -884,7 +998,7 @@ def run_hydro_processor(
     )
 
     # Process static attributes using the extended apply_transformations function
-    processed_static_path_result = None # Initialize path result
+    processed_static_path_result = None  # Initialize path result
     if static_df is not None and "static" in fitted_pipelines:
         print("\n================ PROCESSING STATIC ATTRIBUTES ================")
         print("INFO: Processing static attributes...")
@@ -892,37 +1006,50 @@ def run_hydro_processor(
         retained_basins = [
             basin_id
             for basin_id, report in quality_report["basins"].items()
-            if basin_id not in quality_report["excluded_basins"] and report is not None # Check report exists
+            if basin_id not in quality_report["excluded_basins"]
+            and report is not None  # Check report exists
         ]
         if retained_basins:
             # Ensure gauge_id column exists before filtering
             if "gauge_id" in static_df.columns:
-                filtered_static_df = static_df[static_df["gauge_id"].isin(retained_basins)].copy()
+                filtered_static_df = static_df[
+                    static_df["gauge_id"].isin(retained_basins)
+                ].copy()
                 if not filtered_static_df.empty:
                     try:
                         transformed_static = apply_transformations(
-                            filtered_static_df, config, fitted_pipelines, static_data=True
+                            filtered_static_df,
+                            config,
+                            fitted_pipelines,
+                            static_data=True,
                         )
                         transformed_static.to_parquet(processed_static_attributes_path)
-                        processed_static_path_result = processed_static_attributes_path # Set path on success
+                        processed_static_path_result = (
+                            processed_static_attributes_path  # Set path on success
+                        )
                         print(
                             f"SUCCESS: Saved transformed static attributes for {len(transformed_static)} basins to {processed_static_attributes_path}"
                         )
                     except Exception as e:
-                         print(f"ERROR: Failed to transform or save static attributes: {e}")
+                        print(
+                            f"ERROR: Failed to transform or save static attributes: {e}"
+                        )
                 else:
-                    print("INFO: No static attributes remaining after filtering for retained basins.")
+                    print(
+                        "INFO: No static attributes remaining after filtering for retained basins."
+                    )
             else:
-                print("ERROR: 'gauge_id' column not found in loaded static_df, cannot filter or process.")
+                print(
+                    "ERROR: 'gauge_id' column not found in loaded static_df, cannot filter or process."
+                )
         else:
-            print("INFO: No basins were retained, skipping static attribute processing.")
+            print(
+                "INFO: No basins were retained, skipping static attribute processing."
+            )
     elif static_df is not None:
-         print("INFO: Static attributes loaded but no 'static' pipeline found in fitted_pipelines. Skipping transformation.")
-         # Optionally save the raw filtered static data
-         # raw_static_path = path_to_preprocessing_output_directory_path / "raw_filtered_static_data.parquet"
-         # static_df[static_df["gauge_id"].isin(retained_basins)].to_parquet(raw_static_path)
-         # print(f"INFO: Saved raw static attributes for retained basins to {raw_static_path}")
-
+        print(
+            "INFO: Static attributes loaded but no 'static' pipeline found in fitted_pipelines. Skipping transformation."
+        )
 
     with open(
         path_to_preprocessing_output_directory_path / "quality_summary.json", "w"
@@ -938,15 +1065,19 @@ def run_hydro_processor(
     ) as f:
         json.dump(pipeline_info, f, indent=2)
 
-    print("\n================ PROCESSING SUMMARY ================\n"
-          f"SUCCESS: Completed processing {quality_report['retained_basins']} of {quality_report['original_basins']} basins")
+    print(
+        "\n================ PROCESSING SUMMARY ================\n"
+        f"SUCCESS: Completed processing {quality_report['retained_basins']} of {quality_report['original_basins']} basins"
+    )
 
     if quality_report["excluded_basins"]:
-        print(f"WARNING: {len(quality_report['excluded_basins'])} basins excluded due to quality issues")
+        print(
+            f"WARNING: {len(quality_report['excluded_basins'])} basins excluded due to quality issues"
+        )
 
     return {
         "quality_report": quality_report,
         "fitted_pipelines": fitted_pipelines,
         "processed_time_series_dir": processed_dir,
-        "processed_static_attributes_path": processed_static_path_result, # Return path only if saved
+        "processed_static_attributes_path": processed_static_path_result,  # Return path only if saved
     }
