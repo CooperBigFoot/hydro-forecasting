@@ -244,3 +244,77 @@ class CaravanifyParquet:
             A pandas DataFrame containing the static attributes.
         """
         return self.static_attributes.copy()
+        
+    def filter_gauge_ids_by_human_influence(
+        self,
+        gauge_ids: list[str],
+        categories: str | list[str],
+    ) -> tuple[list[str], list[str]]:
+        """
+        Filter a list of gauge IDs by human influence category.
+
+        Args:
+            gauge_ids: List of gauge IDs to filter
+            categories: String or List of human influence categories to keep
+                        (e.g., 'High', 'Medium', 'Low')
+
+        Returns:
+            Filtered list of gauge IDs matching the specified influence categories
+            and a list of discarded gauge IDs that did not match the criteria.
+
+        Raises:
+            IOError: If the human influence data file cannot be loaded.
+            ValueError: If the specified categories are not found in the data.
+        """
+        # Load human influence data
+        try:
+            human_influence_df = pd.read_parquet(
+                self.config.human_influence_path, engine="pyarrow"
+            )
+        except Exception as e:
+            raise IOError(f"Failed to load human influence Parquet data: {e}")
+
+        # Verify human influence data has required columns
+        required_cols = ["gauge_id", "human_influence_category"]
+        missing_cols = [
+            col for col in required_cols if col not in human_influence_df.columns
+        ]
+        if missing_cols:
+            raise ValueError(
+                f"Human influence data missing required columns: {missing_cols}"
+            )
+
+        # Convert categories to list if a string was provided
+        if isinstance(categories, str):
+            categories = [categories]
+
+        # Check if specified categories exist in the data
+        available_categories = human_influence_df["human_influence_category"].unique()
+        invalid_categories = [
+            cat for cat in categories if cat not in available_categories
+        ]
+        if invalid_categories:
+            raise ValueError(
+                f"Invalid categories: {invalid_categories}. "
+                f"Available categories: {available_categories.tolist()}"
+            )
+
+        # Filter human influence data to include only specified categories and gauge IDs
+        filtered_hi = human_influence_df[
+            (human_influence_df["human_influence_category"].isin(categories))
+            & (human_influence_df["gauge_id"].isin(gauge_ids))
+        ]
+
+        # Get list of gauge_ids that match the criteria
+        filtered_gauge_ids = filtered_hi["gauge_id"].unique().tolist()
+
+        print(f"Original gauge_ids: {len(gauge_ids)}")
+        print(f"Filtered gauge_ids: {len(filtered_gauge_ids)}")
+
+        if not filtered_gauge_ids:
+            print("No gauge_ids matched the specified human influence categories.")
+            return [], list(gauge_ids)
+
+        discarded_gauge_ids = list(set(gauge_ids) - set(filtered_gauge_ids))
+
+        return filtered_gauge_ids, discarded_gauge_ids
