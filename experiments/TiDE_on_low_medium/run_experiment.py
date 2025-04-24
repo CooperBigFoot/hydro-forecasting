@@ -6,23 +6,29 @@ project_root = Path(__file__).resolve().parents[2]
 src_path = project_root / "src"
 sys.path.append(str(src_path))
 
+print(f"Project root: {project_root}")
+
 import pytorch_lightning as pl
+import torch
+
+torch.set_float32_matmul_precision('medium')
+
 from pytorch_lightning.loggers import TensorBoardLogger  # Added import
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint  # Added import
 
-from src.hydro_forecasting.data.lazy_datamodule import HydroLazyDataModule
-from src.hydro_forecasting.preprocessing.grouped import GroupedPipeline
+from hydro_forecasting.data.lazy_datamodule import HydroLazyDataModule
+from hydro_forecasting.preprocessing.grouped import GroupedPipeline
 from sklearn.pipeline import Pipeline
-from src.hydro_forecasting.preprocessing.standard_scale import StandardScaleTransformer
-from src.hydro_forecasting.data.caravanify_parquet import (
+from hydro_forecasting.preprocessing.standard_scale import StandardScaleTransformer
+from hydro_forecasting.data.caravanify_parquet import (
     CaravanifyParquet,
     CaravanifyParquetConfig,
 )
 
-from src.hydro_forecasting.models.tide import LitTiDE, TiDEConfig
+from hydro_forecasting.models.tide import LitTiDE, TiDEConfig
 
-# Removed unused import: from src.hydro_forecasting.model_evaluation.evaluators import TSForecastEvaluator
-from src.hydro_forecasting.model_evaluation.hp_from_yaml import hp_from_yaml
+# Removed unused import: from hydro_forecasting.model_evaluation.evaluators import TSForecastEvaluator
+from hydro_forecasting.model_evaluation.hp_from_yaml import hp_from_yaml
 
 # --- Configuration ---
 EXPERIMENT_NAME = "tide_low_medium_influence"
@@ -59,9 +65,9 @@ print("==========LOADING LOW AND MEDIUM HUMAN INFLUENCE BASINS==========")
 for region in regions:
     # Construct paths relative to project root or use absolute paths as needed
     attributes_dir = (
-        f"/Users/cooper/Desktop/CaravanifyParquet/{region}/post_processed/attributes"
+        f"/workspace/CaravanifyParquet/{region}/post_processed/attributes"
     )
-    timeseries_dir = f"/Users/cooper/Desktop/CaravanifyParquet/{region}/post_processed/timeseries/csv"
+    timeseries_dir = f"/workspace/CaravanifyParquet/{region}/post_processed/timeseries/csv"
     # shapefile_dir = f"/Users/cooper/Desktop/CAMELS-CH/data/CARAVANIFY/{region}/post_processed/shapefiles" # Unused
     human_influence_path = (
         project_root
@@ -153,12 +159,12 @@ preprocessing_config = {
 print("Defining region directory maps")
 # Use absolute paths or paths relative to a known base
 region_time_series_base_dirs = {
-    region: f"/Users/cooper/Desktop/CaravanifyParquet/{region}/post_processed/timeseries/csv/{region}"
+    region: f"/workspace/CaravanifyParquet/{region}/post_processed/timeseries/csv/{region}"
     for region in regions
 }
 
 region_static_attributes_base_dirs = {
-    region: f"/Users/cooper/Desktop/CaravanifyParquet/{region}/post_processed/attributes/{region}"
+    region: f"/workspace/CaravanifyParquet/{region}/post_processed/attributes/{region}"
     for region in regions
 }
 
@@ -227,9 +233,7 @@ checkpoint_callback = ModelCheckpoint(
 
 print("Defining the trainer")
 trainer = pl.Trainer(
-    accelerator="cuda"
-    if pl.accelerators.cuda.is_available()
-    else "cpu",  # Check availability
+    accelerator="auto",
     devices=1,
     max_epochs=MAX_EPOCHS,  # Use configured max_epochs
     enable_progress_bar=True,
