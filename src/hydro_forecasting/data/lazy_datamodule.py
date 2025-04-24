@@ -1,26 +1,38 @@
-# TODO: Add a way to prevent re-running prepare data on the same instance more than once
-
 import pytorch_lightning as pl
 from pathlib import Path
-from typing import Union, Optional
+from typing import Union, Optional, Any, TypedDict, cast
 from torch.utils.data import DataLoader
-from returns.result import Result, Success, Failure
-from returns.pipeline import is_successful
 import math
 import torch
 import numpy as np
 import pandas as pd
-
+import joblib
 
 from sklearn.pipeline import Pipeline
 from .lazy_dataset import HydroLazyDataset
-from .preprocessing import run_hydro_processor
+from .preprocessing import run_hydro_processor, QualityReport
 from .index_entry_creator import (
     create_index_entries,
     split_index_entries_by_stage,
 )
 from ..preprocessing.grouped import GroupedPipeline
 from .batch_sampler import FileGroupedBatchSampler
+from .config_utils import (
+    extract_relevant_config,
+    save_config,
+    generate_run_uuid,
+    load_config,
+    load_pipelines,
+)
+
+
+class LoadedData(TypedDict):
+    """Data structure for loaded preprocessing artifacts."""
+
+    quality_report: QualityReport
+    fitted_pipelines: dict[str, Union[Pipeline, GroupedPipeline]]
+    processed_ts_dir: Path
+    processed_static_path: Optional[Path]
 
 
 def worker_init_fn(worker_id: int) -> None:
@@ -68,7 +80,9 @@ class HydroLazyDataModule(pl.LightningDataModule):
 
         self.region_time_series_base_dirs = region_time_series_base_dirs
         self.region_static_attributes_base_dirs = region_static_attributes_base_dirs
-        self.path_to_preprocessing_output_directory = Path(path_to_preprocessing_output_directory)
+        self.path_to_preprocessing_output_directory = Path(
+            path_to_preprocessing_output_directory
+        )
         self.group_identifier = group_identifier
         self.batch_size = batch_size
         self.input_length = input_length
@@ -106,259 +120,242 @@ class HydroLazyDataModule(pl.LightningDataModule):
         self.val_dataset = None
         self.test_dataset = None
 
-        validation_result = (
-            Success(None)
-            .bind(lambda _: self._validate_positive_integer("batch_size", self.batch_size))
-            .bind(lambda _: self._validate_positive_integer("input_length", self.input_length))
-            .bind(lambda _: self._validate_positive_integer("output_length", self.output_length))
-            .bind(lambda _: self._validate_positive_integer("num_workers", self.num_workers))
-            .bind(lambda _: self._validate_positive_integer("files_per_batch", self.files_per_batch))
-            .bind(lambda _: self._validate_non_negative_integer("max_imputation_gap_size", self.max_imputation_gap_size))
-            .bind(lambda _: self._validate_positive_float("min_train_years", self.min_train_years))
-            .bind(lambda _: self._validate_gauge_id_list("list_of_gauge_ids_to_process", self.list_of_gauge_ids_to_process))
-            .bind(lambda _: self._validate_string_list("forcing_features", self.forcing_features))
-            .bind(lambda _: self._validate_string_list("static_features", self.static_features))
-            .bind(lambda _: self._validate_non_empty_string("target", self.target))
-            .bind(lambda _: self._validate_non_empty_string("group_identifier", self.group_identifier))
-            .bind(lambda _: self._validate_non_empty_string("domain_id", self.domain_id))
-            .bind(lambda _: self._validate_domain_type("domain_type", self.domain_type))
-            .bind(lambda _: self._validate_preprocessing_config(self.preprocessing_configs))
-            .bind(lambda _: self._validate_train_val_test_prop())
-            .bind(lambda _: self._validate_target_not_in_forcing_features())
-        )
+        # Validation logic rewritten without returns
+        validation_error = self._validate_all()
+        if validation_error is not None:
+            raise ValueError(
+                f"Invalid configuration for HydroLazyDataModule: {validation_error}"
+            )
 
-        if not is_successful(validation_result):
-            raise ValueError(f"Invalid configuration for HydroLazyDataModule: {validation_result.failure()}")
+    def _validate_all(self) -> Optional[str]:
+        """Run all validations, return error string if any, else None."""
+        checks = [
+            self._validate_positive_integer("batch_size", self.batch_size),
+            self._validate_positive_integer("input_length", self.input_length),
+            self._validate_positive_integer("output_length", self.output_length),
+            self._validate_positive_integer("num_workers", self.num_workers),
+            self._validate_positive_integer("files_per_batch", self.files_per_batch),
+            self._validate_non_negative_integer(
+                "max_imputation_gap_size", self.max_imputation_gap_size
+            ),
+            self._validate_positive_float("min_train_years", self.min_train_years),
+            self._validate_gauge_id_list(
+                "list_of_gauge_ids_to_process", self.list_of_gauge_ids_to_process
+            ),
+            self._validate_string_list("forcing_features", self.forcing_features),
+            self._validate_string_list("static_features", self.static_features),
+            self._validate_non_empty_string("target", self.target),
+            self._validate_non_empty_string("group_identifier", self.group_identifier),
+            self._validate_non_empty_string("domain_id", self.domain_id),
+            self._validate_domain_type("domain_type", self.domain_type),
+            self._validate_preprocessing_config(self.preprocessing_configs),
+            self._validate_train_val_test_prop(),
+            self._validate_target_not_in_forcing_features(),
+        ]
+        for result in checks:
+            if result is not None:
+                return result
+        return None
 
-    def _validate_positive_integer(self, param_name: str, value: int) -> Result[None, str]:
-        """
-        Validates that a parameter is a positive integer (greater than 0).
-        
-        Args:
-            param_name: Name of the parameter being validated.
-            value: The value to validate.
-            
-        Returns:
-            Success(None) if valid, Failure(str) with error message otherwise.
-        """
+    def _validate_positive_integer(self, param_name: str, value: int) -> Optional[str]:
         if not isinstance(value, int):
-            return Failure(f"Parameter '{param_name}' must be an integer, got {type(value).__name__}")
+            return f"Parameter '{param_name}' must be an integer, got {type(value).__name__}"
         if value <= 0:
-            return Failure(f"Parameter '{param_name}' must be greater than 0, got {value}")
-        return Success(None)
-    
-    def _validate_non_negative_integer(self, param_name: str, value: int) -> Result[None, str]:
-        """
-        Validates that a parameter is a non-negative integer (greater than or equal to 0).
-        
-        Args:
-            param_name: Name of the parameter being validated.
-            value: The value to validate.
-            
-        Returns:
-            Success(None) if valid, Failure(str) with error message otherwise.
-        """
+            return f"Parameter '{param_name}' must be greater than 0, got {value}"
+        return None
+
+    def _validate_non_negative_integer(
+        self, param_name: str, value: int
+    ) -> Optional[str]:
         if not isinstance(value, int):
-            return Failure(f"Parameter '{param_name}' must be an integer, got {type(value).__name__}")
+            return f"Parameter '{param_name}' must be an integer, got {type(value).__name__}"
         if value < 0:
-            return Failure(f"Parameter '{param_name}' must be greater than or equal to 0, got {value}")
-        return Success(None)
-    
-    def _validate_positive_float(self, param_name: str, value: float) -> Result[None, str]:
-        """
-        Validates that a parameter is a positive float (greater than 0).
-        
-        Args:
-            param_name: Name of the parameter being validated.
-            value: The value to validate.
-            
-        Returns:
-            Success(None) if valid, Failure(str) with error message otherwise.
-        """
+            return f"Parameter '{param_name}' must be greater than or equal to 0, got {value}"
+        return None
+
+    def _validate_positive_float(self, param_name: str, value: float) -> Optional[str]:
         if not isinstance(value, (int, float)):
-            return Failure(f"Parameter '{param_name}' must be a number, got {type(value).__name__}")
+            return (
+                f"Parameter '{param_name}' must be a number, got {type(value).__name__}"
+            )
         if value <= 0:
-            return Failure(f"Parameter '{param_name}' must be greater than 0, got {value}")
-        return Success(None)
-    
-    def _validate_gauge_id_list(self, param_name: str, value: Optional[list[str]]) -> Result[None, str]:
-        """
-        Validates that a parameter is either None or a non-empty list of strings.
-        
-        Args:
-            param_name: Name of the parameter being validated.
-            value: The value to validate, which can be None.
-            
-        Returns:
-            Success(None) if valid, Failure(str) with error message otherwise.
-        """
+            return f"Parameter '{param_name}' must be greater than 0, got {value}"
+        return None
+
+    def _validate_gauge_id_list(
+        self, param_name: str, value: Optional[list[str]]
+    ) -> Optional[str]:
         if value is None:
-            return Success(None)  # None is allowed
-        
+            return None
         if not isinstance(value, list):
-            return Failure(f"Parameter '{param_name}' must be a list, got {type(value).__name__}")
-        
+            return (
+                f"Parameter '{param_name}' must be a list, got {type(value).__name__}"
+            )
         if len(value) == 0:
-            return Failure(f"Parameter '{param_name}' must not be an empty list")
-        
+            return f"Parameter '{param_name}' must not be an empty list"
         if not all(isinstance(item, str) for item in value):
-            return Failure(f"All items in '{param_name}' must be strings")
-        
-        return Success(None)
-    
-    def _validate_string_list(self, param_name: str, value: list[str]) -> Result[None, str]:
-        """
-        Validates that a parameter is a non-empty list of strings.
-        
-        Args:
-            param_name: Name of the parameter being validated.
-            value: The value to validate.
-            
-        Returns:
-            Success(None) if valid, Failure(str) with error message otherwise.
-        """
+            return f"All items in '{param_name}' must be strings"
+        return None
+
+    def _validate_string_list(self, param_name: str, value: list[str]) -> Optional[str]:
         if not isinstance(value, list):
-            return Failure(f"Parameter '{param_name}' must be a list, got {type(value).__name__}")
-        
+            return (
+                f"Parameter '{param_name}' must be a list, got {type(value).__name__}"
+            )
         if len(value) == 0:
-            return Failure(f"Parameter '{param_name}' must not be an empty list")
-        
+            return f"Parameter '{param_name}' must not be an empty list"
         if not all(isinstance(item, str) for item in value):
-            return Failure(f"All items in '{param_name}' must be strings")
-        
-        return Success(None)
-    
-    def _validate_non_empty_string(self, param_name: str, value: str) -> Result[None, str]:
-        """
-        Validates that a parameter is a non-empty string.
-        
-        Args:
-            param_name: Name of the parameter being validated.
-            value: The value to validate.
-            
-        Returns:
-            Success(None) if valid, Failure(str) with error message otherwise.
-        """
+            return f"All items in '{param_name}' must be strings"
+        return None
+
+    def _validate_non_empty_string(self, param_name: str, value: str) -> Optional[str]:
         if not isinstance(value, str):
-            return Failure(f"Parameter '{param_name}' must be a string, got {type(value).__name__}")
-        
+            return (
+                f"Parameter '{param_name}' must be a string, got {type(value).__name__}"
+            )
         if len(value) == 0:
-            return Failure(f"Parameter '{param_name}' must not be an empty string")
-        
-        return Success(None)
-    
-    def _validate_domain_type(self, param_name: str, value: str) -> Result[None, str]:
-        """
-        Validates that a domain type parameter is either 'source' or 'target'.
-        
-        Args:
-            param_name: Name of the parameter being validated.
-            value: The value to validate.
-            
-        Returns:
-            Success(None) if valid, Failure(str) with error message otherwise.
-        """
+            return f"Parameter '{param_name}' must not be an empty string"
+        return None
+
+    def _validate_domain_type(self, param_name: str, value: str) -> Optional[str]:
         if not isinstance(value, str):
-            return Failure(f"Parameter '{param_name}' must be a string, got {type(value).__name__}")
-        
+            return (
+                f"Parameter '{param_name}' must be a string, got {type(value).__name__}"
+            )
         if value not in ["source", "target"]:
-            return Failure(f"Parameter '{param_name}' must be either 'source' or 'target', got '{value}'")
-        
-        return Success(None)
+            return f"Parameter '{param_name}' must be either 'source' or 'target', got '{value}'"
+        return None
 
     def _validate_preprocessing_config(
         self, config: dict[str, dict[str, object]]
-    ) -> Result[None, str]:
-        """
-        Validates the preprocessing configuration structure and pipeline types.
-
-        Args:
-            config: Dictionary mapping data types to their pipeline configs.
-
-        Returns:
-            Success(None) if valid, Failure(str) with error message otherwise.
-        """
+    ) -> Optional[str]:
         for data_type, cfg in config.items():
-            # Check if 'pipeline' exists in the config dictionary
             if "pipeline" not in cfg:
-                return Failure(f"Missing 'pipeline' key in {data_type} config")
-
+                return f"Missing 'pipeline' key in {data_type} config"
             pipeline = cfg["pipeline"]
-
             if not isinstance(pipeline, (Pipeline, GroupedPipeline)):
-                return Failure(
-                    f"Pipeline for {data_type} must be Pipeline or GroupedPipeline, got {type(pipeline)}"
-                )
-
-            # Check GroupedPipeline compatibility
+                return f"Pipeline for {data_type} must be Pipeline or GroupedPipeline, got {type(pipeline)}"
             if isinstance(pipeline, GroupedPipeline):
                 if pipeline.group_identifier != self.group_identifier:
-                    return Failure(
+                    return (
                         f"GroupedPipeline for {data_type} uses group_identifier "
                         f"'{pipeline.group_identifier}' but data module uses "
                         f"'{self.group_identifier}'"
                     )
-
-            # Validate static_features has columns specified
             if data_type == "static_features" and "columns" not in cfg:
-                return Failure("static_features config must include 'columns' key")
-
-            result = self._validate_pipeline_compatibility(pipeline)
-            if not is_successful(result):
-                return result
-
-        return Success(None)
+                return "static_features config must include 'columns' key"
+            err = self._validate_pipeline_compatibility(pipeline)
+            if err is not None:
+                return err
+        return None
 
     def _validate_pipeline_compatibility(
         self, pipeline: Union["Pipeline", "GroupedPipeline"]
-    ) -> Result[None, str]:
-        """
-        Verifies that all transformers in the pipeline implement required methods.
-
-        Args:
-            pipeline: Pipeline or GroupedPipeline instance.
-
-        Returns:
-            Success(None) if valid, Failure(str) with error message otherwise.
-        """
+    ) -> Optional[str]:
         if isinstance(pipeline, GroupedPipeline):
             pipeline = pipeline.pipeline
-
         for _, transformer in pipeline.steps:
             required_methods = ["fit", "transform", "inverse_transform"]
             missing = [m for m in required_methods if not hasattr(transformer, m)]
             if missing:
-                return Failure(
-                    f"Transformer {transformer.__class__.__name__} missing required methods: {missing}"
-                )
-        return Success(None)
+                return f"Transformer {transformer.__class__.__name__} missing required methods: {missing}"
+        return None
 
-    def _validate_train_val_test_prop(self) -> Result[None, str]:
-        """
-        Validates the training, validation, and test proportions.
-
-        Returns:
-            Success(None) if valid, Failure(str) with error message otherwise.
-        """
+    def _validate_train_val_test_prop(self) -> Optional[str]:
         total_prop = math.fsum([self.train_prop, self.val_prop, self.test_prop])
         if math.isclose(total_prop, 1.0, abs_tol=1e-6):
-            return Success(None)
-        return Failure(
-            f"Training, validation, and test proportions must sum to 1. Current sum: {total_prop}"
-        )
+            return None
+        return f"Training, validation, and test proportions must sum to 1. Current sum: {total_prop}"
 
-    def _validate_target_not_in_forcing_features(self) -> Result[None, str]:
+    def _validate_target_not_in_forcing_features(self) -> Optional[str]:
+        if self.target in self.forcing_features:
+            return f"Target variable '{self.target}' should not be included in forcing features. Set is_autoregressive=True to include it."
+        return None
+
+    def _check_and_load_processed_data(
+        self,
+    ) -> tuple[bool, Optional[LoadedData], Optional[str]]:
         """
-        Validates that the target variable is not included in the forcing features.
+        Check if processed data exists for the current configuration and load it.
 
         Returns:
-            Success(None) if valid, Failure(str) with error message otherwise.
+            Tuple (success, LoadedData or None, error message or None)
         """
-        if self.target in self.forcing_features:
-            return Failure(
-                f"Target variable '{self.target}' should not be included in forcing features. Set is_autoregressive=True to include it."
+        relevant_config = extract_relevant_config(self)
+        run_uuid = generate_run_uuid(relevant_config)
+        run_output_dir = Path(self.path_to_preprocessing_output_directory) / run_uuid
+        config_path = run_output_dir / "config.json"
+        pipelines_path = run_output_dir / "pipelines.joblib"
+        report_path = run_output_dir / "quality_report.json"
+        success_marker_path = run_output_dir / "_SUCCESS"
+        processed_ts_dir = run_output_dir / "processed_timeseries"
+        processed_static_path_candidate = (
+            run_output_dir / "processed_static_attributes.parquet"
+        )
+
+        if not run_output_dir.is_dir():
+            return (
+                False,
+                None,
+                f"Processed data not found for run {run_uuid} at {run_output_dir}",
             )
-        return Success(None)
+        if not success_marker_path.is_file():
+            return (
+                False,
+                None,
+                f"Incomplete processing run {run_uuid} (no _SUCCESS marker found)",
+            )
+        if not processed_ts_dir.is_dir():
+            return (
+                False,
+                None,
+                f"Processed time series directory not found at {processed_ts_dir}",
+            )
+        processed_static_path = (
+            processed_static_path_candidate
+            if processed_static_path_candidate.is_file()
+            else None
+        )
+        try:
+            loaded_config = load_config(config_path)
+            loaded_report_dict = load_config(report_path)
+            loaded_pipelines = load_pipelines(pipelines_path)
+            config_error = self._validate_loaded_config(loaded_config, relevant_config)
+            if config_error is not None:
+                return False, None, config_error
+            loaded_data: LoadedData = {
+                "quality_report": loaded_report_dict,
+                "fitted_pipelines": loaded_pipelines,
+                "processed_ts_dir": processed_ts_dir,
+                "processed_static_path": processed_static_path,
+            }
+            return True, loaded_data, None
+        except Exception as e:
+            return False, None, f"Failed to load processed data: {str(e)}"
+
+    def _validate_loaded_config(
+        self, loaded_config: dict, current_config: dict
+    ) -> Optional[str]:
+        critical_keys = [
+            "input_length",
+            "output_length",
+            "forcing_features",
+            "static_features",
+            "target",
+            "min_train_years",
+            "max_imputation_gap_size",
+            "train_prop",
+            "val_prop",
+            "test_prop",
+        ]
+        for key in critical_keys:
+            if key in loaded_config and key in current_config:
+                if loaded_config[key] != current_config[key]:
+                    return (
+                        f"Configuration mismatch for key '{key}': "
+                        f"loaded={loaded_config[key]}, current={current_config[key]}"
+                    )
+        return None
 
     def prepare_data(self):
         """
@@ -371,36 +368,64 @@ class HydroLazyDataModule(pl.LightningDataModule):
 
         required_columns = list(dict.fromkeys(self.forcing_features + [self.target]))
 
-        results = run_hydro_processor(
-            region_time_series_base_dirs=self.region_time_series_base_dirs,
-            region_static_attributes_base_dirs=self.region_static_attributes_base_dirs,
-            path_to_preprocessing_output_directory=self.path_to_preprocessing_output_directory,
-            required_columns=required_columns,
-            preprocessing_config=self.preprocessing_configs,
-            min_train_years=self.min_train_years,
-            max_imputation_gap_size=self.max_imputation_gap_size,
-            group_identifier=self.group_identifier,
-            train_prop=self.train_prop,
-            val_prop=self.val_prop,
-            test_prop=self.test_prop,
-            processes=self.num_workers,
-            list_of_gauge_ids_to_process=self.list_of_gauge_ids_to_process,
-        )
+        success, loaded_data, error = self._check_and_load_processed_data()
+        if success:
+            print("INFO: Found existing processed data with matching configuration")
+            self.quality_report = loaded_data["quality_report"]
+            self.fitted_pipelines = loaded_data["fitted_pipelines"]
+            self.processed_time_series_dir = loaded_data["processed_ts_dir"]
+            self.processed_static_attributes_path = loaded_data["processed_static_path"]
+            excluded_ids = set(self.quality_report.get("excluded_basins", {}).keys())
+            retained_ids = [
+                bid
+                for bid in self.quality_report.get("basins", {}).keys()
+                if bid not in excluded_ids
+            ]
+            if not retained_ids:
+                raise RuntimeError("No valid basins found in existing processed data")
+            self.list_of_gauge_ids_to_process = retained_ids
+        else:
+            print(f"INFO: No existing processed data found: {error}")
+            print("INFO: Running full preprocessing pipeline...")
 
-        self.quality_report = results["quality_report"]
-        # Filter out any excluded basins so we only index the valid ones
-        excluded_ids = set(self.quality_report.get("excluded_basins", {}).keys())
-        retained_ids = [
-            bid for bid in self.quality_report.get("basins", {}).keys()
-            if bid not in excluded_ids
-        ]
-        if not retained_ids:
-            raise RuntimeError("All basins excluded during preprocessing; no valid basins to process")
-        self.list_of_gauge_ids_to_process = retained_ids
-
-        self.fitted_pipelines = results["fitted_pipelines"]
-        self.processed_time_series_dir = results["processed_time_series_dir"]
-        self.processed_static_attributes_path = results["processed_static_attributes_path"]
+            relevant_config = extract_relevant_config(self)
+            run_uuid = generate_run_uuid(relevant_config)
+            ok, result_data, err = run_hydro_processor(
+                region_time_series_base_dirs=self.region_time_series_base_dirs,
+                region_static_attributes_base_dirs=self.region_static_attributes_base_dirs,
+                path_to_preprocessing_output_directory=self.path_to_preprocessing_output_directory,
+                required_columns=required_columns,
+                preprocessing_config=self.preprocessing_configs,
+                min_train_years=self.min_train_years,
+                max_imputation_gap_size=self.max_imputation_gap_size,
+                group_identifier=self.group_identifier,
+                train_prop=self.train_prop,
+                val_prop=self.val_prop,
+                test_prop=self.test_prop,
+                processes=self.num_workers,
+                list_of_gauge_ids_to_process=self.list_of_gauge_ids_to_process,
+                run_uuid=run_uuid,
+                datamodule_config=relevant_config,
+            )
+            if not ok:
+                raise RuntimeError(f"Data preprocessing failed: {err}")
+            self.quality_report = result_data["quality_report"]
+            excluded_ids = set(self.quality_report.get("excluded_basins", {}).keys())
+            retained_ids = [
+                bid
+                for bid in self.quality_report.get("basins", {}).keys()
+                if bid not in excluded_ids
+            ]
+            if not retained_ids:
+                raise RuntimeError(
+                    "All basins excluded during preprocessing; no valid basins to process"
+                )
+            self.list_of_gauge_ids_to_process = retained_ids
+            self.fitted_pipelines = result_data["fitted_pipelines"]
+            self.processed_time_series_dir = result_data["processed_timeseries_dir"]
+            self.processed_static_attributes_path = result_data[
+                "processed_static_attributes_path"
+            ]
 
         # Create index entries with explicit split proportions and static file path
         self.index_entries = create_index_entries(
@@ -442,7 +467,6 @@ class HydroLazyDataModule(pl.LightningDataModule):
         ):
             raise RuntimeError("prepare_data() must be called before setup()")
 
-        # Get the path to static attributes file
         static_file_path = self.processed_static_attributes_path
 
         # Common dataset arguments
@@ -460,7 +484,6 @@ class HydroLazyDataModule(pl.LightningDataModule):
 
         # Create datasets based on stage
         if stage == "fit" or stage is None:
-            # Update static_file_path in each index entry
             for entry in self.train_index_entries:
                 entry["static_file_path"] = static_file_path
 
@@ -469,7 +492,6 @@ class HydroLazyDataModule(pl.LightningDataModule):
                 **common_args,
             )
 
-            # Update static_file_path in each index entry
             for entry in self.val_index_entries:
                 entry["static_file_path"] = static_file_path
 
@@ -478,11 +500,14 @@ class HydroLazyDataModule(pl.LightningDataModule):
                 **common_args,
             )
 
-            print(f"INFO: Created training dataset with {len(self.train_dataset)} samples")
-            print(f"INFO: Created validation dataset with {len(self.val_dataset)} samples")
+            print(
+                f"INFO: Created training dataset with {len(self.train_dataset)} samples"
+            )
+            print(
+                f"INFO: Created validation dataset with {len(self.val_dataset)} samples"
+            )
 
         if stage == "test" or stage is None:
-            # Update static_file_path in each index entry
             for entry in self.test_index_entries:
                 entry["static_file_path"] = static_file_path
 
@@ -561,7 +586,7 @@ class HydroLazyDataModule(pl.LightningDataModule):
         basin_ids: np.ndarray,
     ) -> np.ndarray:
         """
-        Inverse transform the predictions using the fitted pipeline for the target. 
+        Inverse transform the predictions using the fitted pipeline for the target.
 
         Args:
             predictions: The predictions to inverse transform.
@@ -588,3 +613,41 @@ class HydroLazyDataModule(pl.LightningDataModule):
 
         inv_vals = inv_df[self.target].values
         return inv_vals.reshape(orig_shape)
+
+    def save_configuration(self, filepath: Union[str, Path]) -> Optional[str]:
+        """
+        Save the DataModule configuration to a JSON file.
+
+        Extracts relevant configuration parameters and saves them to the specified
+        file path. This allows for reproducibility and tracking of data processing
+        runs.
+
+        Args:
+            filepath: Path where the configuration will be saved
+
+        Returns:
+            None if saving was successful, or error message
+        """
+        config_path = Path(filepath)
+
+        config = extract_relevant_config(self)
+
+        config["run_uuid"] = generate_run_uuid(config)
+
+        try:
+            save_config(config, config_path)
+            return None
+        except Exception as e:
+            return str(e)
+
+    def get_configuration(self) -> dict[str, Any]:
+        """
+        Get the relevant configuration of this DataModule as a dictionary.
+
+        Extracts key parameters that define the data processing configuration,
+        including features, target, splits, and preprocessing settings.
+
+        Returns:
+            Dictionary containing the relevant configuration parameters
+        """
+        return extract_relevant_config(self)

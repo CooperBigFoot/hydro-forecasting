@@ -1,12 +1,11 @@
-# TODO: Implement Railway Oriented Programming
-
 import json
 import duckdb
 import pandas as pd
 import numpy as np
 import gc
+import joblib
 from pathlib import Path
-from typing import Optional, Tuple, TypedDict, Union, Any, cast
+from typing import Callable, Optional, Tuple, TypedDict, Union, Any, cast, Dict
 import multiprocessing as mp
 from tqdm import tqdm
 from sklearn.base import clone
@@ -33,10 +32,9 @@ class ProcessingResult(TypedDict):
 
     quality_report: QualityReport
     fitted_pipelines: dict[str, Any]  # Pipeline or GroupedPipeline instances
-    processed_dir: Path  # Directory with processed files
-    processed_path_to_static_attributes_directory: Optional[
-        Path
-    ]  # Directory with processed static data
+    run_output_dir: Path  # Main run-specific directory
+    processed_timeseries_dir: Path  # Directory with processed time series
+    processed_static_attributes_path: Optional[Path]  # Path to processed static data
 
 
 class Config:
@@ -871,11 +869,68 @@ def load_static_attributes(
         return None
 
 
+def save_config(config: dict, path: Path) -> tuple[bool, Optional[Path], Optional[str]]:
+    """
+    Save configuration dictionary to a JSON file.
+
+    Args:
+        config: Configuration dictionary
+        path: Path to save the configuration
+
+    Returns:
+        Tuple containing (success flag, path on success, error message on failure)
+    """
+    try:
+        # Convert Path objects to strings for JSON serialization
+        serializable_config = {}
+        for key, value in config.items():
+            if isinstance(value, Path):
+                serializable_config[key] = str(value)
+            elif isinstance(value, dict):
+                serializable_config[key] = {
+                    k: str(v) if isinstance(v, Path) else v for k, v in value.items()
+                }
+            else:
+                serializable_config[key] = value
+
+        # Ensure directory exists
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        with open(path, "w") as f:
+            json.dump(serializable_config, f, indent=2, default=str)
+        return True, path, None
+    except Exception as e:
+        return False, None, f"Failed to save configuration: {str(e)}"
+
+
+def save_pipelines(pipelines: dict[str, Any], path: Path) -> tuple[bool, Optional[Path], Optional[str]]:
+    """
+    Save fitted preprocessing pipelines to a joblib file.
+
+    Args:
+        pipelines: Dictionary of fitted pipeline instances
+        path: Path to save the pipelines
+
+    Returns:
+        Tuple containing (success flag, path on success, error message on failure)
+    """
+    try:
+        # Ensure directory exists
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        joblib.dump(pipelines, path)
+        return True, path, None
+    except Exception as e:
+        return False, None, f"Failed to save pipelines: {str(e)}"
+
+
 def run_hydro_processor(
     region_time_series_base_dirs: dict[str, Path],
     region_static_attributes_base_dirs: dict[str, Path],
     path_to_preprocessing_output_directory: Union[str, Path],
     required_columns: list[str],
+    run_uuid: str,
+    datamodule_config: dict[str, Any],
     preprocessing_config: Optional[dict[str, dict[str, Any]]] = None,
     min_train_years: float = 5.0,
     max_imputation_gap_size: int = 5,
@@ -886,15 +941,17 @@ def run_hydro_processor(
     processes: int = 6,
     list_of_gauge_ids_to_process: Optional[list[str]] = None,
     pipeline_fitting_batch_size: int = 50,
-) -> dict:
+) -> tuple[bool, Optional[ProcessingResult], Optional[str]]:
     """
     Main function to run the hydrological data processor with pipeline fitting, supporting multi-region.
 
     Args:
         region_time_series_base_dirs: Mapping from region prefix to time series directory
         region_static_attributes_base_dirs: Mapping from region prefix to static attribute directory
-        path_to_preprocessing_output_directory: Directory for processed parquet files and reports
+        path_to_preprocessing_output_directory: Base directory for processed data
         required_columns: List of required data columns for quality checking
+        run_uuid: Unique identifier for this processing run
+        datamodule_config: Configuration dictionary for the data module
         preprocessing_config: Configuration for data preprocessing pipelines
         min_train_years: Minimum required years for training
         max_imputation_gap_size: Maximum gap length to impute with interpolation
@@ -907,164 +964,205 @@ def run_hydro_processor(
         pipeline_fitting_batch_size: Maximum number of basins to process in a single batch
 
     Returns:
-        Dictionary containing quality report, fitted pipelines, processed data dir, and processed static attributes path
+        Tuple containing (success flag, ProcessingResult on success, error message on failure)
     """
-    print("\n================ STARTING PREPROCESSING PIPELINE ================")
-    config = Config(
-        required_columns=required_columns,
-        preprocessing_config=preprocessing_config,
-        min_train_years=min_train_years,
-        max_imputation_gap_size=max_imputation_gap_size,
-        group_identifier=group_identifier,
-        train_prop=train_prop,
-        val_prop=val_prop,
-        test_prop=test_prop,
-    )
-
-    path_to_preprocessing_output_directory_path = Path(
-        path_to_preprocessing_output_directory
-    )
-    path_to_preprocessing_output_directory_path.mkdir(parents=True, exist_ok=True)
-
-    processed_dir = path_to_preprocessing_output_directory_path / "processed_data"
-    processed_dir.mkdir(exist_ok=True)
-    reports_dir = path_to_preprocessing_output_directory_path / "quality_reports"
-    reports_dir.mkdir(exist_ok=True)
-    # Define path for processed static attributes, even if none are found initially
-    processed_static_attributes_path = (
-        path_to_preprocessing_output_directory_path / "processed_static_data.parquet"
-    )
-
+    # Validate input parameters
     if not list_of_gauge_ids_to_process:
-        raise ValueError("No gauge IDs provided for processing")
+        return False, None, "No gauge IDs provided for processing"
 
-    print("\n================ LOADING STATIC ATTRIBUTES ================")
-    print(
-        f"INFO: Attempting to load static attributes for {len(list_of_gauge_ids_to_process)} gauge IDs"
-    )
+    # Setup paths and directories
+    try:
+        print("\n================ STARTING PREPROCESSING PIPELINE ================")
 
-    static_df = load_static_attributes(
-        region_static_attributes_base_dirs, list_of_gauge_ids_to_process
-    )
-    if static_df is not None:
-        print(
-            f"INFO: Successfully loaded static attributes for {len(static_df)} basins."
+        # Create the run-specific output directory
+        base_output_dir = Path(path_to_preprocessing_output_directory)
+        run_output_dir = base_output_dir / run_uuid
+
+        # Define subdirectories for organization
+        processed_timeseries_dir = run_output_dir / "processed_timeseries"
+        quality_reports_dir = run_output_dir / "quality_reports"
+
+        # Define paths for artifacts
+        config_path = run_output_dir / "config.json"
+        pipelines_path = run_output_dir / "pipelines.joblib"
+        quality_report_path = run_output_dir / "quality_report.json"
+        success_marker_path = run_output_dir / "_SUCCESS"
+
+        # Define path for processed static attributes
+        processed_static_attributes_path = (
+            run_output_dir / "processed_static_attributes.parquet"
         )
-    else:
-        print("INFO: No static attributes found or loaded.")
 
-    fitted_pipelines = {}
+        # Create the config object
+        config = Config(
+            required_columns=required_columns,
+            preprocessing_config=preprocessing_config,
+            min_train_years=min_train_years,
+            max_imputation_gap_size=max_imputation_gap_size,
+            group_identifier=group_identifier,
+            train_prop=train_prop,
+            val_prop=val_prop,
+            test_prop=test_prop,
+        )
 
-    if preprocessing_config:
-        print("\n================ FITTING PREPROCESSING PIPELINES ================")
-        try:
-            # Fit pipelines using the refactored, batch-wise approach
-            fitted_pipelines = fit_pipelines(
-                static_df,
-                config,
-                list_of_gauge_ids_to_process,
-                region_time_series_base_dirs,
-                pipeline_fitting_batch_size=pipeline_fitting_batch_size,
-            )
-            print(f"INFO: Fitted {len(fitted_pipelines)} pipelines")
-        except Exception as e:
-            print(f"ERROR: Error during pipeline fitting: {str(e)}")
-            # Decide if processing should continue without fitted pipelines or stop
-            # For now, continue, but processing steps might fail later
-            fitted_pipelines = {}  # Ensure it's an empty dict if fitting failed
+        # Create output directories
+        processed_timeseries_dir.mkdir(parents=True, exist_ok=True)
+        quality_reports_dir.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        return False, None, f"Failed to set up preprocessing directories: {str(e)}"
 
-    print("\n================ PROCESSING BASIN TIME SERIES ================")
-    quality_report = process_basins_parallel(
-        list_of_gauge_ids_to_process,
-        config,
-        region_time_series_base_dirs,
-        processed_dir,
-        reports_dir,
-        fitted_pipelines,
-        processes,
-    )
+    # Define a function to process static attributes
+    def process_static_data(
+        static_df: pd.DataFrame, quality_report: QualityReport, fitted_pipelines: dict
+    ) -> Optional[Path]:
+        """Process static attributes and return the path if successful."""
+        if static_df is None or "static" not in fitted_pipelines:
+            return None
 
-    # Process static attributes using the extended apply_transformations function
-    processed_static_path_result = None  # Initialize path result
-    if static_df is not None and "static" in fitted_pipelines:
         print("\n================ PROCESSING STATIC ATTRIBUTES ================")
         print("INFO: Processing static attributes...")
+
         # Only keep static attributes for retained basins
         retained_basins = [
             basin_id
             for basin_id, report in quality_report["basins"].items()
-            if basin_id not in quality_report["excluded_basins"]
-            and report is not None  # Check report exists
+            if basin_id not in quality_report["excluded_basins"] and report is not None
         ]
-        if retained_basins:
-            # Ensure gauge_id column exists before filtering
-            if "gauge_id" in static_df.columns:
-                filtered_static_df = static_df[
-                    static_df["gauge_id"].isin(retained_basins)
-                ].copy()
-                if not filtered_static_df.empty:
-                    try:
-                        transformed_static = apply_transformations(
-                            filtered_static_df,
-                            config,
-                            fitted_pipelines,
-                            static_data=True,
-                        )
-                        transformed_static.to_parquet(processed_static_attributes_path)
-                        processed_static_path_result = (
-                            processed_static_attributes_path  # Set path on success
-                        )
-                        print(
-                            f"SUCCESS: Saved transformed static attributes for {len(transformed_static)} basins to {processed_static_attributes_path}"
-                        )
-                    except Exception as e:
-                        print(
-                            f"ERROR: Failed to transform or save static attributes: {e}"
-                        )
-                else:
-                    print(
-                        "INFO: No static attributes remaining after filtering for retained basins."
-                    )
-            else:
-                print(
-                    "ERROR: 'gauge_id' column not found in loaded static_df, cannot filter or process."
-                )
-        else:
+
+        if not retained_basins:
             print(
                 "INFO: No basins were retained, skipping static attribute processing."
             )
-    elif static_df is not None:
-        print(
-            "INFO: Static attributes loaded but no 'static' pipeline found in fitted_pipelines. Skipping transformation."
+            return None
+
+        if "gauge_id" not in static_df.columns:
+            print(
+                "ERROR: 'gauge_id' column not found in loaded static_df, cannot filter or process."
+            )
+            return None
+
+        filtered_static_df = static_df[
+            static_df["gauge_id"].isin(retained_basins)
+        ].copy()
+        if filtered_static_df.empty:
+            print(
+                "INFO: No static attributes remaining after filtering for retained basins."
+            )
+            return None
+
+        try:
+            transformed_static = apply_transformations(
+                filtered_static_df,
+                config,
+                fitted_pipelines,
+                static_data=True,
+            )
+            processed_static_attributes_path.parent.mkdir(parents=True, exist_ok=True)
+            transformed_static.to_parquet(processed_static_attributes_path)
+            print(
+                f"SUCCESS: Saved transformed static attributes for {len(transformed_static)} basins"
+            )
+            return processed_static_attributes_path
+        except Exception as e:
+            print(f"ERROR: Failed to transform or save static attributes: {str(e)}")
+            return None
+
+    # Main processing flow with explicit error handling
+    try:
+        # 1. Load static attributes
+        static_df = load_static_attributes(
+            region_static_attributes_base_dirs, list_of_gauge_ids_to_process
         )
-
-    with open(
-        path_to_preprocessing_output_directory_path / "quality_summary.json", "w"
-    ) as f:
-        json.dump(quality_report, f, indent=2, default=str)
-
-    pipeline_info = {
-        name: f"{type(pipeline).__name__}"
-        for name, pipeline in fitted_pipelines.items()
-    }
-    with open(
-        path_to_preprocessing_output_directory_path / "pipeline_info.json", "w"
-    ) as f:
-        json.dump(pipeline_info, f, indent=2)
-
-    print(
-        "\n================ PROCESSING SUMMARY ================\n"
-        f"SUCCESS: Completed processing {quality_report['retained_basins']} of {quality_report['original_basins']} basins"
-    )
-
-    if quality_report["excluded_basins"]:
-        print(
-            f"WARNING: {len(quality_report['excluded_basins'])} basins excluded due to quality issues"
+        fitted_pipelines = {}
+        
+        # 2. Fit pipelines if preprocessing config is provided
+        if preprocessing_config:
+            try:
+                fitted_pipelines = fit_pipelines(
+                    static_df,
+                    config,
+                    list_of_gauge_ids_to_process,
+                    region_time_series_base_dirs,
+                    pipeline_fitting_batch_size=pipeline_fitting_batch_size,
+                )
+            except Exception as e:
+                return False, None, f"Error during pipeline fitting: {str(e)}"
+        
+        # 3. Process basin time series
+        try:
+            quality_report = process_basins_parallel(
+                list_of_gauge_ids_to_process,
+                config,
+                region_time_series_base_dirs,
+                processed_timeseries_dir,
+                quality_reports_dir,
+                fitted_pipelines,
+                processes,
+            )
+        except Exception as e:
+            return False, None, f"Failed to process basin time series: {str(e)}"
+        
+        # 4. Process static attributes if available
+        processed_static_path = process_static_data(
+            static_df, quality_report, fitted_pipelines
         )
+        
+        # 5. Save artifacts
+        success, _, error = save_config(datamodule_config, config_path)
+        if not success:
+            return False, None, f"Failed to save datamodule config: {error}"
+            
+        success, _, error = save_pipelines(fitted_pipelines, pipelines_path)
+        if not success:
+            return False, None, f"Failed to save pipelines: {error}"
+            
+        success, _, error = save_config(quality_report, quality_report_path)
+        if not success:
+            return False, None, f"Failed to save quality report: {error}"
+        
+        # Create success marker file
+        success_marker_path.touch()
+        
+        # 6. Create and return final result
+        result = {
+            "quality_report": quality_report,
+            "fitted_pipelines": fitted_pipelines,
+            "run_output_dir": run_output_dir,
+            "processed_timeseries_dir": processed_timeseries_dir,
+            "processed_static_attributes_path": processed_static_path,
+        }
+        
+        # Print summary
+        print(
+            "\n================ PROCESSING SUMMARY ================\n"
+            f"SUCCESS: Completed processing {result['quality_report']['retained_basins']} "
+            f"of {result['quality_report']['original_basins']} basins"
+        )
+        
+        if result["quality_report"]["excluded_basins"]:
+            print(
+                f"WARNING: {len(result['quality_report']['excluded_basins'])} basins excluded due to quality issues"
+            )
+        
+        return True, cast(ProcessingResult, result), None
+        
+    except Exception as e:
+        return False, None, f"Unexpected error during hydro processing: {str(e)}"
 
-    return {
-        "quality_report": quality_report,
-        "fitted_pipelines": fitted_pipelines,
-        "processed_time_series_dir": processed_dir,
-        "processed_static_attributes_path": processed_static_path_result,  # Return path only if saved
-    }
+
+def try_process_with_exception_handling(action: Callable[[], Any], error_message: str) -> tuple[bool, Any, Optional[str]]:
+    """
+    Helper function to execute an action and catch any exceptions.
+
+    Args:
+        action: Function to execute
+        error_message: Base error message to use
+
+    Returns:
+        Tuple containing (success flag, result on success, error message on failure)
+    """
+    try:
+        result = action()
+        return True, result, None
+    except Exception as e:
+        return False, None, f"{error_message}: {str(e)}"
