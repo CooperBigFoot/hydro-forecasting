@@ -1,8 +1,11 @@
 import numpy as np
 import pandas as pd
 from pathlib import Path
+from returns.result import Result, Success, Failure
+from tqdm import tqdm  # Add tqdm for progress bar
 from .preprocessing import split_data, Config
 
+BATCH_SIZE = 100  # Maximum number of basins to process per batch
 
 # Using a default config without immediate validation
 # We'll validate within the functions when they're actually called
@@ -15,40 +18,50 @@ SPLIT_CONFIG = Config(
 )
 
 
-def load_gauge_parquet(
-    gauge_ids: list[str], time_series_base_dir: Path
-) -> pd.DataFrame:
+def load_batch_parquet(
+    batch_gauge_ids: list[str], time_series_base_dir: Path
+) -> Result[pd.DataFrame, str]:
     """
-    Loads the .parquet file for a given list of gauge_ids.
+    Loads .parquet files for a batch of gauge_ids.
 
     Args:
-        gauge_ids (list[str]): Gauge IDs with the 'USA_' prefix.
-        time_series_base_dir (Path): Path to the directory containing the parquet files.
+        batch_gauge_ids: List of gauge IDs for this batch.
+        time_series_base_dir: Directory containing the parquet files.
 
     Returns:
-        pd.DataFrame: Combined data from the corresponding parquet files.
-    """
-    data = []
+        Result containing the concatenated DataFrame for the batch, or Failure with error message.
 
-    for gauge_id in gauge_ids:
+    Raises:
+        Does not raise; returns Failure on critical errors.
+
+    Example:
+        >>> load_batch_parquet(['USA_001', 'USA_002'], Path('/data'))
+    """
+    data: list[pd.DataFrame] = []
+    missing: list[str] = []
+    for gauge_id in batch_gauge_ids:
         file_path = time_series_base_dir / f"{gauge_id}.parquet"
         if not file_path.exists():
-            raise FileNotFoundError(
-                f"No parquet file found for gauge ID {gauge_id} at {file_path}"
-            )
+            missing.append(gauge_id)
+            continue
         try:
             df = pd.read_parquet(file_path)
-            df["gauge_id"] = gauge_id  # Assign here
+            df["gauge_id"] = gauge_id
             data.append(df)
         except Exception as e:
-            print(f"Error loading {file_path}: {e}")
+            missing.append(gauge_id)
             continue
+    if not data:
+        return Failure(
+            f"No files loaded for batch: {batch_gauge_ids}. Missing: {missing}"
+        )
+    batch_df = pd.concat(data, ignore_index=True)
+    return Success(batch_df)
 
-    combined_data = pd.concat(data, ignore_index=True)
-    return combined_data
 
-
-def get_split_boundaries(train, val, test, gauge_ids):
+def get_split_boundaries(
+    train: pd.DataFrame, val: pd.DataFrame, test: pd.DataFrame, gauge_ids: list[str]
+) -> dict[str, dict[str, pd.Timestamp | None]]:
     """
     Determine the date boundaries between train/val/test splits for each gauge ID.
 
@@ -81,7 +94,7 @@ def find_valid_sequences(
     input_length: int,
     output_length: int,
     cols_to_check: list[str] = None,
-):
+) -> tuple[np.ndarray, np.ndarray]:
     """
     Find valid sequence starting positions in the basin data.
 
@@ -131,7 +144,7 @@ def find_valid_sequences(
     return valid_positions, dates
 
 
-def determine_stage(input_end_date, boundaries):
+def determine_stage(input_end_date, boundaries: dict[str, pd.Timestamp | None]) -> str:
     """
     Determine which stage (train/val/test) a sequence belongs to based on its end date.
 
@@ -163,9 +176,10 @@ def create_index_entries(
     val_prop: float = None,
     test_prop: float = None,
     cols_to_check: list[str] = None,
-):
+) -> list[dict]:
     """
     Create index entries for valid sequences, identifying which stage (train/val/test) each sequence belongs to.
+    Processes basins in batches for memory efficiency.
 
     Args:
         gauge_ids: List of gauge IDs to process.
@@ -173,27 +187,28 @@ def create_index_entries(
         static_file_path: Path to the unified processed static attributes file.
         input_length: Length of input sequence.
         output_length: Length of forecast horizon.
-        train_prop: Proportion of data for training (optional, uses SPLIT_CONFIG if None).
-        val_prop: Proportion of data for validation (optional, uses SPLIT_CONFIG if None).
-        test_prop: Proportion of data for testing (optional, uses SPLIT_CONFIG if None).
+        train_prop: Proportion of data for training (optional).
+        val_prop: Proportion of data for validation (optional).
+        test_prop: Proportion of data for testing (optional).
         cols_to_check: List of column names to check for NaN values in sequence validity checks.
-            All columns in this list must be present and non-NaN for a sequence to be considered valid.
 
     Returns:
         List of index entries with stage identification.
+
+    Raises:
+        ValueError: If split proportions are invalid.
+
+    Example:
+        >>> create_index_entries(['USA_001', 'USA_002'], Path('/data'), Path('/static.parquet'), 30, 7)
     """
-    valid_data = load_gauge_parquet(gauge_ids, time_series_base_dir)
-
-    # Create a local config that either uses provided values or falls back to SPLIT_CONFIG
+    # Validate split proportions once
     local_config = Config(
-        required_columns=SPLIT_CONFIG.required_columns,
-        preprocessing_config=SPLIT_CONFIG.preprocessing_config,
-        train_prop=train_prop if train_prop is not None else SPLIT_CONFIG.train_prop,
-        val_prop=val_prop if val_prop is not None else SPLIT_CONFIG.val_prop,
-        test_prop=test_prop if test_prop is not None else SPLIT_CONFIG.test_prop,
+        required_columns=[],  # Not used here
+        preprocessing_config={},
+        train_prop=train_prop if train_prop is not None else 0.6,
+        val_prop=val_prop if val_prop is not None else 0.2,
+        test_prop=test_prop if test_prop is not None else 0.2,
     )
-
-    # Validate the split proportions
     if (
         local_config.train_prop <= 0
         or local_config.val_prop <= 0
@@ -202,61 +217,60 @@ def create_index_entries(
         raise ValueError(
             "The train, val, and test proportions must be positive values."
         )
-
-    # Sum should be close to 1.0 (allow for minor floating point imprecision)
     sum_props = local_config.train_prop + local_config.val_prop + local_config.test_prop
     if abs(sum_props - 1.0) > 1e-10:
         raise ValueError(
             f"The sum of train, val, and test proportions must be 1.0, got {sum_props:.10f}"
         )
 
-    train, val, test = split_data(df=valid_data, config=local_config)
-
-    # Get split boundaries for each gauge
-    split_boundaries = get_split_boundaries(train, val, test, gauge_ids)
-
-    all_index_entries = []
+    all_index_entries: list[dict] = []
     total_seq_length = input_length + output_length
 
-    # Process each basin
-    for gauge_id, basin_data in valid_data.groupby("gauge_id"):
-        # Create actual file path for this gauge
-        ts_file_path = time_series_base_dir / f"{gauge_id}.parquet"
+    num_batches = (len(gauge_ids) + BATCH_SIZE - 1) // BATCH_SIZE
+    for batch_start in tqdm(
+        range(0, len(gauge_ids), BATCH_SIZE),
+        total=num_batches,
+        desc="Creating index entries",
+    ):
+        batch_gauge_ids = gauge_ids[batch_start : batch_start + BATCH_SIZE]
+        batch_result = load_batch_parquet(batch_gauge_ids, time_series_base_dir)
+        if isinstance(batch_result, Failure):
+            # Optionally log batch_result.failure()
+            continue
+        batch_data = batch_result.unwrap()
 
-        # Get split boundaries for this gauge
-        gauge_bounds = split_boundaries.get(
-            gauge_id, {"val_start": None, "test_start": None}
-        )
+        train, val, test = split_data(df=batch_data, config=local_config)
+        batch_boundaries = get_split_boundaries(train, val, test, batch_gauge_ids)
 
-        # Find valid sequences in this basin's data
-        valid_positions, dates = find_valid_sequences(
-            basin_data, input_length, output_length, cols_to_check=cols_to_check
-        )
-
-        # Create index entries with stage identification
-        for idx in valid_positions:
-            if idx + total_seq_length > len(basin_data):
+        for gauge_id in batch_gauge_ids:
+            ts_file_path = time_series_base_dir / f"{gauge_id}.parquet"
+            basin_data = batch_data[batch_data["gauge_id"] == gauge_id]
+            if basin_data.empty:
                 continue
-
-            # Get the input_end_date for this sequence
-            input_end_date = dates[idx + input_length - 1]
-
-            # Determine stage based on input_end_date
-            stage = determine_stage(input_end_date, gauge_bounds)
-
-            # Create entry with stage information
-            entry = {
-                "file_path": str(ts_file_path),
-                "gauge_id": gauge_id,
-                "start_idx": idx,
-                "end_idx": idx + total_seq_length,
-                "input_end_date": input_end_date,
-                "valid_sequence": True,
-                "stage": stage,
-                "static_file_path": str(static_file_path),
-            }
-
-            all_index_entries.append(entry)
+            gauge_bounds = batch_boundaries.get(
+                gauge_id, {"val_start": None, "test_start": None}
+            )
+            valid_positions, dates = find_valid_sequences(
+                basin_data, input_length, output_length, cols_to_check=cols_to_check
+            )
+            if valid_positions.size == 0:
+                continue
+            for idx in valid_positions:
+                if idx + total_seq_length > len(basin_data):
+                    continue
+                input_end_date = dates[idx + input_length - 1]
+                stage = determine_stage(input_end_date, gauge_bounds)
+                entry = {
+                    "file_path": str(ts_file_path),
+                    "gauge_id": gauge_id,
+                    "start_idx": idx,
+                    "end_idx": idx + total_seq_length,
+                    "input_end_date": input_end_date,
+                    "valid_sequence": True,
+                    "stage": stage,
+                    "static_file_path": str(static_file_path),
+                }
+                all_index_entries.append(entry)
 
     return all_index_entries
 
