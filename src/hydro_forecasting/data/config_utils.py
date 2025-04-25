@@ -18,6 +18,7 @@ def _make_hashable(obj: Any) -> Any:
     """
     Recursively convert a configuration object into a hashable representation.
     
+    
     Handles various data types:
     - Converts dicts to sorted tuples of (key, value) pairs
     - Converts sets to sorted lists
@@ -59,16 +60,6 @@ def generate_run_uuid(config: dict[str, Any]) -> str:
         
     Returns:
         A UUID string uniquely identifying the configuration
-        
-    Example:
-        >>> config = {
-        ...     "input_length": 365,
-        ...     "output_length": 30,
-        ...     "forcing_features": ["precipitation", "temperature"],
-        ...     "paths": {"data": "/path/to/data"}
-        ... }
-        >>> generate_run_uuid(config)
-        '6c45cbcd-e80d-5da5-a7ca-a3c9dbeb2a84'
     """
     # Convert the config to a hashable representation
     hashable_config = _make_hashable(config)
@@ -101,11 +92,6 @@ def save_pipelines(
         
     Returns:
         Success with None if saving was successful, or Failure with error message
-        
-    Example:
-        >>> pipelines = {"basin_1": fitted_pipeline, "basin_2": another_pipeline}
-        >>> result = save_pipelines(pipelines, Path("models/basin_pipelines.joblib"))
-        >>> result.map(lambda _: print("Pipelines saved successfully"))
     """
     # Ensure parent directory exists
     filepath.parent.mkdir(parents=True, exist_ok=True)
@@ -126,14 +112,6 @@ def load_pipelines(
     Returns:
         Success with the loaded pipeline dictionary if successful, 
         or Failure with error message
-        
-    Example:
-        >>> result = load_pipelines(Path("models/basin_pipelines.joblib"))
-        >>> result.map(
-        ...     lambda pipelines: print(f"Loaded {len(pipelines)} pipelines")
-        ... ).alt(
-        ...     lambda error: print(f"Error: {error}")
-        ... )
     """
     if not filepath.is_file():
         raise FileNotFoundError(f"Pipeline file not found: {filepath}")
@@ -176,11 +154,6 @@ def save_config(config: dict[str, Any], filepath: Path) -> None:
         
     Returns:
         Success with None if saving was successful, or Failure with error message
-        
-    Example:
-        >>> config = {"input_length": 365, "batch_size": 32}
-        >>> result = save_config(config, Path("configs/model_config.json"))
-        >>> result.map(lambda _: print("Config saved successfully"))
     """ 
     # Ensure parent directory exists
     filepath.parent.mkdir(parents=True, exist_ok=True)
@@ -201,14 +174,6 @@ def load_config(filepath: Path) -> dict[str, Any]:
     Returns:
         Success with the loaded configuration dictionary if successful,
         or Failure with error message
-        
-    Example:
-        >>> result = load_config(Path("configs/model_config.json"))
-        >>> result.map(
-        ...     lambda config: print(f"Loaded config with {len(config)} parameters")
-        ... ).alt(
-        ...     lambda error: print(f"Error: {error}")
-        ... )
     """ 
     if not filepath.is_file():
         raise FileNotFoundError(f"Configuration file not found: {filepath}")
@@ -231,11 +196,6 @@ def extract_relevant_config(datamodule: T) -> dict[str, Any]:
         
     Returns:
         Dictionary containing the relevant configuration parameters
-        
-    Example:
-        >>> config = extract_relevant_config(datamodule_instance)
-        >>> uuid = generate_run_uuid(config)
-        >>> print(f"Processing run UUID: {uuid}")
     """ 
     # Extract relevant attributes that define the processing configuration
     relevant_config = {
