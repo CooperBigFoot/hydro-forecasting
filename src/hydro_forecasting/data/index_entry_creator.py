@@ -48,7 +48,7 @@ def load_batch_parquet(
             df = pd.read_parquet(file_path)
             df["gauge_id"] = gauge_id
             data.append(df)
-        except Exception as e:
+        except Exception:
             missing.append(gauge_id)
             continue
     if not data:

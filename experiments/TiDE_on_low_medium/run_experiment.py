@@ -247,7 +247,7 @@ trainer.fit(
     datamodule=datamodule,
 )
 
-print(f"=========DONE==========")
+print("=========DONE==========")
 print(f"Checkpoints saved to: {CHECKPOINT_DIR}")
 print(f"Logs saved to: {LOGS_DIR}/{EXPERIMENT_NAME}/run_0")
 print(f"Best checkpoint path: {checkpoint_callback.best_model_path}")

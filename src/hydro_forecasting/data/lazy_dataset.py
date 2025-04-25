@@ -1,11 +1,9 @@
 import torch
 from torch.utils.data import Dataset
-from typing import Union
 import numpy as np
 import polars as pl
 from pathlib import Path
 from .file_cache import FileCache
-import warnings
 
 
 class HydroLazyDataset(Dataset):
