@@ -1,18 +1,17 @@
 import numpy as np
 import pandas as pd
+import polars as pl
 from pathlib import Path
 from returns.result import Result, Success, Failure
-from tqdm import tqdm  # Add tqdm for progress bar
+from tqdm import tqdm
 from .preprocessing import split_data, Config
 
-BATCH_SIZE = 100  # Maximum number of basins to process per batch
+BATCH_SIZE = 100
 
-# Using a default config without immediate validation
-# We'll validate within the functions when they're actually called
 SPLIT_CONFIG = Config(
-    required_columns=[""],  # Can stay empty
-    preprocessing_config={},  # Can stay empty
-    train_prop=0.6,  # Default values that will be overridden
+    required_columns=[""],
+    preprocessing_config={},
+    train_prop=0.6,
     val_prop=0.2,
     test_prop=0.2,
 )
@@ -176,10 +175,10 @@ def create_index_entries(
     val_prop: float = None,
     test_prop: float = None,
     cols_to_check: list[str] = None,
-) -> list[dict]:
+    output_dir: Path = None,
+) -> dict[str, tuple[Path, Path]]:
     """
-    Create index entries for valid sequences, identifying which stage (train/val/test) each sequence belongs to.
-    Processes basins in batches for memory efficiency.
+    Create disk-based index Parquet files and metadata for each stage.
 
     Args:
         gauge_ids: List of gauge IDs to process.
@@ -191,19 +190,16 @@ def create_index_entries(
         val_prop: Proportion of data for validation (optional).
         test_prop: Proportion of data for testing (optional).
         cols_to_check: List of column names to check for NaN values in sequence validity checks.
+        output_dir: Directory to write index and metadata files (required).
 
     Returns:
-        List of index entries with stage identification.
-
-    Raises:
-        ValueError: If split proportions are invalid.
-
-    Example:
-        >>> create_index_entries(['USA_001', 'USA_002'], Path('/data'), Path('/static.parquet'), 30, 7)
+        Dictionary mapping 'train', 'val', 'test' to (index_path, meta_path).
     """
-    # Validate split proportions once
+    if output_dir is None:
+        raise ValueError("output_dir must be specified for disk-based index creation.")
+
     local_config = Config(
-        required_columns=[],  # Not used here
+        required_columns=[],
         preprocessing_config={},
         train_prop=train_prop if train_prop is not None else 0.6,
         val_prop=val_prop if val_prop is not None else 0.2,
@@ -223,7 +219,8 @@ def create_index_entries(
             f"The sum of train, val, and test proportions must be 1.0, got {sum_props:.10f}"
         )
 
-    all_index_entries: list[dict] = []
+    # Collect entries per stage
+    stage_entries: dict[str, list[dict]] = {"train": [], "val": [], "test": []}
     total_seq_length = input_length + output_length
 
     num_batches = (len(gauge_ids) + BATCH_SIZE - 1) // BATCH_SIZE
@@ -235,7 +232,6 @@ def create_index_entries(
         batch_gauge_ids = gauge_ids[batch_start : batch_start + BATCH_SIZE]
         batch_result = load_batch_parquet(batch_gauge_ids, time_series_base_dir)
         if isinstance(batch_result, Failure):
-            # Optionally log batch_result.failure()
             continue
         batch_data = batch_result.unwrap()
 
@@ -270,28 +266,34 @@ def create_index_entries(
                     "stage": stage,
                     "static_file_path": str(static_file_path),
                 }
-                all_index_entries.append(entry)
+                stage_entries[stage].append(entry)
 
-    return all_index_entries
+    # Write sorted index and metadata files for each stage
+    output: dict[str, tuple[Path, Path]] = {}
+    for stage in ("train", "val", "test"):
+        entries = stage_entries[stage]
+        if not entries:
+            continue
+        df = pl.DataFrame(entries)
+        df = df.sort("file_path")
+        index_path = output_dir / f"{stage}_index.parquet"
+        df.write_parquet(index_path)
 
+        # Generate metadata: file_path, count, start_row_index
+        file_counts = (
+            df.select(["file_path"])
+            .with_row_count("row_nr")
+            .group_by("file_path")
+            .agg([
+                pl.count().alias("count"),
+                pl.min("row_nr").alias("start_row_index"),
+            ])
+            .sort("file_path")
+        )
+        meta_path = output_dir / f"{stage}_index_meta.parquet"
+        file_counts.write_parquet(meta_path)
+        output[stage] = (index_path, meta_path)
 
-def split_index_entries_by_stage(
-    index_entries: list[dict],
-) -> dict[str, list[dict]]:
-    """
-    Split index entries into train, val, and test sets based on their stage.
+    return output
 
-    Args:
-        index_entries: List of index entries with stage information
-
-    Returns:
-        Dictionary with keys 'train', 'val', and 'test' mapping to lists of index entries
-    """
-    split_entries = {"train": [], "val": [], "test": []}
-
-    for entry in index_entries:
-        stage = entry["stage"]
-        if stage in split_entries:
-            split_entries[stage].append(entry)
-
-    return split_entries
+# split_index_entries_by_stage is now obsolete with disk-based indexing

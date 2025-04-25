@@ -10,10 +10,7 @@ import pandas as pd
 from sklearn.pipeline import Pipeline
 from .lazy_dataset import HydroLazyDataset
 from .preprocessing import run_hydro_processor, QualityReport
-from .index_entry_creator import (
-    create_index_entries,
-    split_index_entries_by_stage,
-)
+from .index_entry_creator import create_index_entries
 from ..preprocessing.grouped import GroupedPipeline
 from .batch_sampler import FileGroupedBatchSampler
 from .config_utils import (
@@ -426,8 +423,12 @@ class HydroLazyDataModule(pl.LightningDataModule):
                 "processed_static_attributes_path"
             ]
 
-        # Create index entries with explicit split proportions and static file path
-        self.index_entries = create_index_entries(
+        # Directory for index files (use processed_time_series_dir.parent or similar)
+        index_output_dir = self.processed_time_series_dir.parent / "index_files"
+        index_output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create disk-based index entries and metadata
+        index_paths = create_index_entries(
             gauge_ids=self.list_of_gauge_ids_to_process,
             time_series_base_dir=self.processed_time_series_dir,
             static_file_path=self.processed_static_attributes_path,
@@ -437,15 +438,18 @@ class HydroLazyDataModule(pl.LightningDataModule):
             val_prop=self.val_prop,
             test_prop=self.test_prop,
             cols_to_check=required_columns,
+            output_dir=index_output_dir,
         )
-
-        self.index_entries_by_stage = split_index_entries_by_stage(
-            index_entries=self.index_entries,
+        self.index_paths = index_paths
+        self.train_index_path, self.train_index_meta_path = index_paths.get(
+            "train", (None, None)
         )
-
-        self.train_index_entries = self.index_entries_by_stage["train"]
-        self.val_index_entries = self.index_entries_by_stage["val"]
-        self.test_index_entries = self.index_entries_by_stage["test"]
+        self.val_index_path, self.val_index_meta_path = index_paths.get(
+            "val", (None, None)
+        )
+        self.test_index_path, self.test_index_meta_path = index_paths.get(
+            "test", (None, None)
+        )
 
         self._prepare_data_has_run = True
 
@@ -481,24 +485,15 @@ class HydroLazyDataModule(pl.LightningDataModule):
             "is_autoregressive": self.is_autoregressive,
         }
 
-        # Create datasets based on stage
         if stage == "fit" or stage is None:
-            for entry in self.train_index_entries:
-                entry["static_file_path"] = static_file_path
-
             self.train_dataset = HydroLazyDataset(
-                batch_index_entries=self.train_index_entries,
+                index_file_path=self.train_index_path,
                 **common_args,
             )
-
-            for entry in self.val_index_entries:
-                entry["static_file_path"] = static_file_path
-
             self.val_dataset = HydroLazyDataset(
-                batch_index_entries=self.val_index_entries,
+                index_file_path=self.val_index_path,
                 **common_args,
             )
-
             print(
                 f"INFO: Created training dataset with {len(self.train_dataset)} samples"
             )
@@ -507,14 +502,10 @@ class HydroLazyDataModule(pl.LightningDataModule):
             )
 
         if stage == "test" or stage is None:
-            for entry in self.test_index_entries:
-                entry["static_file_path"] = static_file_path
-
             self.test_dataset = HydroLazyDataset(
-                batch_index_entries=self.test_index_entries,
+                index_file_path=self.test_index_path,
                 **common_args,
             )
-
             print(f"INFO: Created test dataset with {len(self.test_dataset)} samples")
 
     def train_dataloader(self) -> DataLoader:
@@ -527,8 +518,8 @@ class HydroLazyDataModule(pl.LightningDataModule):
         if self.train_dataset is None:
             raise RuntimeError("setup() must be called before train_dataloader()")
         sampler = FileGroupedBatchSampler(
-            self.train_dataset.batch_index_entries,
-            self.batch_size,
+            index_meta_path=self.train_index_meta_path,
+            batch_size=self.batch_size,
             shuffle=True,
             files_per_batch=self.files_per_batch,
         )
@@ -550,11 +541,15 @@ class HydroLazyDataModule(pl.LightningDataModule):
         """
         if self.val_dataset is None:
             raise RuntimeError("setup() must be called before val_dataloader()")
-
-        return DataLoader(
-            self.val_dataset,
+        sampler = FileGroupedBatchSampler(
+            index_meta_path=self.val_index_meta_path,
             batch_size=self.batch_size,
             shuffle=False,
+            files_per_batch=self.files_per_batch,
+        )
+        return DataLoader(
+            self.val_dataset,
+            batch_sampler=sampler,
             num_workers=self.num_workers,
             pin_memory=True,
             persistent_workers=True if self.num_workers > 0 else False,
@@ -569,11 +564,15 @@ class HydroLazyDataModule(pl.LightningDataModule):
         """
         if self.test_dataset is None:
             raise RuntimeError("setup() must be called before test_dataloader()")
-
+        sampler = FileGroupedBatchSampler(
+            index_meta_path=self.test_index_meta_path,
+            batch_size=self.batch_size,
+            shuffle=False,
+            files_per_batch=self.files_per_batch,
+        )
         return DataLoader(
             self.test_dataset,
-            batch_size=self.batch_size,
-            shuffle=False,  # Don't shuffle test data
+            batch_sampler=sampler,
             num_workers=self.num_workers,
             pin_memory=True,
             persistent_workers=True if self.num_workers > 0 else False,

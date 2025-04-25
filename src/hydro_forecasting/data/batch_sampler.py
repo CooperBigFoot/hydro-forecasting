@@ -1,15 +1,15 @@
 import math
 import random
 from torch.utils.data import Sampler
-from typing import Dict, List, Iterator
+from pathlib import Path
+import polars as pl
 
-
-class FileGroupedBatchSampler(Sampler[List[int]]):
+class FileGroupedBatchSampler(Sampler[list[int]]):
     """
-    Yield batches of indices grouped by multiple file paths.
+    Yield batches of row indices grouped by file_path using metadata.
 
     Args:
-        batch_index_entries: List of dictionaries containing index entries
+        index_meta_path: Path to metadata Parquet file (file_path, count, start_row_index)
         batch_size: Number of samples per batch
         files_per_batch: Number of different files to sample from in each batch
         shuffle: Whether to shuffle the data
@@ -17,7 +17,7 @@ class FileGroupedBatchSampler(Sampler[List[int]]):
 
     def __init__(
         self,
-        batch_index_entries: List[Dict],
+        index_meta_path: Path,
         batch_size: int,
         files_per_batch: int = 1,
         shuffle: bool = True,
@@ -26,61 +26,54 @@ class FileGroupedBatchSampler(Sampler[List[int]]):
         self.shuffle = shuffle
         self.files_per_batch = max(1, files_per_batch)
 
-        # Group indices by file path
-        self._file_to_inds: Dict[str, List[int]] = {}
-        for i, e in enumerate(batch_index_entries):
-            self._file_to_inds.setdefault(e["file_path"], []).append(i)
-
-        # Calculate total number of batches
-        total_samples = sum(len(v) for v in self._file_to_inds.values())
+        # Load metadata: file_path, count, start_row_index
+        meta_df = pl.read_parquet(index_meta_path)
+        self._file_meta = [
+            {
+                "file_path": row["file_path"],
+                "count": int(row["count"]),
+                "start_row_index": int(row["start_row_index"]),
+            }
+            for row in meta_df.iter_rows(named=True)
+        ]
+        self._file_to_meta = {
+            m["file_path"]: (m["count"], m["start_row_index"]) for m in self._file_meta
+        }
+        self._files = [m["file_path"] for m in self._file_meta]
+        total_samples = sum(m["count"] for m in self._file_meta)
         self._num_batches = math.ceil(total_samples / batch_size)
 
-    def __iter__(self) -> Iterator[List[int]]:
-        # Get list of files and initialize position trackers
-        files = list(self._file_to_inds.keys())
-        file_indices = {f: 0 for f in files}
-        remaining_indices = {f: len(self._file_to_inds[f]) for f in files}
+    def __iter__(self):
+        # Track remaining samples per file
+        file_remaining = {f: self._file_to_meta[f][0] for f in self._files}
+        file_next = {f: self._file_to_meta[f][1] for f in self._files}
 
-        # Shuffle the contents of each file if needed
+        files = self._files.copy()
         if self.shuffle:
-            for f in files:
-                random.shuffle(self._file_to_inds[f])
+            random.shuffle(files)
 
-        # Continue until all indices are exhausted
-        while sum(remaining_indices.values()) > 0:
-            # Select files with remaining samples
-            available_files = [f for f in files if remaining_indices[f] > 0]
+        while sum(file_remaining.values()) > 0:
+            available_files = [f for f in files if file_remaining[f] > 0]
             if not available_files:
                 break
-
-            # Shuffle the file order if needed
             if self.shuffle:
                 random.shuffle(available_files)
-
-            # Select a subset of files for this batch
             batch_files = available_files[: self.files_per_batch]
-
-            # Create a batch by taking samples from each selected file
             batch = []
             samples_per_file = math.ceil(self.batch_size / len(batch_files))
-
             for f in batch_files:
-                # Get indices from this file
-                start_idx = file_indices[f]
-                end_idx = min(start_idx + samples_per_file, len(self._file_to_inds[f]))
-                file_batch = self._file_to_inds[f][start_idx:end_idx]
-                batch.extend(file_batch)
-
-                # Update tracking variables
-                file_indices[f] = end_idx
-                remaining_indices[f] = len(self._file_to_inds[f]) - end_idx
-
-                # If we have enough samples, stop adding more
+                n_avail = file_remaining[f]
+                n_take = min(samples_per_file, n_avail, self.batch_size - len(batch))
+                start = file_next[f]
+                inds = list(range(start, start + n_take))
+                if self.shuffle:
+                    random.shuffle(inds)
+                batch.extend(inds)
+                file_next[f] += n_take
+                file_remaining[f] -= n_take
                 if len(batch) >= self.batch_size:
-                    batch = batch[: self.batch_size]  # Trim to batch_size
+                    batch = batch[: self.batch_size]
                     break
-
-            # Only yield non-empty batches
             if batch:
                 yield batch
 

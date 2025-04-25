@@ -4,14 +4,14 @@ import numpy as np
 import polars as pl
 from pathlib import Path
 from .file_cache import FileCache
-
+from functools import lru_cache
 
 class HydroLazyDataset(Dataset):
-    """Lazy loading dataset for hydrological time series with autoregressive option.
+    """
+    Lazy loading dataset for hydrological time series with autoregressive option.
 
     Args:
-        batch_index_entries: list[dict[str, Path | np.int64 | np.datetime64 | str | bool]]
-            Precomputed index entries including file paths, slice indices, and metadata.
+        index_file_path: Path to main index Parquet file (sorted by file_path)
         target: Name of the target variable.
         forcing_features: List of forcing features (alphabetically sorted).
         static_features: List of static features (alphabetically sorted).
@@ -21,18 +21,11 @@ class HydroLazyDataset(Dataset):
         domain_id: Domain identifier (e.g., 'CH', 'US').
         domain_type: 'source' or 'target'.
         is_autoregressive: If True, X includes past target values as first feature.
-
-    Attributes:
-        input_features: Ordered list of features used for X tensor.
-        future_features: Ordered list of features used for future tensor.
-        static_data_cache: Mapping from group_identifier to numpy array of static features.
     """
 
     def __init__(
         self,
-        batch_index_entries: list[
-            dict[str, Path | np.int64 | np.datetime64 | str | bool]
-        ],
+        index_file_path: Path,
         target: str,
         forcing_features: list[str],
         static_features: list[str],
@@ -42,22 +35,9 @@ class HydroLazyDataset(Dataset):
         domain_id: str = "source",
         domain_type: str = "source",
         is_autoregressive: bool = False,
+        index_cache_size: int = 2048,
     ):
-        """Initialize the lazy dataset with precomputed index entries.
-
-        Args:
-            batch_index_entries: List of dictionaries containing file paths and indices
-            target: Name of target variable
-            forcing_features: List of forcing feature names
-            static_features: List of static feature names
-            input_length: Length of input sequences
-            output_length: Length of output sequences (prediction horizon)
-            group_identifier: Column name identifying the grouping variable
-            domain_id: Specific identifier for the domain (e.g., "CH", "US")
-            domain_type: General type of domain - "source" or "target"
-            is_autoregressive: If True, include past target values in input features
-        """
-        self.batch_index_entries = batch_index_entries
+        self.index_file_path = Path(index_file_path)
         self.target = target
         self.forcing_features = sorted(forcing_features)
         self.static_features = sorted(static_features)
@@ -68,20 +48,11 @@ class HydroLazyDataset(Dataset):
         self.domain_type = domain_type
         self.is_autoregressive = is_autoregressive
 
-        # Determine forcing indices (all features except target) if not autoregressive
-        if not self.is_autoregressive:
-            self.features = [self.target] + [
-                f for f in forcing_features if f != self.target
-            ]
-            self.forcing_indices = [
-                i for i, f in enumerate(self.features) if f != target
-            ]
-        else:
-            # For autoregressive models, include all features including target
-            self.features = [self.target] + [
-                f for f in forcing_features if f != self.target
-            ]
-            self.forcing_indices = list(range(len(self.features)))
+        # Efficiently get row count
+        self._len = pl.scan_parquet(self.index_file_path).collect().height
+
+        # LRU cache for index rows
+        self._index_cache_size = index_cache_size
 
         # define ordered feature lists for X and future
         if is_autoregressive:
@@ -96,22 +67,22 @@ class HydroLazyDataset(Dataset):
         self._preload_static_data()
 
     def _preload_static_data(self) -> None:
-        """Load and cache static features from all unique static_file_path entries."""
-        if not self.batch_index_entries:
-            self.static_data_cache = {}
-            return
-
-        unique_paths = {Path(e["static_file_path"]) for e in self.batch_index_entries}
+        # Scan index file for unique static_file_path and group_identifier
+        df = pl.scan_parquet(self.index_file_path).select(
+            [self.group_identifier, "static_file_path"]
+        ).unique().collect()
+        static_paths = set(df["static_file_path"].to_list())
+        gids = set(df[self.group_identifier].to_list())
         dfs = []
-        for path in unique_paths:
+        for path in static_paths:
             try:
-                df = pl.read_parquet(
+                df_static = pl.read_parquet(
                     path, columns=[self.group_identifier] + self.static_features
                 )
             except (FileNotFoundError, pl.ColumnNotFoundError) as e:
                 print(f"Skipping static file {path}: {e}")
                 continue
-            dfs.append(df)
+            dfs.append(df_static)
         if dfs:
             combined = pl.concat(dfs).unique(subset=self.group_identifier)
         else:
@@ -124,28 +95,21 @@ class HydroLazyDataset(Dataset):
         }
 
     def __len__(self):
-        return len(self.batch_index_entries)
+        return self._len
+
+    @lru_cache(maxsize=2048)
+    def _get_index_entry(self, idx: int) -> dict:
+        # Efficiently read a single row from Parquet index file
+        df = pl.scan_parquet(self.index_file_path).slice(idx, 1).collect()
+        if df.height == 0:
+            raise IndexError(f"Index {idx} out of range in index file")
+        row = df.to_dicts()[0]
+        return row
 
     def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
-        """Retrieve a single time series sample.
-
-        Returns:
-            dict with keys:
-            - X: Tensor[input_length, len(input_features)]
-            - y: Tensor[output_length]
-            - static: Tensor[len(static_features)]
-            - future: Tensor[output_length, len(future_features)]
-            - gauge_id: str
-            - input_end_date: int (nanoseconds since epoch)
-
-        Raises:
-            IndexError: If idx is out of bounds.
-            IOError: If file cannot be read or sliced.
-            ValueError: If tensor construction fails.
-        """
-        if not (0 <= idx < len(self.batch_index_entries)):
+        if not (0 <= idx < self._len):
             raise IndexError(f"Index {idx} out of range")
-        entry = self.batch_index_entries[idx]
+        entry = self._get_index_entry(idx)
         try:
             df_full = self.file_cache.get_file(
                 entry["file_path"],
@@ -169,13 +133,9 @@ class HydroLazyDataset(Dataset):
             future = torch.tensor(future_np, dtype=torch.float32)
 
             if torch.isnan(X).any():
-                # Throw a warning or handle NaNs in X
                 print(f"NaNs found in input tensor X for index {idx}")
-
             if torch.isnan(y).any():
-                # Throw a warning or handle NaNs in y
                 print(f"NaNs found in target tensor y for index {idx}")
-
             if torch.isnan(future).any():
                 print(f"NaNs found in future tensor for index {idx}")
 
@@ -187,16 +147,19 @@ class HydroLazyDataset(Dataset):
         )
         static = torch.tensor(static_arr, dtype=torch.float32)
         input_end = entry["input_end_date"]
-        input_end_ts = (
-            input_end.astype(np.int64)
-            if isinstance(input_end, np.datetime64)
-            else np.datetime64(input_end).astype(np.int64)
-        )
+        # Robust conversion to int nanoseconds since epoch
+        if input_end is None:
+            raise ValueError(f"input_end_date is None for index {idx}")
+        try:
+            import pandas as pd
+            input_end_ts = int(pd.to_datetime(input_end).to_datetime64().astype(np.int64))
+        except Exception as e:
+            raise ValueError(f"Could not convert input_end_date '{input_end}' to int64 for index {idx}: {e}")
         return {
             "X": X,
             "y": y,
             "static": static,
             "future": future,
             self.group_identifier: entry[self.group_identifier],
-            "input_end_date": int(input_end_ts),
+            "input_end_date": input_end_ts,
         }
