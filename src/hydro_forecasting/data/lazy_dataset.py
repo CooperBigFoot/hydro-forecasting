@@ -2,9 +2,11 @@ import torch
 from torch.utils.data import Dataset
 import numpy as np
 import polars as pl
+import duckdb
 from pathlib import Path
 from .file_cache import FileCache
 from functools import lru_cache
+
 
 class HydroLazyDataset(Dataset):
     """
@@ -12,6 +14,7 @@ class HydroLazyDataset(Dataset):
 
     Args:
         index_file_path: Path to main index Parquet file (sorted by file_path)
+        index_meta_file_path: Path to index metadata Parquet file (for efficient length calculation)
         target: Name of the target variable.
         forcing_features: List of forcing features (alphabetically sorted).
         static_features: List of static features (alphabetically sorted).
@@ -26,6 +29,7 @@ class HydroLazyDataset(Dataset):
     def __init__(
         self,
         index_file_path: Path,
+        index_meta_file_path: Path,
         target: str,
         forcing_features: list[str],
         static_features: list[str],
@@ -38,6 +42,7 @@ class HydroLazyDataset(Dataset):
         index_cache_size: int = 2048,
     ):
         self.index_file_path = Path(index_file_path)
+        self.index_meta_file_path = Path(index_meta_file_path)
         self.target = target
         self.forcing_features = sorted(forcing_features)
         self.static_features = sorted(static_features)
@@ -48,8 +53,8 @@ class HydroLazyDataset(Dataset):
         self.domain_type = domain_type
         self.is_autoregressive = is_autoregressive
 
-        # Efficiently get row count
-        self._len = pl.scan_parquet(self.index_file_path).collect().height
+        # Efficiently get row count using meta file (defer to __len__)
+        self._cached_len: int | None = None
 
         # LRU cache for index rows
         self._index_cache_size = index_cache_size
@@ -68,9 +73,12 @@ class HydroLazyDataset(Dataset):
 
     def _preload_static_data(self) -> None:
         # Scan index file for unique static_file_path and group_identifier
-        df = pl.scan_parquet(self.index_file_path).select(
-            [self.group_identifier, "static_file_path"]
-        ).unique().collect()
+        df = (
+            pl.scan_parquet(self.index_file_path)
+            .select([self.group_identifier, "static_file_path"])
+            .unique()
+            .collect()
+        )
         static_paths = set(df["static_file_path"].to_list())
         gids = set(df[self.group_identifier].to_list())
         dfs = []
@@ -95,7 +103,33 @@ class HydroLazyDataset(Dataset):
         }
 
     def __len__(self):
-        return self._len
+        if self._cached_len is not None:
+            return self._cached_len
+        path_to_metadata_file = self.index_meta_file_path
+        con = duckdb.connect()
+        query = f"""
+        WITH meta AS (
+          SELECT * FROM read_parquet('{str(path_to_metadata_file)}')
+        )
+        SELECT
+          (count + start_row_index) AS total_length
+        FROM meta
+        ORDER BY start_row_index DESC
+        LIMIT 1;
+        """
+        try:
+            result = con.execute(query).fetchone()
+            if result is None or len(result) == 0:
+                calculated_length = 0
+            else:
+                calculated_length = result[0]
+        except Exception as e:
+            print(f"Error querying metadata file {path_to_metadata_file}: {e}")
+            raise
+        finally:
+            con.close()
+        self._cached_len = calculated_length
+        return self._cached_len
 
     @lru_cache(maxsize=2048)
     def _get_index_entry(self, idx: int) -> dict:
@@ -107,7 +141,7 @@ class HydroLazyDataset(Dataset):
         return row
 
     def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
-        if not (0 <= idx < self._len):
+        if not (0 <= idx < len(self)):
             raise IndexError(f"Index {idx} out of range")
         entry = self._get_index_entry(idx)
         try:
@@ -141,20 +175,27 @@ class HydroLazyDataset(Dataset):
 
         except Exception as e:
             raise ValueError(f"Error constructing tensors for idx {idx}: {e}")
+
         static_arr = self.static_data_cache.get(
             entry[self.group_identifier],
             np.zeros(len(self.static_features), dtype=np.float32),
         )
+
         static = torch.tensor(static_arr, dtype=torch.float32)
         input_end = entry["input_end_date"]
-        # Robust conversion to int nanoseconds since epoch
+
         if input_end is None:
             raise ValueError(f"input_end_date is None for index {idx}")
         try:
             import pandas as pd
-            input_end_ts = int(pd.to_datetime(input_end).to_datetime64().astype(np.int64))
+
+            input_end_ts = int(
+                pd.to_datetime(input_end).to_datetime64().astype(np.int64)
+            )
         except Exception as e:
-            raise ValueError(f"Could not convert input_end_date '{input_end}' to int64 for index {idx}: {e}")
+            raise ValueError(
+                f"Could not convert input_end_date '{input_end}' to int64 for index {idx}: {e}"
+            )
         return {
             "X": X,
             "y": y,

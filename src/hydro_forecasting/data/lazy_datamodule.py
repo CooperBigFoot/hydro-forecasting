@@ -488,10 +488,12 @@ class HydroLazyDataModule(pl.LightningDataModule):
         if stage == "fit" or stage is None:
             self.train_dataset = HydroLazyDataset(
                 index_file_path=self.train_index_path,
+                index_meta_file_path=self.train_index_meta_path,
                 **common_args,
             )
             self.val_dataset = HydroLazyDataset(
                 index_file_path=self.val_index_path,
+                index_meta_file_path=self.val_index_meta_path,
                 **common_args,
             )
             print(
@@ -504,6 +506,7 @@ class HydroLazyDataModule(pl.LightningDataModule):
         if stage == "test" or stage is None:
             self.test_dataset = HydroLazyDataset(
                 index_file_path=self.test_index_path,
+                index_meta_file_path=self.test_index_meta_path,
                 **common_args,
             )
             print(f"INFO: Created test dataset with {len(self.test_dataset)} samples")
