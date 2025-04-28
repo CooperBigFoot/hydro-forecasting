@@ -1,3 +1,6 @@
+from typing import Dict, Optional, Union
+import joblib
+from pathlib import Path
 import pandas as pd
 from sklearn.base import clone
 from returns.result import Result, Success, Failure
@@ -8,86 +11,83 @@ def fit_time_series_pipelines(
     df: pd.DataFrame,
     features_pipeline: GroupedPipeline,
     target_pipeline: GroupedPipeline,
-) -> dict[str, GroupedPipeline]:
+) -> Result[Dict[str, GroupedPipeline], str]:
     """
-    Fit and return grouped pipelines for time-series features and target on the given dataframe.
-
-    Args:
-        df: DataFrame containing training data for all groups.
-        features_pipeline: GroupedPipeline for features.
-        target_pipeline: GroupedPipeline for target.
-    Returns:
-        Dict with keys 'features' and 'target' mapping to the fitted pipelines.
+    Clone and fit separate GroupedPipelines for features and target
+    on the provided DataFrame (which must include the group_identifier col).
     """
-
     try:
-        features_gp = clone(features_pipeline)
-        target_gp = clone(target_pipeline)
+        feat_gp = clone(features_pipeline)
+        targ_gp = clone(target_pipeline)
 
-        # Fit on entire DataFrame
-        features_gp.fit(df)
-        target_gp.fit(df)
+        feat_gp.fit(df)
+        targ_gp.fit(df)
 
-        return Success(
-            {
-                "features": features_gp,
-                "target": target_gp,
-            }
-        )
+        return Success({"features": feat_gp, "target": targ_gp})
     except Exception as e:
-        return Failure(f"Error fitting time series pipelines: {e}")
+        return Failure(f"Failed to fit time‐series pipelines: {e}")
 
 
 def transform_time_series_data(
     df: pd.DataFrame,
-    time_series_cfg: dict[str, dict[str, GroupedPipeline]],
-    fitted_pipelines: dict[str, GroupedPipeline],
+    fitted_pipelines: Dict[str, GroupedPipeline],
 ) -> Result[pd.DataFrame, str]:
     """
-    Transform a time series DataFrame using pre-fitted grouped pipelines.
-
-    Args:
-        df: Input time series DataFrame to transform.
-        time_series_cfg: Configuration dictionary containing preprocessing settings.
-        fitted_pipelines: Dict mapping 'features' and/or 'target' to fitted Pipeline or GroupedPipeline.
-        basin_id: Optional basin identifier; used if group_identifier column is missing in df.
-
-    Returns:
-        Success(DataFrame) with transformed data, or Failure(str) with error message.
+    Apply the pre‐fitted 'features' and 'target' GroupedPipelines to df.
+    Returns Success(transformed_df) or Failure(error_message).
     """
+    # Retrieve exactly the pipelines we fit
+    feat_gp = fitted_pipelines.get("features")
+    targ_gp = fitted_pipelines.get("target")
 
-    feature_pipeline = time_series_cfg["features"].get("pipeline", None)
-    target_pipeline = time_series_cfg["target"].get("pipeline", None)
-
-    if feature_pipeline is None or target_pipeline is None:
-        return Failure("Both feature and target pipelines are required for transformation")
-
+    if feat_gp is None or targ_gp is None:
+        return Failure("Must supply both 'features' and 'target' fitted pipelines")
 
     try:
-        transformed_df = df.copy()
+        out = df.copy()
 
+        # GroupedPipeline.transform expects the group_identifier column to be present,
+        # and only overwrites the specified feature columns.
+        out = feat_gp.transform(out)
+        out = targ_gp.transform(out)
 
-        # Feature transformation
-        if "features" in fitted_pipelines:
-            feature_cols = feature_pipeline.columns
-            data_to_transform = transformed_df[feature_cols]
-
-            transformed_features = feature_pipeline.transform(data_to_transform)
-
-            for col in feature_cols:
-                transformed_df[col] = transformed_features[col]
-
-        # Target transformation
-        if "target" in fitted_pipelines:
-            target_col = target_pipeline.columns
-
-            data_to_transform = transformed_df[target_col]
-
-            transformed_target = target_pipeline.transform(data_to_transform)
-
-            transformed_df[target_col] = transformed_target[target_col]
-
-        return Success(transformed_df)
-
+        return Success(out)
     except Exception as e:
-        return Failure(f"Error transforming time series data: {e}")
+        return Failure(f"Failed to transform time‐series data: {e}")
+
+
+def save_time_series_pipelines(
+    pipelines: Dict[str, GroupedPipeline],
+    path: Union[Path, str],
+) -> tuple[bool, Optional[Path], Optional[str]]:
+    """
+    Save a dict of fitted GroupedPipelines (e.g. {"features": feat_gp, "target": targ_gp})
+    to a .joblib file on disk.
+
+    Returns:
+      (success, path if success else None, error message if failure else None)
+    """
+    try:
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        joblib.dump(pipelines, path)
+        return True, path, None
+    except Exception as e:
+        return False, None, f"Failed to save pipelines to {path}: {e}"
+
+
+def load_time_series_pipelines(
+    path: Union[Path, str],
+) -> tuple[bool, Optional[Dict[str, GroupedPipeline]], Optional[str]]:
+    """
+    Load back the dict of GroupedPipelines previously saved with save_time_series_pipelines.
+
+    Returns:
+      (success, pipelines dict if success else None, error message if failure else None)
+    """
+    try:
+        path = Path(path)
+        pipelines = joblib.load(path)
+        return True, pipelines, None
+    except Exception as e:
+        return False, None, f"Failed to load pipelines from {path}: {e}"

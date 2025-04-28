@@ -1,234 +1,243 @@
 import json
-import duckdb
 import pandas as pd
 import numpy as np
 from pathlib import Path
+from dataclasses import dataclass, asdict
+from functools import wraps
+from typing import Optional, TYPE_CHECKING, Union
+
 from returns.result import Result, Success, Failure
 
-from sklearn.pipeline import Pipeline
-from ..preprocessing.grouped import GroupedPipeline
-from ..preprocessing import Config
+if TYPE_CHECKING:
+    from .preprocessing import ProcessingConfig
+
+
+def step(name: str):
+    def decorator(fn):
+        @wraps(fn)
+        def wrapper(
+            context_result: Result[CleanContext, str],
+        ) -> Result[CleanContext, str]:
+            # short-circuit if already failed
+            if isinstance(context_result, Failure):
+                return context_result
+
+            # safe to unwrap
+            context = context_result.unwrap()
+            try:
+                # run the actual step
+                ctx = fn(context)
+                # record that we ran it
+                ctx.report.processing_steps.append(name)
+                return Success(ctx)
+            except Exception as e:
+                return Failure(f"{fn.__name__} failed: {e}")
+
+        return wrapper
+
+    return decorator
+
+
+@dataclass
+class BasinQualityReport:
+    valid_period: dict[str, dict[str, Optional[str]]]
+    processing_steps: list[str]
+    imputation_info: dict[str, dict[str, int]]
+
+
+@dataclass
+class CleanContext:
+    df: pd.DataFrame
+    config: ProcessingConfig
+    report: BasinQualityReport
 
 
 def find_gaps(series: pd.Series) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Find start and end indices of gaps in a time series.
-
-    Args:
-        series: Input time series
-
-    Returns:
-        Tuple of arrays with gap start and end indices
-    """
     missing = series.isna()
     if not missing.any():
         return np.array([]), np.array([])
-
     nan_idxs = np.where(missing)[0]
     boundaries = np.where(np.diff(nan_idxs) > 1)[0]
-
     starts = np.insert(nan_idxs[boundaries + 1], 0, nan_idxs[0])
     ends = np.append(nan_idxs[boundaries] + 1, nan_idxs[-1] + 1)
     return starts, ends
 
 
-def impute_short_gaps(
-    df: pd.DataFrame, columns: list[str], max_gap: int, report: dict[str, any]
-) -> Result[tuple[pd.DataFrame, dict[str, any]], str]:
-    """
-    Linearly impute short NaN gaps up to max_gap length.
-
-    Args:
-        df: DataFrame containing time series data
-        columns: List of columns to impute
-        max_gap: Maximum gap size to impute
-        report: Dictionary for reporting statistics and steps
-
-    Returns:
-        Result with tuple of imputed DataFrame and updated report, or error message
-    """
-    try:
-        df_out = df.copy()
-        for col in columns:
-            series = df_out[col]
-            starts, ends = find_gaps(series)
-            short_idxs = []
-            for s, e in zip(starts, ends):
-                if (e - s) <= max_gap:
-                    short_idxs.extend(range(s, e))
-            if short_idxs:
-                interp = series.interpolate(method="linear")
-                series.iloc[short_idxs] = interp.iloc[short_idxs]
-                df_out[col] = series
-            report["imputation_info"][col] = {
-                "short_gaps_count": len(starts),
-                "imputed_values_count": len(short_idxs),
-            }
-        report["processing_steps"].append("Imputed short gaps")
-        return Success((df_out, report))
-    except Exception as e:
-        return Failure(f"Error imputing short gaps: {str(e)}")
+@step("Initialized report")
+def init_report(context: CleanContext) -> CleanContext:
+    cols = context.config.required_columns
+    # reset our dataclass fields
+    context.report.valid_period = {}
+    context.report.processing_steps = []
+    context.report.imputation_info = {
+        col: {"short_gaps_count": 0, "imputed_values_count": 0} for col in cols
+    }
+    return context
 
 
-def check_required_columns(
-    df: pd.DataFrame, required: list[str]
-) -> Result[pd.DataFrame, str]:
-    """
-    Ensure DataFrame contains all required cols plus 'date'.
-
-    Args:
-        df: DataFrame to check
-        required: List of required column names
-
-    Returns:
-        Result with DataFrame if all columns exist, or error message
-    """
-    missing = [c for c in required + ["date"] if c not in df.columns]
+@step("Checked required columns")
+def check_required_columns(context: CleanContext) -> CleanContext:
+    required = context.config.required_columns
+    missing = [c for c in required + ["date"] if c not in context.df.columns]
     if missing:
-        return Failure(f"Missing columns: {missing}")
-    return Success(df)
+        raise ValueError(f"Missing columns: {missing}")
+    return context
 
 
-def compute_valid_periods(
-    df: pd.DataFrame, columns: list[str], report: dict[str, any]
-) -> Result[dict[str, any], str]:
-    """
-    Populate report['valid_period'] for each column.
-
-    Args:
-        df: DataFrame containing time series data
-        columns: Columns to compute valid periods for
-        report: Report dictionary to update
-
-    Returns:
-        Result with updated report or error message
-    """
-    try:
-        for col in columns:
-            non_null_dates = df.loc[df[col].notna(), "date"]
-            if non_null_dates.empty:
-                report["valid_period"][col] = {"start": None, "end": None}
-            else:
-                report["valid_period"][col] = {
-                    "start": non_null_dates.min().strftime("%Y-%m-%d"),
-                    "end": non_null_dates.max().strftime("%Y-%m-%d"),
-                }
-        return Success(report)
-    except Exception as e:
-        return Failure(f"Error computing valid periods: {str(e)}")
+@step("Trimmed leading/trailing NaN rows")
+def trim_leading_trailing_nans(context: CleanContext) -> CleanContext:
+    cols = context.config.required_columns
+    mask = context.df[cols].notna().any(axis=1)
+    if not mask.any():
+        raise ValueError("All rows are NaN in required columns")
+    first, last = mask.idxmax(), mask[::-1].idxmax()
+    context.df = context.df.loc[first:last].reset_index(drop=True)
+    return context
 
 
-def filter_valid_period(
-    df: pd.DataFrame, report: dict[str, any]
-) -> Result[pd.DataFrame, str]:
-    """
-    Trim df to the intersection of all valid periods in report.
+@step("Imputed short gaps")
+def impute_short_gaps_step(context: CleanContext) -> CleanContext:
+    cols = context.config.required_columns
+    max_imputation_gap_size = context.config.max_imputation_gap_size
+    df = context.df.copy()
 
-    Args:
-        df: DataFrame to filter
-        report: Report containing valid_period information
-
-    Returns:
-        Result with filtered DataFrame or error message
-    """
-    try:
-        starts = [
-            pd.to_datetime(v["start"])
-            for v in report["valid_period"].values()
-            if v["start"]
-        ]
-        ends = [
-            pd.to_datetime(v["end"])
-            for v in report["valid_period"].values()
-            if v["end"]
-        ]
-        if not (starts and ends):
-            return Failure("No valid periods found for filtering")
-
-        overall_start = max(starts)
-        overall_end = min(ends)
-        filtered_df = (
-            df[(df["date"] >= overall_start) & (df["date"] <= overall_end)]
-            .sort_values("date")
-            .reset_index(drop=True)
+    # count segments ≤ max_imputation_gap_size
+    segment_counts: dict[str, int] = {}
+    for col in cols:
+        starts, ends = find_gaps(df[col])
+        segment_counts[col] = sum(
+            1 for s, e in zip(starts, ends) if (e - s) <= max_imputation_gap_size
         )
 
-        if filtered_df.empty:
-            return Failure("No overlapping valid period")
+    # record before/after nulls and interpolate
+    before_na = df[cols].isna().sum()
+    df[cols] = df[cols].interpolate(
+        method="linear",
+        limit=max_imputation_gap_size,
+        limit_direction="both",
+    )
+    after_na = df[cols].isna().sum()
 
-        return Success(filtered_df)
-    except Exception as e:
-        return Failure(f"Error filtering valid period: {str(e)}")
+    # write into the report dataclass
+    for col in cols:
+        imputed = int(before_na[col] - after_na[col])
+        context.report.imputation_info[col] = {
+            "short_gaps_count": segment_counts[col],
+            "imputed_values_count": imputed,
+        }
+
+    context.df = df
+    return context
 
 
-def validate_training_data(
-    df: pd.DataFrame, config: Config, report: dict[str, any]
-) -> Result[dict[str, any], str]:
+@step("Computed valid periods")
+def compute_valid_periods_step(context: CleanContext) -> CleanContext:
+    cols = context.config.required_columns
+    for col in cols:
+        non_null = context.df.loc[context.df[col].notna(), "date"]
+        if non_null.empty:
+            context.report.valid_period[col] = {"start": None, "end": None}
+        else:
+            context.report.valid_period[col] = {
+                "start": non_null.min().strftime("%Y-%m-%d"),
+                "end": non_null.max().strftime("%Y-%m-%d"),
+            }
+    return context
+
+
+@step("Filtered valid period")
+def filter_valid_period_step(context: CleanContext) -> CleanContext:
+    periods = context.report.valid_period.values()
+    starts = [pd.to_datetime(v["start"]) for v in periods if v["start"]]
+    ends = [pd.to_datetime(v["end"]) for v in periods if v["end"]]
+    if not (starts and ends):
+        raise ValueError("No valid periods found for filtering")
+    overall_start = max(starts)
+    overall_end = min(ends)
+
+    filtered = (
+        context.df.loc[
+            (context.df["date"] >= overall_start) & (context.df["date"] <= overall_end)
+        ]
+        .sort_values("date")
+        .reset_index(drop=True)
+    )
+    if filtered.empty:
+        raise ValueError("No overlapping valid period")
+    context.df = filtered
+    return context
+
+
+@step("Validated training period")
+def validate_training_data_step(context: CleanContext) -> CleanContext:
+    df = context.df
+    cfg = context.config
+    days = (df["date"].iloc[-1] - df["date"].iloc[0]).days + 1
+    train_days = int(days * cfg.train_prop)
+    min_days = int(cfg.min_train_years * 365.25)
+    if train_days < min_days:
+        raise ValueError(
+            f"Insufficient training data: requires {cfg.min_train_years} years"
+        )
+    return context
+
+
+def clean_data(
+    df: pd.DataFrame,
+    config: ProcessingConfig,
+) -> Result[tuple[pd.DataFrame, BasinQualityReport], str]:
     """
-    Check if df has enough history per config requirements.
+    Runs a series of quality‐control steps on your time series, short‐circuits on any failure,
+    and returns either Failure(error_message) or Success((cleaned_df, report)).
+    """
+    # start with an empty report dataclass
+    initial_report = BasinQualityReport(
+        valid_period={},
+        processing_steps=[],
+        imputation_info={},
+    )
+    ctx0 = CleanContext(df=df, config=config, report=initial_report)
+
+    # chain our steps by unwrapping only on Success
+    result: Result[CleanContext, str] = Success(ctx0)
+    for step_fn in [
+        init_report,
+        check_required_columns,
+        trim_leading_trailing_nans,
+        impute_short_gaps_step,
+        compute_valid_periods_step,
+        filter_valid_period_step,
+        validate_training_data_step,
+    ]:
+        result = step_fn(result)
+        if isinstance(result, Failure):
+            break
+
+    # if all succeeded, project to (df, report)
+    return result.map(lambda ctx: (ctx.df, ctx.report))
+
+
+def save_quality_report_to_json(
+    report: BasinQualityReport,
+    path: Union[str, Path],
+) -> tuple[bool, Optional[Path], Optional[str]]:
+    """
+    Save a BasinQualityReport to a JSON file.
 
     Args:
-        df: DataFrame to validate
-        config: Configuration with training requirements
-        report: Report to update
+        report: The BasinQualityReport dataclass instance.
+        path:  File path (or string) where the JSON will be written.
 
     Returns:
-        Result with updated report or error message
+        (success flag, path if successful, error message if any)
     """
     try:
-        days = (df["date"].iloc[-1] - df["date"].iloc[0]).days + 1
-        train_days = int(days * config.train_prop)
-        min_days = int(config.min_train_years * 365.25)
-        if train_days < min_days:
-            return Failure(
-                f"Insufficient training data: requires {config.min_train_years} years"
-            )
-        report["processing_steps"].append("Validated training period")
-        return Success(report)
+        output_path = Path(path)
+        # ensure directory exists
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        # dump report as dict
+        with open(output_path, "w") as f:
+            json.dump(asdict(report), f, indent=2)
+        return True, output_path, None
     except Exception as e:
-        return Failure(f"Error validating training data: {str(e)}")
-
-
-
-def prepare_report() -> dict[str, any]:
-    """
-    Initialize processing report structure.
-
-    Returns:
-        Empty report dictionary
-    """
-    return {
-        "valid_period": {},
-        "processing_steps": [],
-        "imputation_info": {},
-    }
-
-
-def initialize_imputation_info(
-    report: dict[str, any], columns: list[str]
-) -> dict[str, any]:
-    """
-    Initialize imputation tracking in report.
-
-    Args:
-        report: Report to update
-        columns: Columns to track imputation for
-
-    Returns:
-        Report with initialized imputation info
-    """
-    for col in columns:
-        report["imputation_info"][col] = {
-            "short_gaps_count": 0,
-            "imputed_values_count": 0,
-        }
-    return report
-
-
-
-def process_basin(
-    basin: pd.DataFrame ,
-    config: Config,
-    fitted_pipelines: dict[str, Pipeline | GroupedPipeline] | None = None,
-) -> Result[tuple[dict[str, any], Path, Path], str]:
-
+        return False, None, f"Failed to save quality report: {e}"
