@@ -903,7 +903,9 @@ def save_config(config: dict, path: Path) -> tuple[bool, Optional[Path], Optiona
         return False, None, f"Failed to save configuration: {str(e)}"
 
 
-def save_pipelines(pipelines: dict[str, Any], path: Path) -> tuple[bool, Optional[Path], Optional[str]]:
+def save_pipelines(
+    pipelines: dict[str, Any], path: Path
+) -> tuple[bool, Optional[Path], Optional[str]]:
     """
     Save fitted preprocessing pipelines to a joblib file.
 
@@ -1074,7 +1076,7 @@ def run_hydro_processor(
             region_static_attributes_base_dirs, list_of_gauge_ids_to_process
         )
         fitted_pipelines = {}
-        
+
         # 2. Fit pipelines if preprocessing config is provided
         if preprocessing_config:
             try:
@@ -1087,7 +1089,7 @@ def run_hydro_processor(
                 )
             except Exception as e:
                 return False, None, f"Error during pipeline fitting: {str(e)}"
-        
+
         # 3. Process basin time series
         try:
             quality_report = process_basins_parallel(
@@ -1101,28 +1103,28 @@ def run_hydro_processor(
             )
         except Exception as e:
             return False, None, f"Failed to process basin time series: {str(e)}"
-        
+
         # 4. Process static attributes if available
         processed_static_path = process_static_data(
             static_df, quality_report, fitted_pipelines
         )
-        
+
         # 5. Save artifacts
         success, _, error = save_config(datamodule_config, config_path)
         if not success:
             return False, None, f"Failed to save datamodule config: {error}"
-            
+
         success, _, error = save_pipelines(fitted_pipelines, pipelines_path)
         if not success:
             return False, None, f"Failed to save pipelines: {error}"
-            
+
         success, _, error = save_config(quality_report, quality_report_path)
         if not success:
             return False, None, f"Failed to save quality report: {error}"
-        
+
         # Create success marker file
         success_marker_path.touch()
-        
+
         # 6. Create and return final result
         result = {
             "quality_report": quality_report,
@@ -1131,38 +1133,20 @@ def run_hydro_processor(
             "processed_timeseries_dir": processed_timeseries_dir,
             "processed_static_attributes_path": processed_static_path,
         }
-        
+
         # Print summary
         print(
             "\n================ PROCESSING SUMMARY ================\n"
             f"SUCCESS: Completed processing {result['quality_report']['retained_basins']} "
             f"of {result['quality_report']['original_basins']} basins"
         )
-        
+
         if result["quality_report"]["excluded_basins"]:
             print(
                 f"WARNING: {len(result['quality_report']['excluded_basins'])} basins excluded due to quality issues"
             )
-        
+
         return True, cast(ProcessingResult, result), None
-        
+
     except Exception as e:
         return False, None, f"Unexpected error during hydro processing: {str(e)}"
-
-
-def try_process_with_exception_handling(action: Callable[[], Any], error_message: str) -> tuple[bool, Any, Optional[str]]:
-    """
-    Helper function to execute an action and catch any exceptions.
-
-    Args:
-        action: Function to execute
-        error_message: Base error message to use
-
-    Returns:
-        Tuple containing (success flag, result on success, error message on failure)
-    """
-    try:
-        result = action()
-        return True, result, None
-    except Exception as e:
-        return False, None, f"{error_message}: {str(e)}"
