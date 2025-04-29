@@ -16,9 +16,13 @@ def fit_time_series_pipelines(
     Clone and fit separate GroupedPipelines for features and target
     on the provided DataFrame (which must include the group_identifier col).
     """
+
+    if df is None or df.empty:
+        return Failure("DataFrame is empty or None")
+
     try:
-        feat_gp = clone(features_pipeline)
-        targ_gp = clone(target_pipeline)
+        feat_gp: GroupedPipeline = clone(features_pipeline)
+        targ_gp: GroupedPipeline = clone(target_pipeline)
 
         feat_gp.fit(df)
         targ_gp.fit(df)
@@ -36,6 +40,13 @@ def transform_time_series_data(
     Apply the pre‐fitted 'features' and 'target' GroupedPipelines to df.
     Returns Success(transformed_df) or Failure(error_message).
     """
+
+    if df is None or df.empty:
+        return Failure("DataFrame is empty or None")
+
+    if fitted_pipelines is None:
+        return Failure("Fitted pipelines are None")
+
     # Retrieve exactly the pipelines we fit
     feat_gp = fitted_pipelines.get("features")
     targ_gp = fitted_pipelines.get("target")
