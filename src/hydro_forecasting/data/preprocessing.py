@@ -1,33 +1,15 @@
-from dataclasses import dataclass
-import json
-import duckdb
-import pandas as pd
-import numpy as np
-import gc
-import joblib
 from pathlib import Path
-from typing import Callable, Optional, Union, Any
-import multiprocessing as mp
-from tqdm import tqdm
-from sklearn.base import clone
-from sklearn.pipeline import Pipeline
-from returns.result import Failure
+from dataclasses import dataclass
+import polars as pl
+from typing import Optional, Any, Union, Iterator
+from returns.result import Failure, Success
+from sklearn.pipeline import Pipeline, clone
 from .clean_data import BasinQualityReport, clean_data
 from ..preprocessing.grouped import GroupedPipeline
 from ..preprocessing.time_series_preprocessing import (
     fit_time_series_pipelines,
     transform_time_series_data,
-    save_time_series_pipelines,
 )
-
-
-@dataclass
-class QualityReport:
-    original_basins: int
-    retained_basins: int
-    excluded_basins: dict[str, str]
-    basins: dict[str, BasinQualityReport]
-    split_method: str
 
 
 @dataclass
@@ -43,114 +25,394 @@ class ProcessingConfig:
 
 
 def split_data(
-    df: pd.DataFrame, config: ProcessingConfig
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    df: pl.DataFrame, config: ProcessingConfig
+) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
     """
     Split data into training, validation, and test sets based on proportions.
-    Filters out NaN values first to ensure splits contain only valid data points.
+    Filters out nulls first to ensure splits contain only valid data points.
 
     Args:
-        df: DataFrame with data
+        df: Polars DataFrame with data
         config: Configuration object
 
     Returns:
-        Tuple of (train_df, val_df, test_df)
+        Tuple of (train_df, val_df, test_df), each a Polars DataFrame
     """
-    train_data, val_data, test_data = [], [], []
+    train_list: list[pl.DataFrame] = []
+    val_list: list[pl.DataFrame] = []
+    test_list: list[pl.DataFrame] = []
+
     target_col = config.preprocessing_config.get("target", {}).get(
         "column", "streamflow"
     )
+    group_id = config.group_identifier
 
-    for gauge_id, basin_data in df.groupby(config.group_identifier):
-        basin_data = basin_data.sort_values("date").reset_index(drop=True)
-        valid_mask = ~basin_data[target_col].isna()
-        valid_data = basin_data[valid_mask].reset_index(drop=True)
-        n_valid = len(valid_data)
+    # iterate over each basin
+    for basin_id in df.select(pl.col(group_id)).unique().to_series().to_list():
+        basin_df = df.filter(pl.col(group_id) == basin_id).sort("date")
+        valid_df = basin_df.filter(pl.col(target_col).is_not_null())
+        n_valid = valid_df.height
 
         if n_valid == 0:
-            print(f"WARNING: Basin {gauge_id} has no valid points, skipping")
+            print(f"WARNING: Basin {basin_id} has no valid points, skipping")
             continue
 
-        train_size = int(n_valid * config.train_prop)
-        val_size = int(n_valid * config.val_prop)
-        train_valid = valid_data.iloc[:train_size]
-        val_valid = valid_data.iloc[train_size : train_size + val_size]
-        test_valid = valid_data.iloc[train_size + val_size :]
-        train_data.append(train_valid)
-        val_data.append(val_valid)
-        test_data.append(test_valid)
+        # compute split sizes
+        train_end = int(n_valid * config.train_prop)
+        val_end = train_end + int(n_valid * config.val_prop)
 
-    return (
-        pd.concat(train_data, ignore_index=True) if train_data else pd.DataFrame(),
-        pd.concat(val_data, ignore_index=True) if val_data else pd.DataFrame(),
-        pd.concat(test_data, ignore_index=True) if test_data else pd.DataFrame(),
-    )
+        train_seg = valid_df.head(train_end)
+        val_seg = valid_df.slice(train_end, val_end - train_end)
+        test_seg = valid_df.slice(val_end, n_valid - val_end)
+
+        train_list.append(train_seg)
+        val_list.append(val_seg)
+        test_list.append(test_seg)
+
+    # concatenate or return empty DataFrames
+    train_df = pl.concat(train_list, how="vertical") if train_list else pl.DataFrame()
+    val_df = pl.concat(val_list, how="vertical") if val_list else pl.DataFrame()
+    test_df = pl.concat(test_list, how="vertical") if test_list else pl.DataFrame()
+
+    return train_df, val_df, test_df
 
 
-# TODO: Migrate to Polars
+def batch_basins(
+    basins: list[str],
+    batch_size: int,
+) -> Iterator[list[str]]:
+    """
+        Yield successive batches of basin identifiers from the input sequence.
+    `
+        Args:
+            basins: Sequence of basin identifiers (e.g., list of gauge_id strings).
+            batch_size: Maximum number of basins per batch (must be >=1).
+
+        Yields:
+            Lists of basin identifiers, each of length <= batch_size.
+    """
+    if batch_size < 1:
+        raise ValueError(f"batch_size must be >= 1, got {batch_size}")
+    total = len(basins)
+    for start in range(0, total, batch_size):
+        yield list(basins[start : start + batch_size])
+
+
+from pathlib import Path
+import polars as pl
+from returns.result import Result, Success, Failure
+
+
+def _load_single_basin_lazy(
+    gauge_id: str,
+    region_time_series_base_dirs: dict[str, Path],
+    required_columns: list[str],
+    group_identifier: str,
+) -> Result[pl.LazyFrame, str]:
+    """
+    Helper: lazily load one basin, wrapped in a Result.
+    """
+    try:
+        prefix = gauge_id.split("_", 1)[0]
+        base_dir = region_time_series_base_dirs.get(prefix)
+        if base_dir is None:
+            return Failure(f"No base directory for region prefix '{prefix}'")
+
+        file_path = Path(base_dir) / f"{gauge_id}.parquet"
+        if not file_path.exists():
+            return Failure(f"Timeseries file not found: {file_path}")
+
+        lf = pl.scan_parquet(str(file_path))
+
+        schema = lf.schema
+        missing = [c for c in required_columns if c not in schema]
+        if "date" not in schema:
+            missing.append("date")
+        if missing:
+            return Failure(f"Missing required columns in basin {gauge_id}: {missing}")
+
+        lf = (
+            lf.with_column(pl.lit(gauge_id).alias(group_identifier))
+            .select([group_identifier, "date", *required_columns])
+            .sort("date")
+        )
+
+        return Success(lf)
+
+    except Exception as exc:
+        return Failure(f"Error loading basin {gauge_id}: {exc}")
+
+
+def load_basins_timeseries_lazy(
+    gauge_ids: list[str],
+    region_time_series_base_dirs: dict[str, Path],
+    required_columns: list[str],
+    group_identifier: str = "gauge_id",
+) -> Result[pl.LazyFrame, str]:
+    """
+    Lazily load & stack time‐series for multiple basins using Polars scan_parquet,
+    returning a Result for Railway‐Oriented handling.
+
+    Args:
+        gauge_ids: List of basin IDs (e.g. ["EU_0001", "EU_0002"]).
+        region_time_series_base_dirs: Mapping from region prefix to its base Path.
+        required_columns: List of columns (besides "date") that must be present.
+        group_identifier: Column name to tag each row with the gauge_id.
+
+    Returns:
+        Success(LazyFrame) on success, or Failure(error_message) on first error.
+    """
+    if not gauge_ids:
+        return Failure("No gauge IDs provided for loading")
+
+    lazy_frames: list[pl.LazyFrame] = []
+    for gid in gauge_ids:
+        result = _load_single_basin_lazy(
+            gid, region_time_series_base_dirs, required_columns, group_identifier
+        )
+        if isinstance(result, Failure):
+            # Short‐circuit on first error
+            return result
+        lazy_frames.append(result.unwrap())
+
+    # concatenate and final sort
+    combined = pl.concat(lazy_frames).sort([group_identifier, "date"])
+    return Success(combined)
+
+
+def write_train_val_test_splits_to_disk(
+    train_lf: pl.LazyFrame,
+    val_lf: pl.LazyFrame,
+    test_lf: pl.LazyFrame,
+    output_dir: Path | str,
+    group_identifier: str = "gauge_id",
+    compression: str = "zstd",
+    basin_ids: Optional[list[str]] = None,
+) -> Result[None, str]:
+    """
+    Write train, validation, and test splits to disk as individual Parquet files per group.
+
+    Creates subdirectories 'train', 'val', and 'test' under `output_dir`, then for each
+    unique value in `group_identifier` writes a separate Parquet file.
+
+    Args:
+        train_lf: Polars LazyFrame containing the training split.
+        val_lf: Polars LazyFrame containing the validation split.
+        test_lf: Polars LazyFrame containing the test split.
+        output_dir: Base directory where split subfolders will be created.
+        group_identifier: Column name to group by (e.g. 'gauge_id').
+        compression: Parquet compression codec (default 'zstd').
+        basin_ids: Optional list of specific gauge IDs to process. If None, all unique IDs are used.
+    """
+    base_path = Path(output_dir)
+
+    # The basin ids are the same for all three splits. No need to infer them for each split.
+    if not basin_ids:
+        ids_df = train_lf.select(pl.col(group_identifier)).unique().collect()
+        basin_ids: list[str] = ids_df[group_identifier].to_list()
+
+        if not basin_ids:
+            return Failure("No basin IDs found in train split")
+
+    try:
+        for split_name, lf in (
+            ("train", train_lf),
+            ("val", val_lf),
+            ("test", test_lf),
+        ):
+            split_path = base_path / split_name
+            split_path.mkdir(parents=True, exist_ok=True)
+
+            for gid in basin_ids:
+                sub_lf = lf.filter(pl.col(group_identifier) == gid)
+                out_file = split_path / f"{gid}.parquet"
+                sub_lf.collect().write_parquet(
+                    out_file,
+                    compression=compression,
+                )
+
+        return Success(None)
+    except Exception as exc:
+        return Failure(f"Error writing splits to disk: {exc}")
+
+
 def batch_process_time_series_data(
-    df: pd.DataFrame,
+    lf: pl.LazyFrame,
     config: ProcessingConfig,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    features_pipeline: GroupedPipeline,
+    target_pipeline: GroupedPipeline,
+) -> tuple[pl.LazyFrame, pl.LazyFrame, pl.LazyFrame, dict[str, GroupedPipeline]]:
     """
     Clean, split, fit on train, and transform time-series data.
 
+    Processes hydrological time-series data by:
+    1. Cleaning the data using the clean_data function
+    2. Splitting into train/val/test sets
+    3. Fitting pipelines on the training data
+    4. Transforming all sets with the fitted pipelines
+
     Args:
-        df: Raw DataFrame (must include group_identifier & date).
-        config: ProcessingConfig with 'features' and 'target' pipelines.
+        lf: Polars LazyFrame containing the time-series data
+        config: Configuration object with processing parameters
+        features_pipeline: GroupedPipeline for feature transformation
+        target_pipeline: GroupedPipeline for target transformation
+        batch_size: Kept for API compatibility but not used
 
     Returns:
-        (train_df, val_df, test_df) all transformed.
-
-    Raises:
-        ValueError on any step failure.
+        Tuple of (train_df, val_df, test_df) as Polars LazyFrames and fitted pipelines
+        as a dictionary of GroupedPipelines.
     """
-    cleaned_batches: list[pd.DataFrame] = []
-    for basin_id, basin_df in df.groupby(config.group_identifier):
-        result = clean_data(basin_df, config)
+    clean_result = clean_data(lf, config)
 
-        if isinstance(result, Failure):
-            print(f"WARNING: Basin {basin_id} cleaning failed, skipping")
-            continue
+    if isinstance(clean_result, Failure):
+        print(f"ERROR: {clean_result.failure()}")
+        return pl.DataFrame(), pl.DataFrame(), pl.DataFrame()
 
-        cleaned_df, _ = result.unwrap()
-        cleaned_batches.append(cleaned_df)
+    cleaned_df, quality_reports = clean_result.unwrap()
 
-    if not cleaned_batches:
-        raise ValueError("No basins passed cleaning")
+    # Get list of basins that passed quality checks
+    valid_basins = [
+        basin_id
+        for basin_id, report in quality_reports.items()
+        if report.passed_quality_check
+    ]
 
-    cleaned_df = pd.concat(cleaned_batches, ignore_index=True)
+    if not valid_basins:
+        print("ERROR: No valid basins found after quality checks.")
+        return pl.DataFrame(), pl.DataFrame(), pl.DataFrame()
 
+    # Convert Polars DataFrame to pandas for compatibility with existing code
     train_df, val_df, test_df = split_data(cleaned_df, config)
 
-    pcfg = config.preprocessing_config or {}
-    feat_cfg = pcfg.get("features")
-    targ_cfg = pcfg.get("target")
+    train_pd_df = train_df.to_pandas()
+    val_pd_df = val_df.to_pandas()
+    test_pd_df = test_df.to_pandas()
 
-    if not feat_cfg or not targ_cfg:
-        raise ValueError(
-            "Must define both 'features' and 'target' in preprocessing_config"
+    if train_pd_df.empty:
+        print(
+            "ERROR: Training DataFrame is empty after splitting. Should not happen at this stage mate."
+        )
+        return pl.DataFrame(), pl.DataFrame(), pl.DataFrame()
+
+    fit_result = fit_time_series_pipelines(
+        train_pd_df,
+        features_pipeline,
+        target_pipeline,
+    )
+
+    if isinstance(fit_result, Failure):
+        print(f"ERROR: {fit_result.failure()}")
+        return pl.DataFrame(), pl.DataFrame(), pl.DataFrame()
+
+    fitted_pipelines = fit_result.unwrap()
+
+    # Transform each dataset and convert back to Polars
+    train_df = pl.DataFrame()
+    val_df = pl.DataFrame()
+    test_df = pl.DataFrame()
+
+    # Transform train set
+    train_transformed = transform_time_series_data(train_pd_df, fitted_pipelines)
+    if isinstance(train_transformed, Success):
+        train_df = pl.from_pandas(train_transformed.unwrap()).lazy()
+
+    # Transform validation set
+    val_transformed = transform_time_series_data(val_pd_df, fitted_pipelines)
+    if isinstance(val_transformed, Success):
+        val_df = pl.from_pandas(val_transformed.unwrap()).lazy()
+
+    # Transform test set
+    test_transformed = transform_time_series_data(test_pd_df, fitted_pipelines)
+    if isinstance(test_transformed, Success):
+        test_df = pl.from_pandas(test_transformed.unwrap()).lazy()
+
+    return train_df, val_df, test_df, fitted_pipelines
+
+
+def run_hydro_processor(
+    region_time_series_base_dirs: dict[str, Path],
+    region_static_attributes_base_dirs: dict[str, Path],
+    path_to_preprocessing_output_directory: Union[str, Path],
+    required_columns: list[str],
+    config: ProcessingConfig,
+    preprocessing_config: dict[str, dict[str, GroupedPipeline | Pipeline]],
+    run_uuid: str,
+    group_identifier: str = "gauge_id",
+    list_of_gauge_ids_to_process: Optional[list[str]] = None,
+    basin_batch_size: int = 50,
+) -> tuple[bool, Optional[ProcessingConfig], Optional[str]]:
+    """
+    1. Process static data
+    2. Batch process time series data:
+        - Define Batches
+            - Read Batch Data
+            - Call batch_process_time_series_data
+            - Write Data to Disk
+            - Next Batch
+    3. If successful, write _SUCCESS file
+    """
+    path_to_preprocessing_output_directory = Path(
+        path_to_preprocessing_output_directory
+    )
+
+    # 1. Process static data
+    static_name = "processed_static_features.parquet"
+    static_features_path = path_to_preprocessing_output_directory / static_name
+
+    static_features_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # 2. Batch process time series data
+    ts_folder = "processed_time_series"
+    ts_output_dir = path_to_preprocessing_output_directory / ts_folder
+
+    main_pipelines = {
+        "features": clone(preprocessing_config["features"].get("pipeline")),
+        "target": clone(preprocessing_config["target"].get("pipeline")),
+    }
+
+    main_pipelines["features"].fitted_pipelines.clear()
+    main_pipelines["target"].fitted_pipelines.clear()
+
+    for batch in batch_basins(list_of_gauge_ids_to_process, basin_batch_size):
+        loading_results = load_basins_timeseries_lazy(
+            batch,
+            region_time_series_base_dirs,
+            required_columns,
+            group_identifier,
         )
 
-    feat_pipe = feat_cfg["pipeline"]
-    targ_pipe = targ_cfg["pipeline"]
+        if isinstance(loading_results, Failure):
+            print(f"ERROR: {loading_results.failure()}")
+            return False, None, loading_results.failure()
 
-    fit_res = fit_time_series_pipelines(train_df, feat_pipe, targ_pipe)
+        lf = loading_results.unwrap()
 
-    if isinstance(fit_res, Failure):
-        raise ValueError(f"Pipeline fitting failed: {fit_res.failure()}")
-    fitted_pipelines = fit_res.unwrap()
+        train_lf, val_lf, test_lf, batch_result_pipelines = (
+            batch_process_time_series_data(
+                lf,
+                config=config,
+                features_pipeline=main_pipelines["features"],
+                target_pipeline=main_pipelines["target"],
+            )
+        )
 
-    def _apply(split: pd.DataFrame) -> pd.DataFrame:
-        tr = transform_time_series_data(split, fitted_pipelines)
+        for pipeline_type in ["features", "target"]:
+            for group_id, group_pipeline in batch_result_pipelines[
+                pipeline_type
+            ].fitted_pipelines.items():
+                main_pipelines[pipeline_type].add_fitted_group(group_id, group_pipeline)
 
-        if isinstance(tr, Failure):
-            raise ValueError(f"Transformation failed: {tr.failure()}")
+        write_results = write_train_val_test_splits_to_disk(
+            train_lf,
+            val_lf,
+            test_lf,
+            output_dir=ts_output_dir,
+            group_identifier=group_identifier,
+            basin_ids=batch,
+        )
 
-        return tr.unwrap()
+        if isinstance(write_results, Failure):
+            print(f"ERROR: {write_results.failure()}")
+            return False, None, write_results.failure()  # TODO: Handle this better
 
-    train_t = _apply(train_df)
-    val_t = _apply(val_df)
-    test_t = _apply(test_df)
-
-    return train_t, val_t, test_t
+    return None

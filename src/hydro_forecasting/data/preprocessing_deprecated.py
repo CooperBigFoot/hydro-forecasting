@@ -5,7 +5,7 @@ import numpy as np
 import gc
 import joblib
 from pathlib import Path
-from typing import Callable, Optional, Tuple, TypedDict, Union, Any, cast
+from typing import Optional, Tuple, TypedDict, Union, Any, cast
 import multiprocessing as mp
 from tqdm import tqdm
 from sklearn.base import clone
