@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+
 import json
 import pandas as pd
 import numpy as np
@@ -48,7 +51,7 @@ class BasinQualityReport:
 @dataclass
 class CleanContext:
     df: pd.DataFrame
-    config: ProcessingConfig
+    config: "ProcessingConfig" 
     report: BasinQualityReport
 
 
