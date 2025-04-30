@@ -157,7 +157,7 @@ def _load_single_basin_lazy(
             return Failure(f"Missing required columns in basin {gauge_id}: {missing}")
 
         lf = (
-            lf.with_column(pl.lit(gauge_id).alias(group_identifier))
+            lf.with_columns(pl.lit(gauge_id).alias(group_identifier))
             .select([group_identifier, "date", *required_columns])
             .sort("date")
         )
@@ -372,7 +372,7 @@ def run_hydro_processor(
     min_train_years: float = 5.0,
     max_imputation_gap_size: int = 5,
     group_identifier: str = "gauge_id",
-    train_prop: float = 0.25,
+    train_prop: float = 0.5,
     val_prop: float = 0.25,
     test_prop: float = 0.25,
     list_of_gauge_ids_to_process: Optional[list[str]] = None,
