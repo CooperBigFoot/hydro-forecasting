@@ -372,9 +372,9 @@ def run_hydro_processor(
     min_train_years: float = 5.0,
     max_imputation_gap_size: int = 5,
     group_identifier: str = "gauge_id",
-    train_prop: float = 0.6,
-    val_prop: float = 0.2,
-    test_prop: float = 0.2,
+    train_prop: float = 0.25,
+    val_prop: float = 0.25,
+    test_prop: float = 0.25,
     list_of_gauge_ids_to_process: Optional[list[str]] = None,
     basin_batch_size: int = 50,
 ) -> Result[ProcessingOutput, str]:

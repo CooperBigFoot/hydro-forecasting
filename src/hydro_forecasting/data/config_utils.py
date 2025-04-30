@@ -3,10 +3,7 @@ import hashlib
 import uuid
 from pathlib import Path
 from typing import Any, Union, TYPE_CHECKING
-import joblib
-
-from sklearn.pipeline import Pipeline
-from ..preprocessing.grouped import GroupedPipeline
+from returns.result import Result, Success, Failure  # ROP import
 
 if TYPE_CHECKING:
     from .lazy_datamodule import HydroLazyDataModule
@@ -79,49 +76,6 @@ def generate_run_uuid(config: dict[str, Any]) -> str:
     return str(run_uuid)
 
 
-def save_pipelines(
-    pipelines: dict[str, Union[Pipeline, GroupedPipeline]], filepath: Path
-) -> None:
-    """
-    Save a dictionary of scikit-learn Pipeline or GroupedPipeline objects to disk.
-
-    Uses joblib for efficient serialization of fitted pipelines, with error
-    handling via the Result monad.
-
-    Args:
-        pipelines: Dictionary mapping identifiers to Pipeline or GroupedPipeline objects
-        filepath: Path where the pipelines will be saved
-
-    Returns:
-        Success with None if saving was successful, or Failure with error message
-    """
-    # Ensure parent directory exists
-    filepath.parent.mkdir(parents=True, exist_ok=True)
-    # Save pipelines using joblib (will raise on failure)
-    joblib.dump(pipelines, filepath)
-
-
-def load_pipelines(filepath: Path) -> dict[str, Union[Pipeline, GroupedPipeline]]:
-    """
-    Load a dictionary of scikit-learn Pipeline or GroupedPipeline objects from disk.
-
-    Retrieves previously saved pipelines with error handling via the Result monad.
-
-    Args:
-        filepath: Path to the saved pipeline file
-
-    Returns:
-        Success with the loaded pipeline dictionary if successful,
-        or Failure with error message
-    """
-    if not filepath.is_file():
-        raise FileNotFoundError(f"Pipeline file not found: {filepath}")
-    loaded_pipelines = joblib.load(filepath)
-    if not isinstance(loaded_pipelines, dict):
-        raise TypeError(f"Loaded object is not a dict, got {type(loaded_pipelines)}")
-    return loaded_pipelines
-
-
 def _default_serializer(obj: Any) -> str:
     """
     Custom JSON serializer to handle non-standard JSON types.
@@ -144,7 +98,7 @@ def _default_serializer(obj: Any) -> str:
         raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
 
-def save_config(config: dict[str, Any], filepath: Path) -> None:
+def save_config(config: dict[str, Any], filepath: Path) -> Result[None, str]:
     """
     Save a configuration dictionary to a JSON file.
 
@@ -158,14 +112,16 @@ def save_config(config: dict[str, Any], filepath: Path) -> None:
     Returns:
         Success with None if saving was successful, or Failure with error message
     """
-    # Ensure parent directory exists
-    filepath.parent.mkdir(parents=True, exist_ok=True)
-    # Save the config as JSON (will raise on failure)
-    with open(filepath, "w", encoding="utf-8") as f:
-        json.dump(config, f, indent=4, sort_keys=True, default=_default_serializer)
+    try:
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(config, f, indent=4, sort_keys=True, default=_default_serializer)
+        return Success(None)
+    except Exception as e:
+        return Failure(str(e))
 
 
-def load_config(filepath: Path) -> dict[str, Any]:
+def load_config(filepath: Path) -> Result[dict[str, Any], str]:
     """
     Load a configuration dictionary from a JSON file.
 
@@ -179,13 +135,16 @@ def load_config(filepath: Path) -> dict[str, Any]:
         Success with the loaded configuration dictionary if successful,
         or Failure with error message
     """
-    if not filepath.is_file():
-        raise FileNotFoundError(f"Configuration file not found: {filepath}")
-    with open(filepath, "r", encoding="utf-8") as f:
-        loaded_config = json.load(f)
-    if not isinstance(loaded_config, dict):
-        raise TypeError(f"Loaded object is not a dict, got {type(loaded_config)}")
-    return loaded_config
+    try:
+        if not filepath.is_file():
+            return Failure(f"Configuration file not found: {filepath}")
+        with open(filepath, "r", encoding="utf-8") as f:
+            loaded_config = json.load(f)
+        if not isinstance(loaded_config, dict):
+            return Failure(f"Loaded object is not a dict, got {type(loaded_config)}")
+        return Success(loaded_config)
+    except Exception as e:
+        return Failure(str(e))
 
 
 def extract_relevant_config(datamodule: "HydroLazyDataModule") -> dict[str, Any]:
