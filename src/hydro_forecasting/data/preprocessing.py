@@ -1,11 +1,12 @@
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 import polars as pl
 from typing import Optional, Any, Union, Iterator
 from returns.result import Failure, Success, Result
 from sklearn.pipeline import Pipeline, clone
 from .clean_data import (
     BasinQualityReport,
+    SummaryQualityReport,
     clean_data,
     save_quality_report_to_json,
     summarize_quality_reports_from_folder,
@@ -15,11 +16,14 @@ from ..preprocessing.time_series_preprocessing import (
     fit_time_series_pipelines,
     transform_time_series_data,
     save_time_series_pipelines,
+    load_time_series_pipelines,
 )
 from ..preprocessing.static_preprocessing import (
     process_static_data,
     save_static_pipeline,
+    load_static_pipeline,
 )
+from .config_utils import save_config
 
 
 @dataclass
@@ -32,6 +36,22 @@ class ProcessingConfig:
     train_prop: float = 0.6
     val_prop: float = 0.2
     test_prop: float = 0.2
+
+
+@dataclass
+class ProcessingOutput:
+    """Output paths and artifacts from a hydro data processing run."""
+
+    run_output_dir: Path
+    processed_timeseries_dir: Path
+    processed_static_attributes_path: Optional[Path]
+    fitted_time_series_pipelines_path: Path
+    fitted_static_pipeline_path: Optional[Path]
+    quality_reports_dir: Path
+    summary_quality_report_path: Path
+    config_path: Path
+    success_marker_path: Path
+    summary_quality_report: SummaryQualityReport
 
 
 def split_data(
@@ -346,145 +366,236 @@ def run_hydro_processor(
     region_static_attributes_base_dirs: dict[str, Path],
     path_to_preprocessing_output_directory: Union[str, Path],
     required_columns: list[str],
-    config: ProcessingConfig,
-    preprocessing_config: dict[str, dict[str, GroupedPipeline | Pipeline]],
     run_uuid: str,
+    datamodule_config: dict[str, Any],
+    preprocessing_config: dict[str, dict[str, GroupedPipeline | Pipeline]],
+    min_train_years: float = 5.0,
+    max_imputation_gap_size: int = 5,
     group_identifier: str = "gauge_id",
+    train_prop: float = 0.6,
+    val_prop: float = 0.2,
+    test_prop: float = 0.2,
     list_of_gauge_ids_to_process: Optional[list[str]] = None,
     basin_batch_size: int = 50,
-) -> tuple[bool, Optional[ProcessingConfig], Optional[str]]:
+) -> Result[ProcessingOutput, str]:
     """
-    1. Process static data
-    2. Batch process time series data:
-        - Define Batches
-            - Read Batch Data
-            - Call batch_process_time_series_data
-            - Write Data to Disk
-            - Next Batch
-    3. If successful, write _SUCCESS file
+    Main function to run the hydrological data processor with preprocessing pipelines.
+
+    Processes both static attributes and time series data for multiple basins:
+    1. Creates necessary directories for the processing run
+    2. Processes static attributes if available
+    3. Batch-processes time series data using the specified pipelines
+    4. Saves quality reports and fitted pipelines
+    5. Creates a summary quality report
+    6. Creates a success marker file if everything succeeds
+
+    Args:
+        region_time_series_base_dirs: Mapping from region prefix to time series directory
+        region_static_attributes_base_dirs: Mapping from region prefix to static attribute directory
+        path_to_preprocessing_output_directory: Base directory for processed data
+        required_columns: List of required data columns for quality checking
+        run_uuid: Unique identifier for this processing run
+        datamodule_config: Configuration dictionary for the data module
+        preprocessing_config: Configuration for data preprocessing pipelines
+        min_train_years: Minimum required years for training
+        max_imputation_gap_size: Maximum gap length to impute with interpolation
+        group_identifier: Column name identifying the basin
+        train_prop: Proportion of data for training
+        val_prop: Proportion of data for validation
+        test_prop: Proportion of data for testing
+        list_of_gauge_ids_to_process: List of basin (gauge) IDs to process
+        basin_batch_size: Maximum number of basins to process in a single batch
+
+    Returns:
+        Result containing ProcessingOutput with paths to all artifacts on success,
+        or error message string on failure
     """
-    path_to_preprocessing_output_directory = Path(
-        path_to_preprocessing_output_directory
-    )
+    try:
+        # Setup processing configuration
+        config = ProcessingConfig(
+            required_columns=required_columns,
+            preprocessing_config=preprocessing_config,
+            min_train_years=min_train_years,
+            max_imputation_gap_size=max_imputation_gap_size,
+            group_identifier=group_identifier,
+            train_prop=train_prop,
+            val_prop=val_prop,
+            test_prop=test_prop,
+        )
 
-    # 1. Process static data
-    static_name = "processed_static_features.parquet"
-    static_features_path = path_to_preprocessing_output_directory / static_name
+        # Prepare output directories
+        run_output_dir = Path(path_to_preprocessing_output_directory) / run_uuid
+        run_output_dir.mkdir(parents=True, exist_ok=True)
 
-    static_features_path.parent.mkdir(parents=True, exist_ok=True)
+        ts_output_dir = run_output_dir / "processed_time_series"
+        ts_output_dir.mkdir(parents=True, exist_ok=True)
 
-    static_processing_results = process_static_data(
-        region_static_attributes_base_dirs,
-        list_of_gauge_ids_to_process,
-        preprocessing_config,
-        static_features_path,
-        group_identifier,
-    )
+        quality_reports_dir = run_output_dir / "quality_reports"
+        quality_reports_dir.mkdir(parents=True, exist_ok=True)
 
-    if isinstance(static_processing_results, Failure):
-        print(f"ERROR: {static_processing_results.failure()}")
-        return False, None, static_processing_results.failure()
+        config_path = run_output_dir / "config.json"
+        summary_quality_report_path = run_output_dir / "quality_summary.json"
+        success_marker_path = run_output_dir / "_SUCCESS"
 
-    # Save the static features pipeline
-    fitted_static_name = "fitted_static_pipeline.joblib"
-    fitted_static_path = path_to_preprocessing_output_directory / fitted_static_name
-    save_path_static, static_features_pipeline = static_processing_results.unwrap()
+        # TODO: Implement the logic here
+        save_result = save_config(datamodule_config, config_path)
 
-    save_results = save_static_pipeline(
-        static_features_pipeline,
-        fitted_static_path,
-    )
+        # 1. Process static data
+        static_features_path = run_output_dir / "processed_static_features.parquet"
+        fitted_static_path = run_output_dir / "fitted_static_pipeline.joblib"
+        static_pipeline = None
 
-    if isinstance(save_results, Failure):
-        print(f"ERROR: {save_results.failure()}")
-        return False, None, save_results.failure()
-
-    print(f"SUCCESS: Static features saved to {save_path_static}")
-    print(f"SUCCESS: Static features pipeline saved to {fitted_static_path}")
-
-    # 2. Batch process time series data
-    ts_folder = "processed_time_series"
-    ts_output_dir = path_to_preprocessing_output_directory / ts_folder
-
-    quality_reports_dir = path_to_preprocessing_output_directory / "quality_reports"
-    quality_reports_dir.mkdir(parents=True, exist_ok=True)
-
-    main_pipelines: dict[str, GroupedPipeline] = {
-        "features": clone(preprocessing_config["features"].get("pipeline")),
-        "target": clone(preprocessing_config["target"].get("pipeline")),
-    }
-
-    main_pipelines["features"].fitted_pipelines.clear()
-    main_pipelines["target"].fitted_pipelines.clear()
-
-    for batch in batch_basins(list_of_gauge_ids_to_process, basin_batch_size):
-        loading_results = load_basins_timeseries_lazy(
-            batch,
-            region_time_series_base_dirs,
-            required_columns,
+        static_processing_results = process_static_data(
+            region_static_attributes_base_dirs,
+            list_of_gauge_ids_to_process,
+            preprocessing_config,
+            static_features_path,
             group_identifier,
         )
 
-        if isinstance(loading_results, Failure):
-            print(f"ERROR: {loading_results.failure()}")
-            return False, None, loading_results.failure()
+        if isinstance(static_processing_results, Success):
+            save_path_static, static_pipeline = static_processing_results.unwrap()
 
-        lf = loading_results.unwrap()
+            save_results = save_static_pipeline(static_pipeline, fitted_static_path)
 
-        train_lf, val_lf, test_lf, batch_result_pipelines, quality_reports = (
-            batch_process_time_series_data(
-                lf,
-                config=config,
-                features_pipeline=main_pipelines["features"],
-                target_pipeline=main_pipelines["target"],
-            )
+            if isinstance(save_results, Failure):
+                return Failure(
+                    f"Failed to save static pipeline: {save_results.failure()}"
+                )
+
+            print(f"SUCCESS: Static features saved to {save_path_static}")
+            print(f"SUCCESS: Static features pipeline saved to {fitted_static_path}")
+        else:
+            print(f"WARNING: {static_processing_results.failure()}")
+            static_features_path = None
+            fitted_static_path = None
+
+        # 2. Batch process time series data
+        fitted_ts_pipelines_path = (
+            run_output_dir / "fitted_time_series_pipelines.joblib"
         )
 
-        # Save the quality reports
-        for gauge_id, report in quality_reports.items():
-            report_name = f"{gauge_id}.json"
-            save_path = quality_reports_dir / report_name
-            succs_flag, path, error = save_quality_report_to_json(
-                report=report,
-                path=save_path,
+        main_pipelines: dict[str, GroupedPipeline] = {
+            "features": clone(preprocessing_config["features"].get("pipeline")),
+            "target": clone(preprocessing_config["target"].get("pipeline")),
+        }
+
+        main_pipelines["features"].fitted_pipelines.clear()
+        main_pipelines["target"].fitted_pipelines.clear()
+
+        all_quality_reports: dict[str, BasinQualityReport] = {}
+
+        for batch in batch_basins(list_of_gauge_ids_to_process, basin_batch_size):
+            loading_results = load_basins_timeseries_lazy(
+                batch,
+                region_time_series_base_dirs,
+                required_columns,
+                group_identifier,
             )
 
-        for pipeline_type in ["features", "target"]:
-            for group_id, group_pipeline in batch_result_pipelines[
-                pipeline_type
-            ].fitted_pipelines.items():
-                main_pipelines[pipeline_type].add_fitted_group(group_id, group_pipeline)
+            if isinstance(loading_results, Failure):
+                return Failure(f"Failed to load batch: {loading_results.failure()}")
 
-        write_results = write_train_val_test_splits_to_disk(
-            train_lf,
-            val_lf,
-            test_lf,
-            output_dir=ts_output_dir,
-            group_identifier=group_identifier,
-            basin_ids=batch,
+            lf = loading_results.unwrap()
+
+            train_lf, val_lf, test_lf, batch_result_pipelines, quality_reports = (
+                batch_process_time_series_data(
+                    lf,
+                    config=config,
+                    features_pipeline=main_pipelines["features"],
+                    target_pipeline=main_pipelines["target"],
+                )
+            )
+
+            # Save the quality reports
+            for gauge_id, report in quality_reports.items():
+                report_name = f"{gauge_id}.json"
+                save_path = quality_reports_dir / report_name
+                succ_flag, path, error = save_quality_report_to_json(
+                    report=report,
+                    path=save_path,
+                )
+
+                if not succ_flag:
+                    print(
+                        f"WARNING: Failed to save quality report for {gauge_id}: {error}"
+                    )
+
+                # Collect reports for summary
+                all_quality_reports[gauge_id] = report
+
+            # Merge fitted pipelines from this batch into main pipelines
+            for pipeline_type in ["features", "target"]:
+                for group_id, group_pipeline in batch_result_pipelines[
+                    pipeline_type
+                ].fitted_pipelines.items():
+                    main_pipelines[pipeline_type].add_fitted_group(
+                        group_id, group_pipeline
+                    )
+
+            # Write the processed data to disk
+            write_results = write_train_val_test_splits_to_disk(
+                train_lf,
+                val_lf,
+                test_lf,
+                output_dir=ts_output_dir,
+                group_identifier=group_identifier,
+                basin_ids=batch,
+            )
+
+            if isinstance(write_results, Failure):
+                return Failure(
+                    f"Failed to write processed data: {write_results.failure()}"
+                )
+
+        # 3. Save the fitted time series pipelines
+        save_results = save_time_series_pipelines(
+            main_pipelines, fitted_ts_pipelines_path
         )
 
-        if isinstance(write_results, Failure):
-            print(f"ERROR: {write_results.failure()}")
-            return False, None, write_results.failure()
+        if isinstance(save_results, Failure):
+            return Failure(
+                f"Failed to save time series pipelines: {save_results.failure()}"
+            )
 
-    # Save the fitted pipelines to disk
-    fitted_ts_pipelines_name = "fitted_time_series_pipelines.joblib"
+        # 4. Create summary quality report
+        summary_result = summarize_quality_reports_from_folder(
+            quality_reports_dir,
+            summary_quality_report_path,
+        )
 
-    save_results = save_time_series_pipelines(main_pipelines, fitted_ts_pipelines_name)
+        if isinstance(summary_result, Failure):
+            return Failure(
+                f"Failed to create summary report: {summary_result.failure()}"
+            )
 
-    if isinstance(save_results, Failure):
-        print(f"ERROR: {save_results.failure()}")
-        return False, None, save_results.failure()
+        summary_report = summary_result.unwrap()
 
-    print(f"SUCCESS: Fitted pipelines saved to {save_results.unwrap()}")
-    print(f"SUCCESS: Time series data processed and saved to {ts_output_dir}")
+        # 5. Create success marker
+        success_marker_path.touch(exist_ok=True)
 
-    # 3. If successful, write _SUCCESS file
-    success_file = path_to_preprocessing_output_directory / "_SUCCESS"
-    success_file.touch(exist_ok=True)
-    print(
-        f"SUCCESS: Preprocessing completed successfully. Output at {path_to_preprocessing_output_directory}"
-    )
+        print(
+            f"SUCCESS: Preprocessing completed successfully. Output at {run_output_dir}"
+        )
 
-    return True, config, None
+        # 6. Return processing output
+        output = ProcessingOutput(
+            run_output_dir=run_output_dir,
+            processed_timeseries_dir=ts_output_dir,
+            processed_static_attributes_path=static_features_path,
+            fitted_time_series_pipelines_path=fitted_ts_pipelines_path,
+            fitted_static_pipeline_path=fitted_static_path,
+            quality_reports_dir=quality_reports_dir,
+            summary_quality_report_path=summary_quality_report_path,
+            config_path=config_path,
+            success_marker_path=success_marker_path,
+            summary_quality_report=summary_report,
+        )
+
+        return Success(output)
+
+    except Exception as e:
+        import traceback
+
+        print(f"ERROR in run_hydro_processor: {e}\n{traceback.format_exc()}")
+        return Failure(f"Unexpected error during hydro processing: {e}")
