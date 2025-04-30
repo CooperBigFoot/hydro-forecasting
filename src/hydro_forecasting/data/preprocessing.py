@@ -9,7 +9,9 @@ from ..preprocessing.grouped import GroupedPipeline
 from ..preprocessing.time_series_preprocessing import (
     fit_time_series_pipelines,
     transform_time_series_data,
+    save_time_series_pipelines,
 )
+from ..preprocessing.static_preprocessing import process_static_data
 
 
 @dataclass
@@ -361,11 +363,24 @@ def run_hydro_processor(
 
     static_features_path.parent.mkdir(parents=True, exist_ok=True)
 
+    # TODO: I need to return the static features pipeline
+    static_processing_results = process_static_data(
+        region_static_attributes_base_dirs,
+        list_of_gauge_ids_to_process,
+        preprocessing_config,
+        static_features_path,
+        group_identifier,
+    )
+
+    if isinstance(static_processing_results, Failure):
+        print(f"ERROR: {static_processing_results.failure()}")
+        return False, None, static_processing_results.failure()
+
     # 2. Batch process time series data
     ts_folder = "processed_time_series"
     ts_output_dir = path_to_preprocessing_output_directory / ts_folder
 
-    main_pipelines = {
+    main_pipelines: dict[str, GroupedPipeline] = {
         "features": clone(preprocessing_config["features"].get("pipeline")),
         "target": clone(preprocessing_config["target"].get("pipeline")),
     }
@@ -413,6 +428,28 @@ def run_hydro_processor(
 
         if isinstance(write_results, Failure):
             print(f"ERROR: {write_results.failure()}")
-            return False, None, write_results.failure()  # TODO: Handle this better
+            return False, None, write_results.failure()
+
+    # Save the fitted pipelines to disk
+    fittet_ts_pipelines_name = "fitted_time_series_pipelines.joblib"
+
+    success, path, error = save_time_series_pipelines(
+        main_pipelines, fittet_ts_pipelines_name
+    )
+
+    if success:
+        print(f"SUCCESS: Fitted pipelines saved to {path}")
+    else:
+        print(f"ERROR: Failed to save fitted pipelines: {error}")
+        return False, None, error
+
+    # 3. If successful, write _SUCCESS file
+    success_file = path_to_preprocessing_output_directory / "_SUCCESS"
+    success_file.touch(exist_ok=True)
+    print(
+        f"SUCCESS: Preprocessing completed successfully. Output at {path_to_preprocessing_output_directory}"
+    )
+
+    return True, config, None
 
     return None

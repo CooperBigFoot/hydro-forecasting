@@ -3,6 +3,7 @@ import joblib
 from pathlib import Path
 import pandas as pd
 from sklearn.base import clone
+from sklearn.pipeline import Pipeline
 from returns.result import Result, Success, Failure
 from ..preprocessing.grouped import GroupedPipeline
 
@@ -11,7 +12,7 @@ def fit_time_series_pipelines(
     df: pd.DataFrame,
     features_pipeline: GroupedPipeline,
     target_pipeline: GroupedPipeline,
-) -> Result[Dict[str, GroupedPipeline], str]:
+) -> Result[dict[str, GroupedPipeline], str]:
     """
     Clone and fit separate GroupedPipelines for features and target
     on the provided DataFrame (which must include the group_identifier col).
@@ -34,7 +35,7 @@ def fit_time_series_pipelines(
 
 def transform_time_series_data(
     df: pd.DataFrame,
-    fitted_pipelines: Dict[str, GroupedPipeline],
+    fitted_pipelines: dict[str, GroupedPipeline],
 ) -> Result[pd.DataFrame, str]:
     """
     Apply the pre‐fitted 'features' and 'target' GroupedPipelines to df.
@@ -68,7 +69,7 @@ def transform_time_series_data(
 
 
 def save_time_series_pipelines(
-    pipelines: Dict[str, GroupedPipeline],
+    pipelines: dict[str, GroupedPipeline | Pipeline],
     path: Union[Path, str],
 ) -> tuple[bool, Optional[Path], Optional[str]]:
     """
@@ -89,7 +90,7 @@ def save_time_series_pipelines(
 
 def load_time_series_pipelines(
     path: Union[Path, str],
-) -> tuple[bool, Optional[Dict[str, GroupedPipeline]], Optional[str]]:
+) -> tuple[bool, Optional[dict[str, GroupedPipeline | Pipeline]], Optional[str]]:
     """
     Load back the dict of GroupedPipelines previously saved with save_time_series_pipelines.
 
