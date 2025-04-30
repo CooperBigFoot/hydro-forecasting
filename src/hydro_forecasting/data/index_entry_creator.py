@@ -126,21 +126,72 @@ def find_valid_sequences(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Identify start indices where both input and output windows have no nulls."""
     total = input_length + output_length
+
+    # Debug info
+    has_date = "date" in basin_data.columns
+    print(
+        f"Processing basin with {basin_data.height} rows and columns: {basin_data.columns}"
+    )
+
     if basin_data.height < total:
+        print(
+            f"WARNING: Basin data has {basin_data.height} rows, but needs at least {total} for a valid sequence"
+        )
         return np.array([], dtype=int), np.array([], dtype="datetime64[ns]")
+
+    # Check for missing values in the data
+    null_counts = basin_data.null_count()
+    if null_counts.sum().item() > 0:
+        non_zero_nulls = {
+            col: count
+            for col, count in zip(null_counts.columns, null_counts.row(0))
+            if count > 0
+        }
+        print(f"WARNING: Basin data contains nulls: {non_zero_nulls}")
+
+    # Select all columns except 'date' for null checking
     values = basin_data.select(pl.exclude("date")).to_numpy()
-    dates = basin_data.select("date").to_numpy().flatten()
+    dates = basin_data.select("date").to_numpy().flatten() if has_date else np.array([])
+
+    # Create mask of valid rows (no NaNs in any column)
     valid_mask = (~np.isnan(values).any(axis=1)).astype(int)
+    valid_count = valid_mask.sum()
+    print(
+        f"INFO: Basin has {valid_count} valid rows out of {basin_data.height} total rows"
+    )
+
+    if valid_count < total:
+        print(
+            f"WARNING: Not enough valid rows ({valid_count}) for a sequence of length {total}"
+        )
+        return np.array([], dtype=int), np.array([], dtype="datetime64[ns]")
+
+    # Find contiguous input windows of length input_length where all values are valid
     input_ok = (
         np.convolve(valid_mask, np.ones(input_length, int), mode="valid")
         == input_length
     )
+    input_window_count = input_ok.sum()
+
+    # Find contiguous output windows of length output_length where all values are valid
     output_ok = (
         np.convolve(valid_mask, np.ones(output_length, int), mode="valid")
         == output_length
     )
+    output_window_count = output_ok.sum()
+
+    print(
+        f"INFO: Found {input_window_count} valid input windows and {output_window_count} valid output windows"
+    )
+
+    # Pad the output windows and shift to align with input windows
     padded = np.pad(output_ok, (0, input_length), constant_values=False)
     output_shift = padded[input_length : input_length + len(input_ok)]
+
+    # Find positions where both input and output windows are valid
     seq_ok = input_ok & output_shift
     positions = np.where(seq_ok)[0]
+
+    print(f"INFO: Found {len(positions)} valid sequences of length {total}")
+
     return positions, dates

@@ -533,7 +533,7 @@ class HydroLazyDataModule(pl.LightningDataModule):
             with open(summary_path, "r") as f:
                 import json
 
-                quality_report = json.load(f)
+                summary_quality_report = json.load(f)
 
             # Set up fitted pipelines dictionary
             fitted_pipelines = {}
@@ -573,7 +573,7 @@ class HydroLazyDataModule(pl.LightningDataModule):
 
             # Construct LoadedData dataclass
             loaded_data = LoadedData(
-                quality_report=quality_report,
+                summary_quality_report=summary_quality_report,
                 fitted_pipelines=fitted_pipelines,
                 processed_ts_dir=run_dir / "processed_time_series",
                 processed_static_path=processed_static_path,
@@ -613,6 +613,48 @@ class HydroLazyDataModule(pl.LightningDataModule):
                         f"loaded={loaded_config[key]}, current={current_config[key]}"
                     )
         return None
+
+    def _load_pipelines_from_output(self, processing_output: ProcessingOutput) -> None:
+        """
+        Load fitted pipelines from processing output paths.
+
+        This helper method loads the fitted time series and static pipelines
+        from the paths stored in the ProcessingOutput object and assigns them
+        to the fitted_pipelines attribute.
+
+        Args:
+            processing_output: ProcessingOutput object containing paths to fitted pipelines
+        """
+        self.fitted_pipelines = {}
+
+        # Load time series pipelines
+        ts_pipelines_path = processing_output.fitted_time_series_pipelines_path
+        ts_pipelines_result = load_time_series_pipelines(ts_pipelines_path)
+
+        if isinstance(ts_pipelines_result, Failure):
+            raise RuntimeError(
+                f"Failed to load time series pipelines: {ts_pipelines_result.failure()}"
+            )
+
+        # Add time series pipelines to the dictionary
+        self.fitted_pipelines.update(ts_pipelines_result.unwrap())
+
+        # Load static pipeline if available
+        if processing_output.fitted_static_pipeline_path:
+            static_pipeline_path = processing_output.fitted_static_pipeline_path
+            static_pipeline_result = load_static_pipeline(static_pipeline_path)
+
+            if isinstance(static_pipeline_result, Failure):
+                print(
+                    f"WARNING: Failed to load static pipeline: {static_pipeline_result.failure()}"
+                )
+            else:
+                # Add static pipeline to the dictionary
+                self.fitted_pipelines["static"] = static_pipeline_result.unwrap()
+
+        print(
+            f"INFO: Successfully loaded {len(self.fitted_pipelines)} fitted pipelines."
+        )
 
     def prepare_data(self) -> None:
         """
@@ -735,6 +777,34 @@ class HydroLazyDataModule(pl.LightningDataModule):
             "test": self.processed_time_series_dir / "test",
         }
 
+        # Verify that directories exist and contain files
+        for stage, dir_path in time_series_dirs.items():
+            if not dir_path.exists():
+                raise RuntimeError(f"Directory for {stage} does not exist: {dir_path}")
+            
+            basin_files = list(dir_path.glob("*.parquet"))
+            if not basin_files:
+                print(f"WARNING: No parquet files found in {stage} directory: {dir_path}")
+            else:
+                print(f"INFO: Found {len(basin_files)} parquet files in {stage} directory")
+                
+                # Check a sample file to verify it has expected structure
+                sample_file = basin_files[0]
+                try:
+                    import polars as pl
+                    df = pl.read_parquet(sample_file)
+                    print(f"INFO: Sample file {sample_file.name} has {df.height} rows and columns: {df.columns}")
+                    
+                    # Debug: check if dates are continuous and no nulls are present in forcing features
+                    if "date" in df.columns:
+                        print(f"INFO: Date range in sample: {df['date'].min()} to {df['date'].max()}")
+                    
+                    # Check sequence lengths to see if they meet requirements
+                    if df.height < self.input_length + self.output_length:
+                        print(f"WARNING: Sample file has {df.height} rows but needs at least {self.input_length + self.output_length} for a valid sequence")
+                except Exception as e:
+                    print(f"WARNING: Failed to analyze sample file {sample_file}: {e}")
+
         index_result = create_index_entries(
             gauge_ids=processed_gauge_ids,
             time_series_dirs=time_series_dirs,
@@ -749,21 +819,50 @@ class HydroLazyDataModule(pl.LightningDataModule):
                 f"Failed to create index entries: {index_result.failure()}"
             )
 
-        # Key fix: Properly unpack the returned tuples of (index_path, meta_path)
+        # Unpack the returned tuples of (index_path, meta_path)
         stage_to_paths = index_result.unwrap()
 
-        # Store both index and meta paths
-        self.train_index_path, self.train_index_meta_path = stage_to_paths.get(
-            "train", (None, None)
-        )
-        self.val_index_path, self.val_index_meta_path = stage_to_paths.get(
-            "val", (None, None)
-        )
-        self.test_index_path, self.test_index_meta_path = stage_to_paths.get(
-            "test", (None, None)
-        )
+        print(f"INFO: Index creation returned stages: {list(stage_to_paths.keys())}")
+
+        # Store both index and meta paths with validation
+        for stage in ["train", "val", "test"]:
+            if stage not in stage_to_paths:
+                print(f"WARNING: No index entries created for stage '{stage}'")
+                continue
+                
+            index_path, meta_path = stage_to_paths[stage]
+            
+            # Verify the files exist and have content
+            if not index_path.exists() or not meta_path.exists():
+                print(f"WARNING: Index files don't exist for stage '{stage}'")
+                continue
+                
+            try:
+                import polars as pl
+                index_df = pl.read_parquet(index_path)
+                meta_df = pl.read_parquet(meta_path)
+                
+                if index_df.is_empty() or meta_df.is_empty():
+                    print(f"WARNING: Empty index files for stage '{stage}'")
+                    continue
+                    
+                print(f"INFO: Stage '{stage}' has {index_df.height} index entries")
+                
+                # Set the attributes
+                setattr(self, f"{stage}_index_path", index_path)
+                setattr(self, f"{stage}_index_meta_path", meta_path)
+            except Exception as e:
+                print(f"WARNING: Failed to validate index files for stage '{stage}': {e}")
 
         print(f"INFO: Index entries created successfully at {index_output_dir}.")
+
+        # Check if we have valid indices for at least the training stage
+        if not hasattr(self, "train_index_path") or self.train_index_path is None:
+            raise RuntimeError(
+                "Failed to create valid index entries for training data. "
+                "This might be because no valid sequences of sufficient length were found "
+                "in the preprocessed data. Try adjusting input_length and output_length parameters."
+            )
 
         # 7. Set the flag
         self._prepare_data_has_run = True
@@ -786,7 +885,28 @@ class HydroLazyDataModule(pl.LightningDataModule):
         ):
             raise RuntimeError("prepare_data() must be called before setup()")
 
-        static_file_path = self.processed_static_attributes_path
+        # Validate that index paths exist
+        for attr_name, path_type in [
+            ("train_index_path", "index"),
+            ("train_index_meta_path", "meta"),
+            ("val_index_path", "index"),
+            ("val_index_meta_path", "meta"),
+            ("test_index_path", "index"),
+            ("test_index_meta_path", "meta"),
+        ]:
+            if not hasattr(self, attr_name) or getattr(self, attr_name) is None:
+                raise RuntimeError(
+                    f"Missing {path_type} path for {attr_name.split('_')[0]}. "
+                    f"No valid sequences were found in the preprocessed data."
+                )
+
+            # Verify file exists
+            path = getattr(self, attr_name)
+            if not Path(path).exists():
+                raise RuntimeError(
+                    f"Index file does not exist: {path}. "
+                    f"Check that valid data sequences were created during preprocessing."
+                )
 
         # Common dataset arguments
         common_args = {
