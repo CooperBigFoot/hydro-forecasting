@@ -45,6 +45,7 @@ class SummaryQualityReport:
     passed_basins: int
     failed_basins: int
     excluded_basins: dict[str, str]  # basin_id -> failure_reason
+    retained_basins: list[BasinId] 
 
     def save(self, path: Path | str) -> Path:
         """
@@ -300,13 +301,14 @@ def summarize_quality_reports_from_folder(
             for r in reports
             if not r.get("passed_quality_check", True)
         }
-
+        passed_ids = [r["basin_id"] for r in reports if r.get("passed_quality_check")]
         # Create the simplified summary report
         summary = SummaryQualityReport(
             original_basins=total,
             passed_basins=passed,
             failed_basins=failed,
             excluded_basins=excluded,
+            retained_basins=passed_ids,
         )
         summary.save(save_path)
         return Success(summary)

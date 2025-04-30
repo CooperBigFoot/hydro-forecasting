@@ -11,7 +11,7 @@ from dataclasses import dataclass
 
 from sklearn.pipeline import Pipeline
 from .lazy_dataset import HydroLazyDataset
-from .preprocessing import run_hydro_processor, ProcessingOutput
+from .preprocessing import run_hydro_processor, ProcessingOutput, ProcessingConfig
 from .index_entry_creator import create_index_entries
 from ..preprocessing.grouped import GroupedPipeline
 from .batch_sampler import FileGroupedBatchSampler
@@ -30,7 +30,7 @@ from ..preprocessing.time_series_preprocessing import load_time_series_pipelines
 class LoadedData:
     """Data structure for loaded preprocessing artifacts."""
 
-    quality_report: SummaryQualityReport
+    summary_quality_report: SummaryQualityReport
     fitted_pipelines: dict[str, Union[Pipeline, GroupedPipeline]]
     processed_ts_dir: Path
     processed_static_path: Optional[Path]
@@ -640,8 +640,18 @@ class HydroLazyDataModule(pl.LightningDataModule):
             return
 
         print("INFO: Starting data preparation...")
-        # Define required columns based on configuration
+
         required_columns = self.forcing_features + [self.target]
+        processing_config = ProcessingConfig(
+            required_columns=required_columns,
+            preprocessing_config=self.preprocessing_configs,
+            min_train_years=self.min_train_years,
+            max_imputation_gap_size=self.max_imputation_gap_size,
+            group_identifier=self.group_identifier,
+            train_prop=self.train_prop,
+            val_prop=self.val_prop,
+            test_prop=self.test_prop,
+        )
 
         # 1. Attempt to reuse existing processed data
         reuse_success, loaded_data, reuse_message = (
@@ -772,13 +782,13 @@ class HydroLazyDataModule(pl.LightningDataModule):
         index_output_dir.mkdir(parents=True, exist_ok=True)
 
         index_result = create_index_entries(
-            list_of_gauge_ids=processed_gauge_ids,  # Use the final list
-            processed_timeseries_dir=self.processed_time_series_dir,
-            index_output_dir=index_output_dir,
-            input_seq_len=self.input_length,
-            output_seq_len=self.output_length,
-            group_identifier=self.group_identifier,
-            static_features_path=self.processed_static_attributes_path,
+            gauge_ids=processed_gauge_ids,  # Use the final list
+            time_series_base_dir=self.processed_time_series_dir,
+            output_dir=index_output_dir,
+            input_length=self.input_length,
+            output_length=self.output_length,
+            static_file_path=self.processed_static_attributes_path,
+            processing_config=processing_config,
         )
 
         if isinstance(index_result, Failure):
