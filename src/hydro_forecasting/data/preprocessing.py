@@ -2,7 +2,7 @@ from pathlib import Path
 from dataclasses import dataclass
 import polars as pl
 from typing import Optional, Any, Union, Iterator
-from returns.result import Failure, Success
+from returns.result import Failure, Success, Result
 from sklearn.pipeline import Pipeline, clone
 from .clean_data import BasinQualityReport, clean_data
 from ..preprocessing.grouped import GroupedPipeline
@@ -11,7 +11,10 @@ from ..preprocessing.time_series_preprocessing import (
     transform_time_series_data,
     save_time_series_pipelines,
 )
-from ..preprocessing.static_preprocessing import process_static_data
+from ..preprocessing.static_preprocessing import (
+    process_static_data,
+    save_static_pipeline,
+)
 
 
 @dataclass
@@ -98,11 +101,6 @@ def batch_basins(
     total = len(basins)
     for start in range(0, total, batch_size):
         yield list(basins[start : start + batch_size])
-
-
-from pathlib import Path
-import polars as pl
-from returns.result import Result, Success, Failure
 
 
 def _load_single_basin_lazy(
@@ -363,7 +361,6 @@ def run_hydro_processor(
 
     static_features_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # TODO: I need to return the static features pipeline
     static_processing_results = process_static_data(
         region_static_attributes_base_dirs,
         list_of_gauge_ids_to_process,
@@ -375,6 +372,23 @@ def run_hydro_processor(
     if isinstance(static_processing_results, Failure):
         print(f"ERROR: {static_processing_results.failure()}")
         return False, None, static_processing_results.failure()
+
+    # Save the static features pipeline
+    fitted_static_name = "fitted_static_pipeline.joblib"
+    fitted_static_path = path_to_preprocessing_output_directory / fitted_static_name
+    save_path_static, static_features_pipeline = static_processing_results.unwrap()
+
+    save_results = save_static_pipeline(
+        static_features_pipeline,
+        fitted_static_path,
+    )
+
+    if isinstance(save_results, Failure):
+        print(f"ERROR: {save_results.failure()}")
+        return False, None, save_results.failure()
+
+    print(f"SUCCESS: Static features saved to {save_path_static}")
+    print(f"SUCCESS: Static features pipeline saved to {fitted_static_path}")
 
     # 2. Batch process time series data
     ts_folder = "processed_time_series"
@@ -431,17 +445,16 @@ def run_hydro_processor(
             return False, None, write_results.failure()
 
     # Save the fitted pipelines to disk
-    fittet_ts_pipelines_name = "fitted_time_series_pipelines.joblib"
+    fitted_ts_pipelines_name = "fitted_time_series_pipelines.joblib"
 
-    success, path, error = save_time_series_pipelines(
-        main_pipelines, fittet_ts_pipelines_name
-    )
+    save_results = save_time_series_pipelines(main_pipelines, fitted_ts_pipelines_name)
 
-    if success:
-        print(f"SUCCESS: Fitted pipelines saved to {path}")
-    else:
-        print(f"ERROR: Failed to save fitted pipelines: {error}")
-        return False, None, error
+    if isinstance(save_results, Failure):
+        print(f"ERROR: {save_results.failure()}")
+        return False, None, save_results.failure()
+
+    print(f"SUCCESS: Fitted pipelines saved to {save_results.unwrap()}")
+    print(f"SUCCESS: Time series data processed and saved to {ts_output_dir}")
 
     # 3. If successful, write _SUCCESS file
     success_file = path_to_preprocessing_output_directory / "_SUCCESS"
@@ -451,5 +464,3 @@ def run_hydro_processor(
     )
 
     return True, config, None
-
-    return None

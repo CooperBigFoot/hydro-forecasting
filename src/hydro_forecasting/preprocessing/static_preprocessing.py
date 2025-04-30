@@ -1,6 +1,7 @@
 from pathlib import Path
 import pandas as pd
 import numpy as np
+import joblib
 from sklearn.base import clone
 from sklearn.pipeline import Pipeline
 from returns.result import Result, Success, Failure
@@ -35,10 +36,10 @@ def fit_static_pipeline(
         if missing:
             return Failure(f"Missing columns in static df: {missing}")
 
-        pipe = clone(preprocessing_config["static_features"]["pipeline"])
-        pipe.fit(static_df[cols])
+        pipeline: Pipeline = clone(preprocessing_config["static_features"]["pipeline"])
+        pipeline.fit(static_df[cols])
 
-        return Success(pipe)
+        return Success(pipeline)
 
     except Exception as e:
         return Failure(f"Error fitting static pipeline: {e}")
@@ -217,7 +218,7 @@ def process_static_data(
     preprocessing_config: dict[str, dict[str, Union[Pipeline, str]]],
     output_path: Path | str,
     group_identifier: str = "gauge_id",
-) -> Result[Path, str]:
+) -> Result[tuple[Path, Pipeline], str]:
     """
     Complete static data processing pipeline: read, fit, transform, and write.
 
@@ -229,7 +230,8 @@ def process_static_data(
         group_identifier: Name of the column that identifies the gauges (default: "gauge_id").
 
     Returns:
-        Result container with Path to saved file on success, or error message on failure.
+        Result container with tuple of (Path to saved file, fitted Pipeline) on success,
+        or error message on failure.
     """
     # Cast all paths to Path objects
     region_static_attributes_base_dirs = {
@@ -243,34 +245,96 @@ def process_static_data(
     # Get columns to transform from config
     columns_to_save = preprocessing_config["static_features"]["columns"]
 
-    # Helper functions for pipeline. I know, it's ugly AF but it works.
+    # Helper functions for pipeline
     def _read(_: object) -> Result[pd.DataFrame, str]:
         return read_static_data_from_disk(
             region_static_attributes_base_dirs, list_of_gauge_ids
         )
 
-    def _fit(static_df: pd.DataFrame) -> Result[Pipeline, str]:
-        return fit_static_pipeline(static_df, preprocessing_config)
+    def _fit(static_df: pd.DataFrame) -> Result[tuple[pd.DataFrame, Pipeline], str]:
+        pipeline_result = fit_static_pipeline(static_df, preprocessing_config)
+        if isinstance(pipeline_result, Failure):
+            return pipeline_result
 
-    def _transform(pipeline: Pipeline) -> Result[pd.DataFrame, str]:
-        # Re-read data to transform (could cache if needed)
-        df = read_static_data_from_disk(
-            region_static_attributes_base_dirs, list_of_gauge_ids
-        ).unwrap()
-        return transform_static_data(df, preprocessing_config, pipeline)
+        # Keep the original dataframe and return it along with the fitted pipeline
+        pipeline = pipeline_result.unwrap()
+        return Success((static_df, pipeline))
 
-    def _write(transformed_df: pd.DataFrame) -> Result[Path, str]:
-        return write_static_data_to_disk(
+    def _transform(
+        data_and_pipeline: tuple[pd.DataFrame, Pipeline],
+    ) -> Result[tuple[pd.DataFrame, Pipeline], str]:
+        # Unpack the input
+        static_df, pipeline = data_and_pipeline
+
+        # Transform data using the fitted pipeline
+        transform_result = transform_static_data(
+            static_df, preprocessing_config, pipeline
+        )
+        if isinstance(transform_result, Failure):
+            return transform_result
+
+        transformed_df = transform_result.unwrap()
+        return Success((transformed_df, pipeline))
+
+    def _write(
+        data_and_pipeline: tuple[pd.DataFrame, Pipeline],
+    ) -> Result[tuple[Path, Pipeline], str]:
+        # Unpack the input
+        transformed_df, pipeline = data_and_pipeline
+
+        # Write the data to disk
+        write_result = write_static_data_to_disk(
             transformed_df,
             output_path,
             columns_to_save=columns_to_save,
             group_identifier=group_identifier,
         )
 
-    # Chain operations using pipe and bind
-    return pipe(
-        _read,
-        bind(_fit),
-        bind(_transform),
-        bind(_write),
-    )(None)
+        if isinstance(write_result, Success):
+            return Success((write_result.unwrap(), pipeline))
+        else:
+            return Failure(write_result.failure())
+
+    return pipe(_read, bind(_fit), bind(_transform), bind(_write))(None)
+
+
+def save_static_pipeline(pipeline: Pipeline, filepath: Path | str) -> Result[Path, str]:
+    """
+    Save a fitted static features Pipeline object to disk.
+
+    Args:
+        pipeline: Fitted Pipeline object for static features
+        filepath: Path where the pipeline will be saved
+
+    Returns:
+        Success with the save path if successful, or Failure with error message
+    """
+    filepath = Path(filepath)
+    try:
+        # Ensure parent directory exists
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+
+        # Save pipeline using joblib
+        joblib.dump(pipeline, filepath)
+        return Success(filepath)
+    except Exception as e:
+        return Failure(f"Failed to save static pipeline: {e}")
+
+
+def load_static_pipeline(filepath: Path | str) -> Result[Pipeline, str]:
+    """
+    Load a fitted static features Pipeline object from disk.
+
+    Args:
+        filepath: Path where the pipeline is saved
+
+    Returns:
+        Success with the loaded Pipeline object if successful, or Failure with error message
+    """
+    filepath = Path(filepath)
+    try:
+        # Load pipeline using joblib
+        pipeline = joblib.load(filepath)
+        return Success(pipeline)
+    except Exception as e:
+        return Failure(f"Failed to load static pipeline: {e}")

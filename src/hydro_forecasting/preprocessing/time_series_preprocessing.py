@@ -70,36 +70,43 @@ def transform_time_series_data(
 
 def save_time_series_pipelines(
     pipelines: dict[str, GroupedPipeline | Pipeline],
-    path: Union[Path, str],
-) -> tuple[bool, Optional[Path], Optional[str]]:
+    path: Path | str,
+) -> Result[Path, str]:
     """
     Save a dict of fitted GroupedPipelines (e.g. {"features": feat_gp, "target": targ_gp})
     to a .joblib file on disk.
 
+    Args:
+        pipelines: Dictionary of fitted GroupedPipeline or Pipeline objects.
+        path: Path to save the pipelines.
+
     Returns:
-      (success, path if success else None, error message if failure else None)
+        Success with the save path if successful, or Failure with error message.
     """
     try:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         joblib.dump(pipelines, path)
-        return True, path, None
+        return Success(path)
     except Exception as e:
-        return False, None, f"Failed to save pipelines to {path}: {e}"
+        return Failure(f"Failed to save pipelines to {path}: {e}")
 
 
 def load_time_series_pipelines(
-    path: Union[Path, str],
-) -> tuple[bool, Optional[dict[str, GroupedPipeline | Pipeline]], Optional[str]]:
+    path: Path | str,
+) -> Result[dict[str, GroupedPipeline | Pipeline], str]:
     """
     Load back the dict of GroupedPipelines previously saved with save_time_series_pipelines.
 
+    Args:
+        path: Path to the saved pipelines file.
+
     Returns:
-      (success, pipelines dict if success else None, error message if failure else None)
+        Success with the loaded pipelines dict if successful, or Failure with error message.
     """
     try:
         path = Path(path)
         pipelines = joblib.load(path)
-        return True, pipelines, None
+        return Success(pipelines)
     except Exception as e:
-        return False, None, f"Failed to load pipelines from {path}: {e}"
+        return Failure(f"Failed to load pipelines from {path}: {e}")
