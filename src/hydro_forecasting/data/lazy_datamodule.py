@@ -621,19 +621,9 @@ class HydroLazyDataModule(pl.LightningDataModule):
         This method orchestrates the data preparation pipeline:
         1. Checks if preparation has already run.
         2. Defines required columns based on features and target.
-        3. Attempts to reuse existing processed data via `_check_and_reuse_existing_processed_data`.
-        4. If reuse is successful, loads state from `LoadedData`.
-        5. If reuse fails or is not applicable, runs the new `run_hydro_processor`.
-        6. Handles the `Result` from `run_hydro_processor`.
-        7. Loads fitted pipelines from disk using paths from `ProcessingOutput`.
-        8. Determines the list of successfully processed gauge IDs.
-        9. Creates index entries for the processed data splits.
-        10. Sets the `_prepare_data_has_run` flag.
-
-        Raises:
-            RuntimeError: If `run_hydro_processor` fails or if loading pipelines fails,
-                          or if no basins remain after processing.
-            ValueError: If index creation fails.
+        3. Attempts to reuse existing processed data.
+        4. If reuse fails, runs the hydro processor.
+        5. Creates index entries for the processed data splits.
         """
         if self._prepare_data_has_run:
             print("INFO: Data preparation has already run.")
@@ -642,16 +632,6 @@ class HydroLazyDataModule(pl.LightningDataModule):
         print("INFO: Starting data preparation...")
 
         required_columns = self.forcing_features + [self.target]
-        processing_config = ProcessingConfig(
-            required_columns=required_columns,
-            preprocessing_config=self.preprocessing_configs,
-            min_train_years=self.min_train_years,
-            max_imputation_gap_size=self.max_imputation_gap_size,
-            group_identifier=self.group_identifier,
-            train_prop=self.train_prop,
-            val_prop=self.val_prop,
-            test_prop=self.test_prop,
-        )
 
         # 1. Attempt to reuse existing processed data
         reuse_success, loaded_data, reuse_message = (
@@ -662,12 +642,11 @@ class HydroLazyDataModule(pl.LightningDataModule):
 
         if reuse_success and loaded_data:
             print("INFO: Reusing existing processed data.")
-
             self.summary_quality_report = loaded_data.summary_quality_report
             self.fitted_pipelines = loaded_data.fitted_pipelines
             self.processed_time_series_dir = loaded_data.processed_ts_dir
             self.processed_static_attributes_path = loaded_data.processed_static_path
-            processed_gauge_ids = loaded_data.processed_gauge_ids
+            processed_gauge_ids = loaded_data.summary_quality_report.retained_basins
 
             if self.list_of_gauge_ids_to_process is None:
                 self.list_of_gauge_ids_to_process = processed_gauge_ids
@@ -686,19 +665,20 @@ class HydroLazyDataModule(pl.LightningDataModule):
             print(
                 f"INFO: No reusable data found or reuse failed. Reason: {reuse_message}. Running preprocessing..."
             )
-            # 2. Run the new hydro processor
+            # 2. Run hydro processor
             relevant_config = extract_relevant_config(self)
             run_uuid = generate_run_uuid(relevant_config)
             print(f"INFO: Generated Run UUID: {run_uuid}")
 
-            processing_result: Result[ProcessingOutput, str] = run_hydro_processor(
+            # Run the processor and handle the result
+            processing_result = run_hydro_processor(
                 region_time_series_base_dirs=self.region_time_series_base_dirs,
                 region_static_attributes_base_dirs=self.region_static_attributes_base_dirs,
                 path_to_preprocessing_output_directory=self.path_to_preprocessing_output_directory,
                 required_columns=required_columns,
                 run_uuid=run_uuid,
-                datamodule_config=relevant_config,  # Pass relevant config for saving
-                preprocessing_config=self.preprocessing_configs,  # Pass pipeline definitions
+                datamodule_config=relevant_config,
+                preprocessing_config=self.preprocessing_configs,
                 min_train_years=self.min_train_years,
                 max_imputation_gap_size=self.max_imputation_gap_size,
                 group_identifier=self.group_identifier,
@@ -706,7 +686,7 @@ class HydroLazyDataModule(pl.LightningDataModule):
                 val_prop=self.val_prop,
                 test_prop=self.test_prop,
                 list_of_gauge_ids_to_process=self.list_of_gauge_ids_to_process,
-                basin_batch_size=50,  # TODO: Rethink this. The value should not be hardcoded
+                basin_batch_size=50,
             )
 
             if isinstance(processing_result, Failure):
@@ -717,61 +697,28 @@ class HydroLazyDataModule(pl.LightningDataModule):
             processing_output = processing_result.unwrap()
             print("INFO: Hydro processor completed successfully.")
 
-            # 3. Update DataModule state from ProcessingOutput
+            # 3. Update DataModule state
             self.summary_quality_report = processing_output.summary_quality_report
             self.processed_time_series_dir = processing_output.processed_timeseries_dir
             self.processed_static_attributes_path = (
                 processing_output.processed_static_attributes_path
             )
 
-            # 4. Load fitted pipelines from disk
+            # 4. Load fitted pipelines
             print("INFO: Loading fitted pipelines...")
-            ts_pipelines_result = load_time_series_pipelines(
-                processing_output.fitted_time_series_pipelines_path
-            )
-            if isinstance(ts_pipelines_result, Failure):
-                raise RuntimeError(
-                    f"Failed to load time series pipelines: {ts_pipelines_result.failure()}"
-                )
-            self.fitted_pipelines = ts_pipelines_result.unwrap()
-            print(f"INFO: Loaded {len(self.fitted_pipelines)} time series pipelines.")
+            self._load_pipelines_from_output(processing_output)
 
-            if processing_output.fitted_static_pipeline_path:
-                static_pipeline_result = load_static_pipeline(
-                    processing_output.fitted_static_pipeline_path
-                )
-                if isinstance(static_pipeline_result, Failure):
-                    raise RuntimeError(
-                        f"Failed to load static pipeline: {static_pipeline_result.failure()}"
-                    )
-                self.fitted_pipelines["static_features"] = (
-                    static_pipeline_result.unwrap()
-                )
-                print("INFO: Loaded static features pipeline.")
-            else:
-                print("INFO: No static pipeline path found in processing output.")
-
-            # 5. Determine the list of successfully processed gauge IDs
-            if self.summary_quality_report:
-                processed_gauge_ids = self.summary_quality_report.retained_basins
-                # Update the datamodule's list to reflect only processed basins
-                self.list_of_gauge_ids_to_process = processed_gauge_ids
-                print(
-                    f"INFO: {len(processed_gauge_ids)} basins retained after processing."
-                )
-            else:
-                # This case should ideally not happen if processing succeeded
-                print("WARNING: Summary quality report is missing after processing.")
-                processed_gauge_ids = []
-                self.list_of_gauge_ids_to_process = []
+            # 5. Get processed gauge IDs
+            processed_gauge_ids = self.summary_quality_report.retained_basins
+            self.list_of_gauge_ids_to_process = processed_gauge_ids
+            print(f"INFO: {len(processed_gauge_ids)} basins retained after processing.")
 
             if not processed_gauge_ids:
                 raise RuntimeError("No basins remained after the preprocessing stage.")
 
-        # 6. Create index entries for the processed data
+        # 6. Create index entries
         print("INFO: Creating index entries...")
         if not self.processed_time_series_dir:
-            # This should not happen if processing or loading succeeded
             raise RuntimeError(
                 "Processed time series directory is not set before creating index."
             )
@@ -781,14 +728,20 @@ class HydroLazyDataModule(pl.LightningDataModule):
         )
         index_output_dir.mkdir(parents=True, exist_ok=True)
 
+        # Create stage directories dictionary
+        time_series_dirs = {
+            "train": self.processed_time_series_dir / "train",
+            "val": self.processed_time_series_dir / "val",
+            "test": self.processed_time_series_dir / "test",
+        }
+
         index_result = create_index_entries(
-            gauge_ids=processed_gauge_ids,  # Use the final list
-            time_series_base_dir=self.processed_time_series_dir,
-            output_dir=index_output_dir,
+            gauge_ids=processed_gauge_ids,
+            time_series_dirs=time_series_dirs,
+            static_file_path=self.processed_static_attributes_path,
             input_length=self.input_length,
             output_length=self.output_length,
-            static_file_path=self.processed_static_attributes_path,
-            processing_config=processing_config,
+            output_dir=index_output_dir,
         )
 
         if isinstance(index_result, Failure):
@@ -796,10 +749,20 @@ class HydroLazyDataModule(pl.LightningDataModule):
                 f"Failed to create index entries: {index_result.failure()}"
             )
 
-        self.index_paths = index_result.unwrap()
-        self.train_index_path = self.index_paths.get("train")
-        self.val_index_path = self.index_paths.get("val")
-        self.test_index_path = self.index_paths.get("test")
+        # Key fix: Properly unpack the returned tuples of (index_path, meta_path)
+        stage_to_paths = index_result.unwrap()
+
+        # Store both index and meta paths
+        self.train_index_path, self.train_index_meta_path = stage_to_paths.get(
+            "train", (None, None)
+        )
+        self.val_index_path, self.val_index_meta_path = stage_to_paths.get(
+            "val", (None, None)
+        )
+        self.test_index_path, self.test_index_meta_path = stage_to_paths.get(
+            "test", (None, None)
+        )
+
         print(f"INFO: Index entries created successfully at {index_output_dir}.")
 
         # 7. Set the flag
