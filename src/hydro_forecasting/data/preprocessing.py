@@ -4,7 +4,12 @@ import polars as pl
 from typing import Optional, Any, Union, Iterator
 from returns.result import Failure, Success, Result
 from sklearn.pipeline import Pipeline, clone
-from .clean_data import BasinQualityReport, clean_data
+from .clean_data import (
+    BasinQualityReport,
+    clean_data,
+    save_quality_report_to_json,
+    summarize_quality_reports_from_folder,
+)
 from ..preprocessing.grouped import GroupedPipeline
 from ..preprocessing.time_series_preprocessing import (
     fit_time_series_pipelines,
@@ -241,7 +246,13 @@ def batch_process_time_series_data(
     config: ProcessingConfig,
     features_pipeline: GroupedPipeline,
     target_pipeline: GroupedPipeline,
-) -> tuple[pl.LazyFrame, pl.LazyFrame, pl.LazyFrame, dict[str, GroupedPipeline]]:
+) -> tuple[
+    pl.LazyFrame,
+    pl.LazyFrame,
+    pl.LazyFrame,
+    dict[str, GroupedPipeline],
+    dict[str, BasinQualityReport],
+]:
     """
     Clean, split, fit on train, and transform time-series data.
 
@@ -260,7 +271,8 @@ def batch_process_time_series_data(
 
     Returns:
         Tuple of (train_df, val_df, test_df) as Polars LazyFrames and fitted pipelines
-        as a dictionary of GroupedPipelines.
+        as a dictionary of GroupedPipelines for each group.
+        Also returns a dictionary of BasinQualityReport objects for each basin.
     """
     clean_result = clean_data(lf, config)
 
@@ -326,7 +338,7 @@ def batch_process_time_series_data(
     if isinstance(test_transformed, Success):
         test_df = pl.from_pandas(test_transformed.unwrap()).lazy()
 
-    return train_df, val_df, test_df, fitted_pipelines
+    return train_df, val_df, test_df, fitted_pipelines, quality_reports
 
 
 def run_hydro_processor(
@@ -394,6 +406,9 @@ def run_hydro_processor(
     ts_folder = "processed_time_series"
     ts_output_dir = path_to_preprocessing_output_directory / ts_folder
 
+    quality_reports_dir = path_to_preprocessing_output_directory / "quality_reports"
+    quality_reports_dir.mkdir(parents=True, exist_ok=True)
+
     main_pipelines: dict[str, GroupedPipeline] = {
         "features": clone(preprocessing_config["features"].get("pipeline")),
         "target": clone(preprocessing_config["target"].get("pipeline")),
@@ -416,7 +431,7 @@ def run_hydro_processor(
 
         lf = loading_results.unwrap()
 
-        train_lf, val_lf, test_lf, batch_result_pipelines = (
+        train_lf, val_lf, test_lf, batch_result_pipelines, quality_reports = (
             batch_process_time_series_data(
                 lf,
                 config=config,
@@ -424,6 +439,15 @@ def run_hydro_processor(
                 target_pipeline=main_pipelines["target"],
             )
         )
+
+        # Save the quality reports
+        for gauge_id, report in quality_reports.items():
+            report_name = f"{gauge_id}.json"
+            save_path = quality_reports_dir / report_name
+            succs_flag, path, error = save_quality_report_to_json(
+                report=report,
+                path=save_path,
+            )
 
         for pipeline_type in ["features", "target"]:
             for group_id, group_pipeline in batch_result_pipelines[

@@ -1,11 +1,9 @@
-from __future__ import annotations
-
 import polars as pl
 import numpy as np
 from dataclasses import dataclass, asdict
 from pathlib import Path
 import json
-from typing import Optional
+from typing import Optional, Any
 from returns.result import Result, Success, Failure
 from datetime import datetime
 from collections import Counter
@@ -46,11 +44,7 @@ class SummaryQualityReport:
     original_basins: int
     passed_basins: int
     failed_basins: int
-    excluded_basins: dict[str, str]
-    failure_reasons_summary: dict[str, int]
-    valid_period_summary: dict[str, dict[str, str | None]]
-    imputation_summary: dict[str, dict[str, float]]
-    processing_steps_distribution: dict[str, int]
+    excluded_basins: dict[str, str]  # basin_id -> failure_reason
 
     def save(self, path: Path | str) -> Path:
         """
@@ -65,6 +59,7 @@ class SummaryQualityReport:
         output_path = Path(path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         with open(output_path, "w", encoding="utf-8") as f:
+            # Use asdict for dataclass serialization, handle potential non-serializable types if needed
             json.dump(asdict(self), f, indent=2, default=str)
         return output_path
 
@@ -250,96 +245,74 @@ def save_quality_report_to_json(
         return False, None, f"Failed to save quality report: {e}"
 
 
-def summarize_quality_reports(
-    reports: dict[str, BasinQualityReport],
-    save_path: Path | str,
-) -> SummaryQualityReport:
+def summarize_quality_reports_from_folder(
+    folder_path: str | Path,
+    save_path: str | Path,
+) -> Result[SummaryQualityReport, str]:
     """
-    Build and save a summary of multiple BasinQualityReports.
+    Summarize BasinQualityReports stored as JSON files in a folder, focusing on basin counts.
 
     Args:
-        reports: Mapping of basin_id to its BasinQualityReport
-        save_path: Path or str where the summary JSON will be saved
+        folder_path: Directory containing {basin_id}.json files.
+        save_path: Path to save the summary JSON.
 
     Returns:
-        A SummaryQualityReport instance
+        Result containing SummaryQualityReport on success, or error message on failure.
     """
-    # Cast save_path to Path
-    summary_path = Path(save_path)
+    try:
+        folder = Path(folder_path)
+        json_files = sorted([f for f in folder.glob("*.json") if f.is_file()])
+        if not json_files:
+            return Failure(f"No JSON files found in {folder}")
 
-    total = len(reports)
-    passed_reports = [r for r in reports.values() if r.passed_quality_check]
-    passed = len(passed_reports)
-    failed = total - passed
+        # Read individual JSON files and combine them
+        all_reports_data: list[dict[str, Any]] = []
+        for file_path in json_files:
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    report_data = json.load(f)
+                    # Add basin_id from filename if not present in the JSON structure itself
+                    if "basin_id" not in report_data:
+                        report_data["basin_id"] = file_path.stem
+                    all_reports_data.append(report_data)
+            except json.JSONDecodeError as e:
+                return Failure(f"Error decoding JSON file {file_path}: {e}")
+            except Exception as e:
+                return Failure(f"Error reading file {file_path}: {e}")
 
-    excluded = {
-        basin_id: report.failure_reason or ""
-        for basin_id, report in reports.items()
-        if not report.passed_quality_check
-    }
+        if not all_reports_data:
+            return Failure("No valid report data could be loaded.")
 
-    # Failure reasons distribution
-    reasons = [
-        report.failure_reason
-        for report in reports.values()
-        if not report.passed_quality_check
-    ]
-    failure_reasons_summary = dict(Counter(reasons))
+        # Convert list of dicts to list for easier processing
+        reports = all_reports_data  # Already a list of dicts
 
-    # Processing steps distribution
-    step_counter: Counter[str] = Counter()
-    for report in reports.values():
-        for step in report.processing_steps:
-            step_counter[step] += 1
-    processing_steps_distribution = dict(step_counter)
+        total = len(reports)
+        passed_reports = [r for r in reports if r.get("passed_quality_check", True)]
+        passed = len(passed_reports)
+        failed = total - passed
 
-    # Valid period and imputation summaries
-    valid_period_summary: dict[str, dict[str, str | None]] = {}
-    imputation_summary: dict[str, dict[str, float]] = {}
+        excluded = {
+            r["basin_id"]: r.get(
+                "failure_reason", "Unknown reason"
+            )  # Provide default reason
+            for r in reports
+            if not r.get("passed_quality_check", True)
+        }
 
-    if passed_reports:
-        # Collect columns from first report
-        columns = passed_reports[0].valid_period.keys()
-        for col in columns:
-            # Gather start/end dates
-            starts: list[datetime] = []
-            ends: list[datetime] = []
-            total_short = 0
-            total_imputed = 0
-            for report in passed_reports:
-                vp = report.valid_period.get(col)
-                if vp and vp.get("start"):
-                    starts.append(datetime.fromisoformat(vp["start"]))
-                if vp and vp.get("end"):
-                    ends.append(datetime.fromisoformat(vp["end"]))
-                imp = report.imputation_info.get(col, {})
-                total_short += imp.get("short_gaps_count", 0)
-                total_imputed += imp.get("imputed_values_count", 0)
-            earliest = starts and min(starts).date().isoformat() or None
-            latest = ends and max(ends).date().isoformat() or None
-            valid_period_summary[col] = {
-                "earliest_start": earliest,
-                "latest_end": latest,
-            }
+        # Create the simplified summary report
+        summary = SummaryQualityReport(
+            original_basins=total,
+            passed_basins=passed,
+            failed_basins=failed,
+            excluded_basins=excluded,
+        )
+        summary.save(save_path)
+        return Success(summary)
+    except Exception as e:
+        import traceback
 
-            avg_short = total_short / passed
-            avg_imp = total_imputed / passed
-            imputation_summary[col] = {
-                "total_short_gaps": float(total_short),
-                "total_imputed_values": float(total_imputed),
-                "avg_short_gaps_per_basin": avg_short,
-                "avg_imputed_values_per_basin": avg_imp,
-            }
-
-    summary = SummaryQualityReport(
-        original_basins=total,
-        passed_basins=passed,
-        failed_basins=failed,
-        excluded_basins=excluded,
-        failure_reasons_summary=failure_reasons_summary,
-        valid_period_summary=valid_period_summary,
-        imputation_summary=imputation_summary,
-        processing_steps_distribution=processing_steps_distribution,
-    )
-    summary.save(summary_path)
-    return summary
+        # Log the full traceback for better debugging
+        print(
+            f"ERROR in summarize_quality_reports_from_folder: {e}\n{traceback.format_exc()}"
+        )
+        return Failure(f"summarize_quality_reports_from_folder failed: {e}")
