@@ -11,7 +11,7 @@ from dataclasses import dataclass
 
 from sklearn.pipeline import Pipeline
 from .lazy_dataset import HydroLazyDataset
-from .preprocessing import run_hydro_processor
+from .preprocessing import run_hydro_processor, ProcessingOutput
 from .index_entry_creator import create_index_entries
 from ..preprocessing.grouped import GroupedPipeline
 from .batch_sampler import FileGroupedBatchSampler
@@ -614,105 +614,187 @@ class HydroLazyDataModule(pl.LightningDataModule):
                     )
         return None
 
-    def prepare_data(self):
+    def prepare_data(self) -> None:
         """
-        Process the data, apply preprocessing, and create index entries.
-        This method is called only once on a single GPU.
+        Preprocesses the data if not already done or loaded.
+
+        This method orchestrates the data preparation pipeline:
+        1. Checks if preparation has already run.
+        2. Defines required columns based on features and target.
+        3. Attempts to reuse existing processed data via `_check_and_reuse_existing_processed_data`.
+        4. If reuse is successful, loads state from `LoadedData`.
+        5. If reuse fails or is not applicable, runs the new `run_hydro_processor`.
+        6. Handles the `Result` from `run_hydro_processor`.
+        7. Loads fitted pipelines from disk using paths from `ProcessingOutput`.
+        8. Determines the list of successfully processed gauge IDs.
+        9. Creates index entries for the processed data splits.
+        10. Sets the `_prepare_data_has_run` flag.
+
+        Raises:
+            RuntimeError: If `run_hydro_processor` fails or if loading pipelines fails,
+                          or if no basins remain after processing.
+            ValueError: If index creation fails.
         """
         if self._prepare_data_has_run:
-            print("INFO: prepare_data() has already been run; skipping.")
+            print("INFO: Data preparation has already run.")
             return
 
-        required_columns = list(dict.fromkeys(self.forcing_features + [self.target]))
+        print("INFO: Starting data preparation...")
+        # Define required columns based on configuration
+        required_columns = self.forcing_features + [self.target]
 
-        success, loaded_data, error = self._check_and_load_processed_data()
-        if success:
-            print("INFO: Found existing processed data with matching configuration")
-            self.quality_report = loaded_data["quality_report"]
-            self.fitted_pipelines = loaded_data["fitted_pipelines"]
-            self.processed_time_series_dir = loaded_data["processed_ts_dir"]
-            self.processed_static_attributes_path = loaded_data["processed_static_path"]
-            excluded_ids = set(self.quality_report.get("excluded_basins", {}).keys())
-            retained_ids = [
-                bid
-                for bid in self.quality_report.get("basins", {}).keys()
-                if bid not in excluded_ids
-            ]
-            if not retained_ids:
-                raise RuntimeError("No valid basins found in existing processed data")
-            self.list_of_gauge_ids_to_process = retained_ids
+        # 1. Attempt to reuse existing processed data
+        reuse_success, loaded_data, reuse_message = (
+            self._check_and_reuse_existing_processed_data()
+        )
+
+        processed_gauge_ids: list[str] = []
+
+        if reuse_success and loaded_data:
+            print("INFO: Reusing existing processed data.")
+
+            self.summary_quality_report = loaded_data.summary_quality_report
+            self.fitted_pipelines = loaded_data.fitted_pipelines
+            self.processed_time_series_dir = loaded_data.processed_ts_dir
+            self.processed_static_attributes_path = loaded_data.processed_static_path
+            processed_gauge_ids = loaded_data.processed_gauge_ids
+
+            if self.list_of_gauge_ids_to_process is None:
+                self.list_of_gauge_ids_to_process = processed_gauge_ids
+            else:
+                self.list_of_gauge_ids_to_process = [
+                    gid
+                    for gid in self.list_of_gauge_ids_to_process
+                    if gid in processed_gauge_ids
+                ]
+
+            print(
+                f"INFO: Loaded {len(self.fitted_pipelines)} pipelines and data for {len(processed_gauge_ids)} basins."
+            )
+
         else:
-            print(f"INFO: No existing processed data found: {error}")
-            print("INFO: Running full preprocessing pipeline...")
-
+            print(
+                f"INFO: No reusable data found or reuse failed. Reason: {reuse_message}. Running preprocessing..."
+            )
+            # 2. Run the new hydro processor
             relevant_config = extract_relevant_config(self)
             run_uuid = generate_run_uuid(relevant_config)
-            ok, result_data, err = run_hydro_processor(
+            print(f"INFO: Generated Run UUID: {run_uuid}")
+
+            processing_result: Result[ProcessingOutput, str] = run_hydro_processor(
                 region_time_series_base_dirs=self.region_time_series_base_dirs,
                 region_static_attributes_base_dirs=self.region_static_attributes_base_dirs,
                 path_to_preprocessing_output_directory=self.path_to_preprocessing_output_directory,
                 required_columns=required_columns,
-                preprocessing_config=self.preprocessing_configs,
+                run_uuid=run_uuid,
+                datamodule_config=relevant_config,  # Pass relevant config for saving
+                preprocessing_config=self.preprocessing_configs,  # Pass pipeline definitions
                 min_train_years=self.min_train_years,
                 max_imputation_gap_size=self.max_imputation_gap_size,
                 group_identifier=self.group_identifier,
                 train_prop=self.train_prop,
                 val_prop=self.val_prop,
                 test_prop=self.test_prop,
-                processes=self.num_workers,
                 list_of_gauge_ids_to_process=self.list_of_gauge_ids_to_process,
-                run_uuid=run_uuid,
-                datamodule_config=relevant_config,
+                basin_batch_size=50,  # TODO: Rethink this. The value should not be hardcoded
             )
-            if not ok:
-                raise RuntimeError(f"Data preprocessing failed: {err}")
-            self.quality_report = result_data["quality_report"]
-            excluded_ids = set(self.quality_report.get("excluded_basins", {}).keys())
-            retained_ids = [
-                bid
-                for bid in self.quality_report.get("basins", {}).keys()
-                if bid not in excluded_ids
-            ]
-            if not retained_ids:
-                raise RuntimeError(
-                    "All basins excluded during preprocessing; no valid basins to process"
-                )
-            self.list_of_gauge_ids_to_process = retained_ids
-            self.fitted_pipelines = result_data["fitted_pipelines"]
-            self.processed_time_series_dir = result_data["processed_timeseries_dir"]
-            self.processed_static_attributes_path = result_data[
-                "processed_static_attributes_path"
-            ]
 
-        # Directory for index files (use processed_time_series_dir.parent or similar)
-        index_output_dir = self.processed_time_series_dir.parent / "index_files"
+            if isinstance(processing_result, Failure):
+                raise RuntimeError(
+                    f"Hydro processor failed: {processing_result.failure()}"
+                )
+
+            processing_output = processing_result.unwrap()
+            print("INFO: Hydro processor completed successfully.")
+
+            # 3. Update DataModule state from ProcessingOutput
+            self.summary_quality_report = processing_output.summary_quality_report
+            self.processed_time_series_dir = processing_output.processed_timeseries_dir
+            self.processed_static_attributes_path = (
+                processing_output.processed_static_attributes_path
+            )
+
+            # 4. Load fitted pipelines from disk
+            print("INFO: Loading fitted pipelines...")
+            ts_pipelines_result = load_time_series_pipelines(
+                processing_output.fitted_time_series_pipelines_path
+            )
+            if isinstance(ts_pipelines_result, Failure):
+                raise RuntimeError(
+                    f"Failed to load time series pipelines: {ts_pipelines_result.failure()}"
+                )
+            self.fitted_pipelines = ts_pipelines_result.unwrap()
+            print(f"INFO: Loaded {len(self.fitted_pipelines)} time series pipelines.")
+
+            if processing_output.fitted_static_pipeline_path:
+                static_pipeline_result = load_static_pipeline(
+                    processing_output.fitted_static_pipeline_path
+                )
+                if isinstance(static_pipeline_result, Failure):
+                    raise RuntimeError(
+                        f"Failed to load static pipeline: {static_pipeline_result.failure()}"
+                    )
+                self.fitted_pipelines["static_features"] = (
+                    static_pipeline_result.unwrap()
+                )
+                print("INFO: Loaded static features pipeline.")
+            else:
+                print("INFO: No static pipeline path found in processing output.")
+
+            # 5. Determine the list of successfully processed gauge IDs
+            if self.summary_quality_report:
+                processed_gauge_ids = self.summary_quality_report.retained_basins
+                # Update the datamodule's list to reflect only processed basins
+                self.list_of_gauge_ids_to_process = processed_gauge_ids
+                print(
+                    f"INFO: {len(processed_gauge_ids)} basins retained after processing."
+                )
+            else:
+                # This case should ideally not happen if processing succeeded
+                print("WARNING: Summary quality report is missing after processing.")
+                processed_gauge_ids = []
+                self.list_of_gauge_ids_to_process = []
+
+            if not processed_gauge_ids:
+                raise RuntimeError("No basins remained after the preprocessing stage.")
+
+        # 6. Create index entries for the processed data
+        print("INFO: Creating index entries...")
+        if not self.processed_time_series_dir:
+            # This should not happen if processing or loading succeeded
+            raise RuntimeError(
+                "Processed time series directory is not set before creating index."
+            )
+
+        index_output_dir = (
+            self.path_to_preprocessing_output_directory / run_uuid / "index"
+        )
         index_output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Create disk-based index entries and metadata
-        index_paths = create_index_entries(
-            gauge_ids=self.list_of_gauge_ids_to_process,
-            time_series_base_dir=self.processed_time_series_dir,
-            static_file_path=self.processed_static_attributes_path,
-            input_length=self.input_length,
-            output_length=self.output_length,
-            train_prop=self.train_prop,
-            val_prop=self.val_prop,
-            test_prop=self.test_prop,
-            cols_to_check=required_columns,
-            output_dir=index_output_dir,
-        )
-        self.index_paths = index_paths
-        self.train_index_path, self.train_index_meta_path = index_paths.get(
-            "train", (None, None)
-        )
-        self.val_index_path, self.val_index_meta_path = index_paths.get(
-            "val", (None, None)
-        )
-        self.test_index_path, self.test_index_meta_path = index_paths.get(
-            "test", (None, None)
+        index_result = create_index_entries(
+            list_of_gauge_ids=processed_gauge_ids,  # Use the final list
+            processed_timeseries_dir=self.processed_time_series_dir,
+            index_output_dir=index_output_dir,
+            input_seq_len=self.input_length,
+            output_seq_len=self.output_length,
+            group_identifier=self.group_identifier,
+            static_features_path=self.processed_static_attributes_path,
         )
 
+        if isinstance(index_result, Failure):
+            raise ValueError(
+                f"Failed to create index entries: {index_result.failure()}"
+            )
+
+        self.index_paths = index_result.unwrap()
+        self.train_index_path = self.index_paths.get("train")
+        self.val_index_path = self.index_paths.get("val")
+        self.test_index_path = self.index_paths.get("test")
+        print(f"INFO: Index entries created successfully at {index_output_dir}.")
+
+        # 7. Set the flag
         self._prepare_data_has_run = True
+        print("INFO: Data preparation finished.")
 
     def setup(self, stage: Optional[str] = None):
         """

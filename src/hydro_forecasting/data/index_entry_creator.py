@@ -1,168 +1,176 @@
 import numpy as np
-import pandas as pd
 import polars as pl
 from pathlib import Path
 from returns.result import Result, Success, Failure
 from tqdm import tqdm
-from .preprocessing import split_data, Config
+from .preprocessing import split_data, ProcessingConfig
 
 BATCH_SIZE = 100
 
-SPLIT_CONFIG = Config(
-    required_columns=[""],
-    preprocessing_config={},
-    train_prop=0.6,
-    val_prop=0.2,
-    test_prop=0.2,
-)
-
 
 def load_batch_parquet(
-    batch_gauge_ids: list[str], time_series_base_dir: Path
-) -> Result[pd.DataFrame, str]:
+    batch_gauge_ids: list[str],
+    time_series_base_dir: Path,
+) -> Result[pl.DataFrame, str]:
     """
-    Loads .parquet files for a batch of gauge_ids.
+    Load a batch of time-series Parquet files into a single Polars DataFrame.
 
     Args:
-        batch_gauge_ids: List of gauge IDs for this batch.
-        time_series_base_dir: Directory containing the parquet files.
+        batch_gauge_ids: List of gauge ID strings identifying Parquet files (one per gauge).
+        time_series_base_dir: Base directory containing the gauge Parquet files.
 
     Returns:
-        Result containing the concatenated DataFrame for the batch, or Failure with error message.
+        Success(pl.DataFrame): A vertically concatenated Polars DataFrame containing all loaded files,
+            with an added "gauge_id" column.
+        Failure(str): An error message if no files could be loaded or if there were read errors.
 
     Raises:
-        Does not raise; returns Failure on critical errors.
-
-    Example:
-        >>> load_batch_parquet(['USA_001', 'USA_002'], Path('/data'))
+        Does not raise exceptions; returns a Failure on critical I/O or parsing errors.
     """
-    data: list[pd.DataFrame] = []
+    data: list[pl.DataFrame] = []
     missing: list[str] = []
+
     for gauge_id in batch_gauge_ids:
         file_path = time_series_base_dir / f"{gauge_id}.parquet"
         if not file_path.exists():
             missing.append(gauge_id)
             continue
         try:
-            df = pd.read_parquet(file_path)
-            df["gauge_id"] = gauge_id
+            df = pl.read_parquet(file_path)
+            df = df.with_columns(pl.lit(gauge_id).alias("gauge_id"))
             data.append(df)
         except Exception:
             missing.append(gauge_id)
             continue
+
     if not data:
         return Failure(
-            f"No files loaded for batch: {batch_gauge_ids}. Missing: {missing}"
+            f"No files loaded for batch: {batch_gauge_ids}. Missing or failed: {missing}"
         )
-    batch_df = pd.concat(data, ignore_index=True)
+
+    batch_df = pl.concat(data, how="vertical")
     return Success(batch_df)
 
 
 def get_split_boundaries(
-    train: pd.DataFrame, val: pd.DataFrame, test: pd.DataFrame, gauge_ids: list[str]
-) -> dict[str, dict[str, pd.Timestamp | None]]:
+    train: pl.DataFrame | pl.LazyFrame,
+    val: pl.DataFrame | pl.LazyFrame,
+    test: pl.DataFrame | pl.LazyFrame,
+    gauge_ids: list[str],
+) -> dict[str, dict[str, np.datetime64 | None]]:
     """
-    Determine the date boundaries between train/val/test splits for each gauge ID.
+    Compute the start dates of the validation and test splits per gauge.
 
     Args:
-        train: Training DataFrame
-        val: Validation DataFrame
-        test: Test DataFrame
-        gauge_ids: List of gauge IDs to process
+        train: Training set as a Polars DataFrame or LazyFrame (unused for boundaries).
+        val: Validation set as a LazyFrame or DataFrame.
+        test: Test set as a LazyFrame or DataFrame.
+        gauge_ids: List of gauge ID strings to extract boundaries for.
 
     Returns:
-        Dictionary mapping gauge_ids to their split boundary dates
+        A dict mapping each gauge_id to a sub-dict:
+        {
+            "val_start": np.datetime64 or None,  # earliest date in the val split
+            "test_start": np.datetime64 or None, # earliest date in the test split
+        }
     """
-    split_boundaries = {}
+    # Ensure eager loading for date computations
+    val_df = val.collect() if isinstance(val, pl.LazyFrame) else val
+    test_df = test.collect() if isinstance(test, pl.LazyFrame) else test
 
-    for gauge_id in gauge_ids:
-        # Get min dates for val and test splits for this gauge
-        gauge_val = val[val["gauge_id"] == gauge_id]
-        gauge_test = test[test["gauge_id"] == gauge_id]
+    boundaries: dict[str, dict[str, np.datetime64 | None]] = {}
 
-        val_start = gauge_val["date"].min() if not gauge_val.empty else None
-        test_start = gauge_test["date"].min() if not gauge_test.empty else None
+    for gid in gauge_ids:
+        g_val = val_df.filter(pl.col("gauge_id") == gid)
+        g_test = test_df.filter(pl.col("gauge_id") == gid)
 
-        split_boundaries[gauge_id] = {"val_start": val_start, "test_start": test_start}
+        val_min = g_val["date"].min() if g_val.height > 0 else None
+        test_min = g_test["date"].min() if g_test.height > 0 else None
 
-    return split_boundaries
+        boundaries[gid] = {
+            "val_start": np.datetime64(val_min) if val_min is not None else None,
+            "test_start": np.datetime64(test_min) if test_min is not None else None,
+        }
+
+    return boundaries
 
 
 def find_valid_sequences(
-    basin_data: pd.DataFrame,
+    basin_data: pl.DataFrame,
     input_length: int,
     output_length: int,
-    cols_to_check: list[str] = None,
+    cols_to_check: list[str] | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
-    Find valid sequence starting positions in the basin data.
+    Identify starting indices of valid input/output sequences in time-series data.
 
     Args:
-        basin_data: DataFrame containing basin time series data.
-        input_length: Length of input sequence.
-        output_length: Length of output sequence.
-        cols_to_check: List of column names to check for NaN values in both input and output windows.
-            All columns in this list must be present and non-NaN for a sequence to be considered valid.
+        basin_data: Polars DataFrame containing time-series with at least "date" and gauge columns.
+        input_length: Number of past timesteps to include in the input sequence.
+        output_length: Number of future timesteps to include in the output sequence.
+        cols_to_check: List of column names to verify for non-null values. Defaults to all columns
+            except "gauge_id" and "date" if None.
 
     Returns:
-        Tuple of (valid_positions, dates) arrays.
+        valid_positions: numpy array of integer start indices where both input and output windows
+            contain no nulls across cols_to_check.
+        dates: numpy array of numpy.datetime64[ns] corresponding to each row in basin_data.
     """
+    total_len = input_length + output_length
+    if basin_data.height < total_len:
+        return np.array([], dtype=int), np.array([], dtype="datetime64[ns]")
 
-    total_seq_length = input_length + output_length
+    if cols_to_check is None:
+        cols_to_check = [c for c in basin_data.columns if c not in ("gauge_id", "date")]
 
-    if len(basin_data) < total_seq_length:
-        return np.array([]), np.array([])
-
-    # Extract needed data as arrays
-    basin_values = basin_data[cols_to_check].to_numpy()
+    values = basin_data.select(cols_to_check).to_numpy()
     dates = basin_data["date"].to_numpy()
 
-    # Combined valid mask: 1 if all cols not NaN, 0 otherwise
-    combined_valid = (~np.isnan(basin_values).any(axis=1)).astype(int)
+    # 1 if no NaNs in row, else 0
+    valid_mask = (~np.isnan(values).any(axis=1)).astype(int)
 
-    # Input window must be valid for all features
-    input_conv = np.convolve(
-        combined_valid, np.ones(input_length, dtype=int), mode="valid"
+    # rolling sums to check full-window validity
+    input_ok = (
+        np.convolve(valid_mask, np.ones(input_length, int), mode="valid")
+        == input_length
     )
-    input_valid = input_conv == input_length
-
-    # Output window must also be valid for all features
-    output_conv = np.convolve(
-        combined_valid, np.ones(output_length, dtype=int), mode="valid"
+    output_ok = (
+        np.convolve(valid_mask, np.ones(output_length, int), mode="valid")
+        == output_length
     )
-    output_valid = output_conv == output_length
 
-    # Align the output validity check with input positions
-    padded = np.pad(output_valid, (0, input_length), constant_values=False)
-    output_valid_shifted = padded[input_length : input_length + len(input_valid)]
+    # align output window to the same start indices
+    padded = np.pad(output_ok, (0, input_length), constant_values=False)
+    output_shift = padded[input_length : input_length + len(input_ok)]
 
-    # Sequence is valid only if both input and output windows are valid
-    valid_mask = input_valid & output_valid_shifted
-    valid_positions = np.where(valid_mask)[0]
+    seq_ok = input_ok & output_shift
+    positions = np.where(seq_ok)[0]
 
-    return valid_positions, dates
+    return positions, dates
 
 
-def determine_stage(input_end_date, boundaries: dict[str, pd.Timestamp | None]) -> str:
+def determine_stage(
+    input_end_date: np.datetime64,
+    boundaries: dict[str, np.datetime64 | None],
+) -> str:
     """
-    Determine which stage (train/val/test) a sequence belongs to based on its end date.
+    Assign a sequence to train, val, or test based on its end-date and precomputed splits.
 
     Args:
-        input_end_date: End date of the input sequence
-        boundaries: Dictionary with val_start and test_start dates
+        input_end_date: numpy.datetime64 indicating the last date of the input window.
+        boundaries: Dict with keys "val_start" and "test_start" mapping to numpy.datetime64 or None.
 
     Returns:
-        String: 'train', 'val', or 'test'
+        One of the strings: "train", "val", or "test".
     """
-    val_start = boundaries["val_start"]
-    test_start = boundaries["test_start"]
+    val_start = boundaries.get("val_start")
+    test_start = boundaries.get("test_start")
 
     if test_start is not None and input_end_date >= test_start:
         return "test"
-    elif val_start is not None and input_end_date >= val_start:
+    if val_start is not None and input_end_date >= val_start:
         return "val"
-    else:
-        return "train"
+    return "train"
 
 
 def create_index_entries(
@@ -178,122 +186,109 @@ def create_index_entries(
     output_dir: Path = None,
 ) -> dict[str, tuple[Path, Path]]:
     """
-    Create disk-based index Parquet files and metadata for each stage.
+    Build and write index and metadata Parquet files for train/val/test stages.
 
     Args:
-        gauge_ids: List of gauge IDs to process.
-        time_series_base_dir: Base directory containing parquet files.
-        static_file_path: Path to the unified processed static attributes file.
-        input_length: Length of input sequence.
-        output_length: Length of forecast horizon.
-        train_prop: Proportion of data for training (optional).
-        val_prop: Proportion of data for validation (optional).
-        test_prop: Proportion of data for testing (optional).
-        cols_to_check: List of column names to check for NaN values in sequence validity checks.
-        output_dir: Directory to write index and metadata files (required).
+        gauge_ids: List of gauge ID strings to process.
+        time_series_base_dir: Directory containing gauge Parquet time-series files.
+        static_file_path: Path to static attributes Parquet file to link in each entry.
+        input_length: Number of past timesteps (input horizon).
+        output_length: Number of future timesteps (forecast horizon).
+        train_prop: Proportion of data for training (defaults to split in ProcessingConfig).
+        val_prop: Proportion for validation.
+        test_prop: Proportion for testing.
+        cols_to_check: Columns to verify non-null for sequence validity (default all except ids/dates).
+        output_dir: Directory to write resulting index_*.parquet and *_index_meta.parquet files.
 
     Returns:
-        Dictionary mapping 'train', 'val', 'test' to (index_path, meta_path).
+        A dict mapping stage names ("train", "val", "test") to tuples of:
+            (index_parquet_path, metadata_parquet_path).
+
+    Raises:
+        ValueError: If output_dir is not specified or if split proportions are invalid or do not sum to 1.0.
     """
     if output_dir is None:
         raise ValueError("output_dir must be specified for disk-based index creation.")
 
-    local_config = Config(
+    local_cfg = ProcessingConfig(
         required_columns=[],
         preprocessing_config={},
-        train_prop=train_prop if train_prop is not None else 0.6,
-        val_prop=val_prop if val_prop is not None else 0.2,
-        test_prop=test_prop if test_prop is not None else 0.2,
+        train_prop=train_prop or 0.6,
+        val_prop=val_prop or 0.2,
+        test_prop=test_prop or 0.2,
     )
-    if (
-        local_config.train_prop <= 0
-        or local_config.val_prop <= 0
-        or local_config.test_prop <= 0
-    ):
-        raise ValueError(
-            "The train, val, and test proportions must be positive values."
-        )
-    sum_props = local_config.train_prop + local_config.val_prop + local_config.test_prop
-    if abs(sum_props - 1.0) > 1e-10:
-        raise ValueError(
-            f"The sum of train, val, and test proportions must be 1.0, got {sum_props:.10f}"
-        )
+    total_prop = local_cfg.train_prop + local_cfg.val_prop + local_cfg.test_prop
+    if abs(total_prop - 1.0) > 1e-10:
+        raise ValueError(f"Train/val/test props must sum to 1.0, got {total_prop}")
 
-    # Collect entries per stage
     stage_entries: dict[str, list[dict]] = {"train": [], "val": [], "test": []}
-    total_seq_length = input_length + output_length
+    total_seq = input_length + output_length
 
     num_batches = (len(gauge_ids) + BATCH_SIZE - 1) // BATCH_SIZE
-    for batch_start in tqdm(
+    for start in tqdm(
         range(0, len(gauge_ids), BATCH_SIZE),
         total=num_batches,
         desc="Creating index entries",
     ):
-        batch_gauge_ids = gauge_ids[batch_start : batch_start + BATCH_SIZE]
-        batch_result = load_batch_parquet(batch_gauge_ids, time_series_base_dir)
-        if isinstance(batch_result, Failure):
+        batch_ids = gauge_ids[start : start + BATCH_SIZE]
+        res = load_batch_parquet(batch_ids, time_series_base_dir)
+        if isinstance(res, Failure):
             continue
-        batch_data = batch_result.unwrap()
+        batch_df = res.unwrap()
 
-        train, val, test = split_data(df=batch_data, config=local_config)
-        batch_boundaries = get_split_boundaries(train, val, test, batch_gauge_ids)
+        train_df, val_df, test_df = split_data(df=batch_df, config=local_cfg)
+        boundaries = get_split_boundaries(train_df, val_df, test_df, batch_ids)
 
-        for gauge_id in batch_gauge_ids:
-            ts_file_path = time_series_base_dir / f"{gauge_id}.parquet"
-            basin_data = batch_data[batch_data["gauge_id"] == gauge_id]
-            if basin_data.empty:
+        for gid in batch_ids:
+            ts_path = time_series_base_dir / f"{gid}.parquet"
+            basin_df = batch_df.filter(pl.col("gauge_id") == gid)
+            if basin_df.height == 0:
                 continue
-            gauge_bounds = batch_boundaries.get(
-                gauge_id, {"val_start": None, "test_start": None}
+            bounds = boundaries.get(gid, {"val_start": None, "test_start": None})
+            positions, dates = find_valid_sequences(
+                basin_df, input_length, output_length, cols_to_check
             )
-            valid_positions, dates = find_valid_sequences(
-                basin_data, input_length, output_length, cols_to_check=cols_to_check
-            )
-            if valid_positions.size == 0:
+            if positions.size == 0:
                 continue
-            for idx in valid_positions:
-                if idx + total_seq_length > len(basin_data):
+            for idx in positions:
+                if idx + total_seq > basin_df.height:
                     continue
-                input_end_date = dates[idx + input_length - 1]
-                stage = determine_stage(input_end_date, gauge_bounds)
+                end_date = dates[idx + input_length - 1]
+                stage = determine_stage(end_date, bounds)
                 entry = {
-                    "file_path": str(ts_file_path),
-                    "gauge_id": gauge_id,
-                    "start_idx": idx,
-                    "end_idx": idx + total_seq_length,
-                    "input_end_date": input_end_date,
+                    "file_path": str(ts_path),
+                    "gauge_id": gid,
+                    "start_idx": int(idx),
+                    "end_idx": int(idx + total_seq),
+                    "input_end_date": end_date,
                     "valid_sequence": True,
                     "stage": stage,
                     "static_file_path": str(static_file_path),
                 }
                 stage_entries[stage].append(entry)
 
-    # Write sorted index and metadata files for each stage
     output: dict[str, tuple[Path, Path]] = {}
     for stage in ("train", "val", "test"):
         entries = stage_entries[stage]
         if not entries:
             continue
-        df = pl.DataFrame(entries)
-        df = df.sort("file_path")
-        index_path = output_dir / f"{stage}_index.parquet"
-        df.write_parquet(index_path)
+        df = pl.DataFrame(entries).sort("file_path")
+        idx_path = output_dir / f"{stage}_index.parquet"
+        df.write_parquet(idx_path)
 
-        # Generate metadata: file_path, count, start_row_index
-        file_counts = (
-            df.select(["file_path"])
-            .with_row_count("row_nr")
+        meta = (
+            df.with_row_count("row_nr")
             .group_by("file_path")
-            .agg([
-                pl.count().alias("count"),
-                pl.min("row_nr").alias("start_row_index"),
-            ])
+            .agg(
+                [
+                    pl.count().alias("count"),
+                    pl.min("row_nr").alias("start_row_index"),
+                ]
+            )
             .sort("file_path")
         )
         meta_path = output_dir / f"{stage}_index_meta.parquet"
-        file_counts.write_parquet(meta_path)
-        output[stage] = (index_path, meta_path)
+        meta.write_parquet(meta_path)
+        output[stage] = (idx_path, meta_path)
 
     return output
-
-# split_index_entries_by_stage is now obsolete with disk-based indexing
