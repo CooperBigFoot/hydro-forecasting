@@ -72,6 +72,8 @@ def clean_data(
     Clean multiple basins in one LazyFrame, using window functions over group_identifier,
     and validate that each basin has sufficient data (min_train_years) for training.
 
+    Only forward fill is used for imputation to avoid potential data leakage.
+
     Args:
         lf: Input LazyFrame containing hydrological data.
         config: Configuration object with required_columns, max_imputation_gap_size,
@@ -117,11 +119,11 @@ def clean_data(
         for c in cols:
             lf = lf.with_columns(pl.col(c).is_null().alias(f"_before_null_{c}"))
 
-        # 5. Impute short gaps via ffill/bfill
+        # 5. Impute short gaps via ffill only (removed bfill to avoid data leakage)
         for c in cols:
             lf = lf.with_columns(
                 pl.col(c).forward_fill(limit=max_gap).over(gid).alias(c)
-            ).with_columns(pl.col(c).backward_fill(limit=max_gap).over(gid).alias(c))
+            )
 
         # 6. Collect to eager DataFrame
         df = lf.collect()
@@ -172,7 +174,7 @@ def clean_data(
                 processing_steps=[
                     "sorted_by_gauge_and_date",
                     "trimmed_nulls",
-                    "imputed_short_gaps",
+                    "imputed_short_gaps_forward_only",  # Updated processing step description
                 ],
                 imputation_info=info,
             )
