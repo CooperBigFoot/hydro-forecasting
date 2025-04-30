@@ -149,7 +149,7 @@ def _load_single_basin_lazy(
 
         lf = pl.scan_parquet(str(file_path))
 
-        schema = lf.schema
+        schema = lf.collect_schema().names()
         missing = [c for c in required_columns if c not in schema]
         if "date" not in schema:
             missing.append("date")
@@ -437,8 +437,11 @@ def run_hydro_processor(
         summary_quality_report_path = run_output_dir / "quality_summary.json"
         success_marker_path = run_output_dir / "_SUCCESS"
 
-        # TODO: Implement the logic here
         save_result = save_config(datamodule_config, config_path)
+
+        if isinstance(save_result, Failure):
+            return Failure(f"Failed to save config: {save_result.failure()}")
+        print(f"SUCCESS: Config saved to {config_path}")
 
         # 1. Process static data
         static_features_path = run_output_dir / "processed_static_features.parquet"
