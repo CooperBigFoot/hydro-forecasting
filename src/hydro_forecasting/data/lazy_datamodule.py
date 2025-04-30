@@ -1,16 +1,17 @@
 import pytorch_lightning as pl
 from pathlib import Path
-from typing import Union, Optional, Any, TypedDict
+from typing import Union, Optional, Any
 from torch.utils.data import DataLoader
 import math
 import torch
 import numpy as np
 import pandas as pd
 from returns.result import Result, Success, Failure
+from dataclasses import dataclass
 
 from sklearn.pipeline import Pipeline
 from .lazy_dataset import HydroLazyDataset
-from .preprocessing import run_hydro_processor, QualityReport
+from .preprocessing import run_hydro_processor
 from .index_entry_creator import create_index_entries
 from ..preprocessing.grouped import GroupedPipeline
 from .batch_sampler import FileGroupedBatchSampler
@@ -20,12 +21,16 @@ from .config_utils import (
     generate_run_uuid,
     load_config,
 )
+from .clean_data import SummaryQualityReport
+from ..preprocessing.static_preprocessing import load_static_pipeline
+from ..preprocessing.time_series_preprocessing import load_time_series_pipelines
 
 
-class LoadedData(TypedDict):
+@dataclass
+class LoadedData:
     """Data structure for loaded preprocessing artifacts."""
 
-    quality_report: QualityReport
+    quality_report: SummaryQualityReport
     fitted_pipelines: dict[str, Union[Pipeline, GroupedPipeline]]
     processed_ts_dir: Path
     processed_static_path: Optional[Path]
@@ -129,129 +134,207 @@ class HydroLazyDataModule(pl.LightningDataModule):
             # Start with a Success value to begin the railway
             Success(None)
             # Chain all validation steps with bind
-            .bind(lambda _: self._validate_positive_integer("batch_size", self.batch_size))
-            .bind(lambda _: self._validate_positive_integer("input_length", self.input_length))
-            .bind(lambda _: self._validate_positive_integer("output_length", self.output_length))
-            .bind(lambda _: self._validate_positive_integer("num_workers", self.num_workers))
-            .bind(lambda _: self._validate_positive_integer("files_per_batch", self.files_per_batch))
-            .bind(lambda _: self._validate_non_negative_integer("max_imputation_gap_size", self.max_imputation_gap_size))
-            .bind(lambda _: self._validate_positive_float("min_train_years", self.min_train_years))
-            .bind(lambda _: self._validate_gauge_id_list("list_of_gauge_ids_to_process", self.list_of_gauge_ids_to_process))
-            .bind(lambda _: self._validate_string_list("forcing_features", self.forcing_features))
-            .bind(lambda _: self._validate_string_list("static_features", self.static_features))
+            .bind(
+                lambda _: self._validate_positive_integer("batch_size", self.batch_size)
+            )
+            .bind(
+                lambda _: self._validate_positive_integer(
+                    "input_length", self.input_length
+                )
+            )
+            .bind(
+                lambda _: self._validate_positive_integer(
+                    "output_length", self.output_length
+                )
+            )
+            .bind(
+                lambda _: self._validate_positive_integer(
+                    "num_workers", self.num_workers
+                )
+            )
+            .bind(
+                lambda _: self._validate_positive_integer(
+                    "files_per_batch", self.files_per_batch
+                )
+            )
+            .bind(
+                lambda _: self._validate_non_negative_integer(
+                    "max_imputation_gap_size", self.max_imputation_gap_size
+                )
+            )
+            .bind(
+                lambda _: self._validate_positive_float(
+                    "min_train_years", self.min_train_years
+                )
+            )
+            .bind(
+                lambda _: self._validate_gauge_id_list(
+                    "list_of_gauge_ids_to_process", self.list_of_gauge_ids_to_process
+                )
+            )
+            .bind(
+                lambda _: self._validate_string_list(
+                    "forcing_features", self.forcing_features
+                )
+            )
+            .bind(
+                lambda _: self._validate_string_list(
+                    "static_features", self.static_features
+                )
+            )
             .bind(lambda _: self._validate_non_empty_string("target", self.target))
-            .bind(lambda _: self._validate_non_empty_string("group_identifier", self.group_identifier))
-            .bind(lambda _: self._validate_non_empty_string("domain_id", self.domain_id))
+            .bind(
+                lambda _: self._validate_non_empty_string(
+                    "group_identifier", self.group_identifier
+                )
+            )
+            .bind(
+                lambda _: self._validate_non_empty_string("domain_id", self.domain_id)
+            )
             .bind(lambda _: self._validate_domain_type("domain_type", self.domain_type))
-            .bind(lambda _: self._validate_preprocessing_config(self.preprocessing_configs))
+            .bind(
+                lambda _: self._validate_preprocessing_config(
+                    self.preprocessing_configs
+                )
+            )
             .bind(lambda _: self._validate_train_val_test_prop())
             .bind(lambda _: self._validate_target_not_in_forcing_features())
         )
 
-    def _validate_positive_integer(self, param_name: str, value: int) -> Result[int, str]:
+    def _validate_positive_integer(
+        self, param_name: str, value: int
+    ) -> Result[int, str]:
         """
         Validate that a parameter is a positive integer.
-        
+
         Args:
             param_name: Name of the parameter being validated
             value: Value to validate
-            
+
         Returns:
             Success with the value if valid, or Failure with error message
         """
         if not isinstance(value, int):
-            return Failure(f"Parameter '{param_name}' must be an integer, got {type(value).__name__}")
+            return Failure(
+                f"Parameter '{param_name}' must be an integer, got {type(value).__name__}"
+            )
         if value <= 0:
-            return Failure(f"Parameter '{param_name}' must be greater than 0, got {value}")
+            return Failure(
+                f"Parameter '{param_name}' must be greater than 0, got {value}"
+            )
         return Success(value)
 
-    def _validate_non_negative_integer(self, param_name: str, value: int) -> Result[int, str]:
+    def _validate_non_negative_integer(
+        self, param_name: str, value: int
+    ) -> Result[int, str]:
         """
         Validate that a parameter is a non-negative integer.
-        
+
         Args:
             param_name: Name of the parameter being validated
             value: Value to validate
-            
+
         Returns:
             Success with the value if valid, or Failure with error message
         """
         if not isinstance(value, int):
-            return Failure(f"Parameter '{param_name}' must be an integer, got {type(value).__name__}")
+            return Failure(
+                f"Parameter '{param_name}' must be an integer, got {type(value).__name__}"
+            )
         if value < 0:
-            return Failure(f"Parameter '{param_name}' must be greater than or equal to 0, got {value}")
+            return Failure(
+                f"Parameter '{param_name}' must be greater than or equal to 0, got {value}"
+            )
         return Success(value)
 
-    def _validate_positive_float(self, param_name: str, value: float) -> Result[float, str]:
+    def _validate_positive_float(
+        self, param_name: str, value: float
+    ) -> Result[float, str]:
         """
         Validate that a parameter is a positive float.
-        
+
         Args:
             param_name: Name of the parameter being validated
             value: Value to validate
-            
+
         Returns:
             Success with the value if valid, or Failure with error message
         """
         if not isinstance(value, (int, float)):
-            return Failure(f"Parameter '{param_name}' must be a number, got {type(value).__name__}")
+            return Failure(
+                f"Parameter '{param_name}' must be a number, got {type(value).__name__}"
+            )
         if value <= 0:
-            return Failure(f"Parameter '{param_name}' must be greater than 0, got {value}")
+            return Failure(
+                f"Parameter '{param_name}' must be greater than 0, got {value}"
+            )
         return Success(value)
 
-    def _validate_gauge_id_list(self, param_name: str, value: Optional[list[str]]) -> Result[Optional[list[str]], str]:
+    def _validate_gauge_id_list(
+        self, param_name: str, value: Optional[list[str]]
+    ) -> Result[Optional[list[str]], str]:
         """
         Validate that a parameter is a list of gauge IDs.
-        
+
         Args:
             param_name: Name of the parameter being validated
             value: Value to validate
-            
+
         Returns:
             Success with the value if valid, or Failure with error message
         """
         if value is None:
             return Success(None)
         if not isinstance(value, list):
-            return Failure(f"Parameter '{param_name}' must be a list, got {type(value).__name__}")
+            return Failure(
+                f"Parameter '{param_name}' must be a list, got {type(value).__name__}"
+            )
         if len(value) == 0:
             return Failure(f"Parameter '{param_name}' must not be an empty list")
         if not all(isinstance(item, str) for item in value):
             return Failure(f"All items in '{param_name}' must be strings")
         return Success(value)
 
-    def _validate_string_list(self, param_name: str, value: list[str]) -> Result[list[str], str]:
+    def _validate_string_list(
+        self, param_name: str, value: list[str]
+    ) -> Result[list[str], str]:
         """
         Validate that a parameter is a non-empty list of strings.
-        
+
         Args:
             param_name: Name of the parameter being validated
             value: Value to validate
-            
+
         Returns:
             Success with the value if valid, or Failure with error message
         """
         if not isinstance(value, list):
-            return Failure(f"Parameter '{param_name}' must be a list, got {type(value).__name__}")
+            return Failure(
+                f"Parameter '{param_name}' must be a list, got {type(value).__name__}"
+            )
         if len(value) == 0:
             return Failure(f"Parameter '{param_name}' must not be an empty list")
         if not all(isinstance(item, str) for item in value):
             return Failure(f"All items in '{param_name}' must be strings")
         return Success(value)
 
-    def _validate_non_empty_string(self, param_name: str, value: str) -> Result[str, str]:
+    def _validate_non_empty_string(
+        self, param_name: str, value: str
+    ) -> Result[str, str]:
         """
         Validate that a parameter is a non-empty string.
-        
+
         Args:
             param_name: Name of the parameter being validated
             value: Value to validate
-            
+
         Returns:
             Success with the value if valid, or Failure with error message
         """
         if not isinstance(value, str):
-            return Failure(f"Parameter '{param_name}' must be a string, got {type(value).__name__}")
+            return Failure(
+                f"Parameter '{param_name}' must be a string, got {type(value).__name__}"
+            )
         if len(value) == 0:
             return Failure(f"Parameter '{param_name}' must not be an empty string")
         return Success(value)
@@ -259,38 +342,46 @@ class HydroLazyDataModule(pl.LightningDataModule):
     def _validate_domain_type(self, param_name: str, value: str) -> Result[str, str]:
         """
         Validate that a parameter is one of the allowed domain types.
-        
+
         Args:
             param_name: Name of the parameter being validated
             value: Value to validate
-            
+
         Returns:
             Success with the value if valid, or Failure with error message
         """
         if not isinstance(value, str):
-            return Failure(f"Parameter '{param_name}' must be a string, got {type(value).__name__}")
+            return Failure(
+                f"Parameter '{param_name}' must be a string, got {type(value).__name__}"
+            )
         if value not in ["source", "target"]:
-            return Failure(f"Parameter '{param_name}' must be either 'source' or 'target', got '{value}'")
+            return Failure(
+                f"Parameter '{param_name}' must be either 'source' or 'target', got '{value}'"
+            )
         return Success(value)
 
-    def _validate_preprocessing_config(self, config: dict[str, dict[str, object]]) -> Result[dict[str, dict[str, object]], str]:
+    def _validate_preprocessing_config(
+        self, config: dict[str, dict[str, object]]
+    ) -> Result[dict[str, dict[str, object]], str]:
         """
         Validate the preprocessing configuration.
-        
+
         Args:
             config: The preprocessing configuration to validate
-            
+
         Returns:
             Success with the config if valid, or Failure with error message
         """
         for data_type, cfg in config.items():
             if "pipeline" not in cfg:
                 return Failure(f"Missing 'pipeline' key in {data_type} config")
-            
+
             pipeline = cfg["pipeline"]
             if not isinstance(pipeline, (Pipeline, GroupedPipeline)):
-                return Failure(f"Pipeline for {data_type} must be Pipeline or GroupedPipeline, got {type(pipeline)}")
-            
+                return Failure(
+                    f"Pipeline for {data_type} must be Pipeline or GroupedPipeline, got {type(pipeline)}"
+                )
+
             if isinstance(pipeline, GroupedPipeline):
                 if pipeline.group_identifier != self.group_identifier:
                     return Failure(
@@ -298,77 +389,206 @@ class HydroLazyDataModule(pl.LightningDataModule):
                         f"'{pipeline.group_identifier}' but data module uses "
                         f"'{self.group_identifier}'"
                     )
-            
+
             if data_type == "static_features" and "columns" not in cfg:
                 return Failure("static_features config must include 'columns' key")
-            
+
             pipeline_result = self._validate_pipeline_compatibility(pipeline)
             if isinstance(pipeline_result, Failure):
                 return pipeline_result
-            
+
         return Success(config)
 
-    def _validate_pipeline_compatibility(self, pipeline: Union["Pipeline", "GroupedPipeline"]) -> Result[Union["Pipeline", "GroupedPipeline"], str]:
+    def _validate_pipeline_compatibility(
+        self, pipeline: Union["Pipeline", "GroupedPipeline"]
+    ) -> Result[Union["Pipeline", "GroupedPipeline"], str]:
         """
         Validate that a pipeline is compatible with our requirements.
-        
+
         Args:
             pipeline: The pipeline to validate
-            
+
         Returns:
             Success with the pipeline if valid, or Failure with error message
         """
         if isinstance(pipeline, GroupedPipeline):
             pipeline = pipeline.pipeline
-            
+
         for _, transformer in pipeline.steps:
             required_methods = ["fit", "transform", "inverse_transform"]
             missing = [m for m in required_methods if not hasattr(transformer, m)]
             if missing:
-                return Failure(f"Transformer {transformer.__class__.__name__} missing required methods: {missing}")
-                
+                return Failure(
+                    f"Transformer {transformer.__class__.__name__} missing required methods: {missing}"
+                )
+
         return Success(pipeline)
 
     def _validate_train_val_test_prop(self) -> Result[None, str]:
         """
         Validate that training, validation, and test proportions sum to 1.
-        
+
         Returns:
             Success if valid, or Failure with error message
         """
         total_prop = math.fsum([self.train_prop, self.val_prop, self.test_prop])
         if not math.isclose(total_prop, 1.0, abs_tol=1e-6):
-            return Failure(f"Training, validation, and test proportions must sum to 1. Current sum: {total_prop}")
+            return Failure(
+                f"Training, validation, and test proportions must sum to 1. Current sum: {total_prop}"
+            )
         return Success(None)
 
     def _validate_target_not_in_forcing_features(self) -> Result[None, str]:
         """
         Validate that the target variable is not included in the forcing features
         unless the model is autoregressive.
-        
+
         Returns:
             Success if valid, or Failure with error message
         """
         if not self.is_autoregressive and self.target in self.forcing_features:
-            return Failure(f"Target variable '{self.target}' should not be included in forcing features. Set is_autoregressive=True to include it.")
+            return Failure(
+                f"Target variable '{self.target}' should not be included in forcing features. Set is_autoregressive=True to include it."
+            )
         return Success(None)
 
-    def _check_and_load_processed_data(
+    def _check_and_reuse_existing_processed_data(
         self,
     ) -> tuple[bool, Optional[LoadedData], Optional[str]]:
         """
-        Check if processed data exists for the current configuration and load it.
+        Check if processed data exists for the current configuration and load it if valid.
 
-        The checks are:
-        1. Validate the folder structure
-        2. Look for _SUCCESS file
-        3. Validate the DataModule configuration file
+        This method:
+        1. Validates the folder structure for a matching run UUID
+        2. Checks for the _SUCCESS file indicating complete processing
+        3. Validates the DataModule configuration matches the stored configuration
 
         Returns:
             Tuple (success, LoadedData or None, error message or None)
         """
-        # TODO: Need to implement based on new folder structure and refactored code
-        pass
+        try:
+            # Extract configuration and generate deterministic UUID
+            config = extract_relevant_config(self)
+            run_uuid = generate_run_uuid(config)
+            run_dir = self.path_to_preprocessing_output_directory / run_uuid
+
+            # Check if the directory exists
+            if not run_dir.exists():
+                return (
+                    False,
+                    None,
+                    f"No processed data found for this configuration (UUID: {run_uuid})",
+                )
+
+            # Validate folder structure - required files
+            required_files = [
+                "config.json",
+                "quality_summary.json",
+                "_SUCCESS",
+                "fitted_time_series_pipelines.joblib",
+            ]
+
+            missing_files = [f for f in required_files if not (run_dir / f).exists()]
+            if missing_files:
+                return (
+                    False,
+                    None,
+                    f"Incomplete processed data: missing files {missing_files}",
+                )
+
+            # Validate folder structure - required directories
+            required_dirs = [
+                "processed_time_series",
+                "processed_time_series/train",
+                "processed_time_series/val",
+                "processed_time_series/test",
+                "quality_reports",
+            ]
+
+            missing_dirs = [d for d in required_dirs if not (run_dir / d).is_dir()]
+            if missing_dirs:
+                return (
+                    False,
+                    None,
+                    f"Incomplete processed data: missing directories {missing_dirs}",
+                )
+
+            # Load and validate configuration
+            config_path = run_dir / "config.json"
+            config_result = load_config(config_path)
+            if isinstance(config_result, Failure):
+                return (
+                    False,
+                    None,
+                    f"Failed to load stored configuration: {config_result.failure()}",
+                )
+
+            loaded_config = config_result.unwrap()
+            config_mismatch = self._validate_loaded_config(loaded_config, config)
+            if config_mismatch:
+                return False, None, f"Configuration mismatch: {config_mismatch}"
+
+            # Load quality report
+            summary_path = run_dir / "quality_summary.json"
+            with open(summary_path, "r") as f:
+                import json
+
+                quality_report = json.load(f)
+
+            # Set up fitted pipelines dictionary
+            fitted_pipelines = {}
+
+            # Load time series pipelines
+            ts_pipelines_path = run_dir / "fitted_time_series_pipelines.joblib"
+            ts_pipelines_result = load_time_series_pipelines(ts_pipelines_path)
+            if isinstance(ts_pipelines_result, Failure):
+                return (
+                    False,
+                    None,
+                    f"Failed to load time series pipelines: {ts_pipelines_result.failure()}",
+                )
+
+            # Add time series pipelines to combined dictionary
+            fitted_pipelines.update(ts_pipelines_result.unwrap())
+
+            # Check for static pipeline if it exists
+            static_pipeline_path = run_dir / "fitted_static_pipeline.joblib"
+            processed_static_path = run_dir / "processed_static_features.parquet"
+
+            if static_pipeline_path.exists() and processed_static_path.exists():
+                # Load static pipeline
+                static_pipeline_result = load_static_pipeline(static_pipeline_path)
+                if isinstance(static_pipeline_result, Failure):
+                    return (
+                        False,
+                        None,
+                        f"Failed to load static pipeline: {static_pipeline_result.failure()}",
+                    )
+
+                # Add static pipeline to combined dictionary
+                fitted_pipelines["static_features"] = static_pipeline_result.unwrap()
+            else:
+                # No static data
+                processed_static_path = None
+
+            # Construct LoadedData dataclass
+            loaded_data = LoadedData(
+                quality_report=quality_report,
+                fitted_pipelines=fitted_pipelines,
+                processed_ts_dir=run_dir / "processed_time_series",
+                processed_static_path=processed_static_path,
+            )
+
+            return True, loaded_data, None
+
+        except Exception as e:
+            import traceback
+
+            return (
+                False,
+                None,
+                f"Error checking for existing processed data: {e}\n{traceback.format_exc()}",
+            )
 
     def _validate_loaded_config(
         self, loaded_config: dict, current_config: dict
