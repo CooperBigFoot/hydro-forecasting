@@ -1,5 +1,7 @@
 import sys
 from pathlib import Path
+import os
+os.environ["PYTORCH_START_METHOD"] = "spawn"
 
 # Add project root to sys.path
 project_root = Path(__file__).resolve().parents[2]
@@ -38,7 +40,7 @@ LOGS_DIR = BASE_OUTPUT_DIR / "logs"
 YAML_PATH = project_root / "notebooks" / "tide.yaml"
 MAX_EPOCHS = 100
 BATCH_SIZE = 2048
-NUM_WORKERS = 12
+NUM_WORKERS = 6
 EARLY_STOPPING_PATIENCE = 10
 SAVE_TOP_K = 1
 
@@ -88,7 +90,7 @@ for region in regions:
     )
 
     caravan = CaravanifyParquet(config)
-    region_basin_ids = caravan.get_all_gauge_ids()  
+    region_basin_ids = caravan.get_all_gauge_ids()[:10]
 
     filtered_ids, current_discarded_ids = caravan.filter_gauge_ids_by_human_influence(
         region_basin_ids, ["Low", "Medium"]
@@ -178,7 +180,7 @@ datamodule = HydroLazyDataModule(
         preprocessing_output_dir
     ),  
     group_identifier="gauge_id",
-    batch_size=BATCH_SIZE,  # Use configured batch size
+    batch_size=BATCH_SIZE,  
     input_length=tide_hp["input_len"],
     output_length=tide_hp["output_len"],
     forcing_features=forcing_features,
@@ -193,13 +195,13 @@ datamodule = HydroLazyDataModule(
     max_imputation_gap_size=5,
     list_of_gauge_ids_to_process=basin_ids,
     is_autoregressive=True,
-    files_per_batch=150,
+    files_per_batch=20,
 )
 
 
 print("=========TRAINING THE MODEL==========")
 print("Instantiating the model")
-
+# datamodule.num_workers = 0
 config = TiDEConfig(**tide_hp)
 model = LitTiDE(config)
 
