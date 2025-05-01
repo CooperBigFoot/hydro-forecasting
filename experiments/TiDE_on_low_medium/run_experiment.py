@@ -49,7 +49,7 @@ LOGS_DIR.mkdir(parents=True, exist_ok=True)
 # --- Data Loading ---
 regions = [
     "CL",
-    "CA",
+    "CH",
     "USA",
     "camelsaus",
     "camelsgb",
