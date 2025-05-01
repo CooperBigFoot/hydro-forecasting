@@ -240,6 +240,7 @@ trainer = pl.Trainer(
         early_stopping_callback,  # Use defined callback instance
         checkpoint_callback,  # Use defined callback instance
     ],
+    num_sanity_val_steps=0,
 )
 print("Training the model")
 trainer.fit(
