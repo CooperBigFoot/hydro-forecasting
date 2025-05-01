@@ -1,7 +1,8 @@
 import polars as pl
 import numpy as np
+import pyarrow.parquet as pq
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Dict, Tuple
 from returns.result import Result, Success, Failure, safe
 from tqdm import tqdm
 import traceback  # Import traceback
@@ -10,14 +11,14 @@ BATCH_SIZE = 100
 
 
 def create_index_entries(
-    gauge_ids: list[str],
-    time_series_dirs: dict[str, Path],
+    gauge_ids: List[str],
+    time_series_dirs: Dict[str, Path],
     static_file_path: Optional[Path],
     input_length: int,
     output_length: int,
     output_dir: Path,
     group_identifier: str = "gauge_id",
-) -> Result[dict[str, tuple[Path, Path]], str]:
+) -> Result[Dict[str, Tuple[Path, Path]], str]:
     """
     Build and write index and metadata Parquet files for train/val/test stages.
 
@@ -53,11 +54,19 @@ def create_index_entries(
             return Failure(f"Directory for '{stage}' does not exist: {dir_path}")
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    results: dict[str, tuple[Path, Path]] = {}
+    results: Dict[str, Tuple[Path, Path]] = {}
 
     try:
         for stage, dir_path in time_series_dirs.items():
-            entries: list[dict] = []
+            idx_path = output_dir / f"{stage}_index.parquet"
+            meta_path = output_dir / f"{stage}_index_meta.parquet"
+
+            idx_writer: Optional[pq.ParquetWriter] = None
+            meta_writer: Optional[pq.ParquetWriter] = None
+            row_counter = 0
+
+            total_seq = input_length + output_length
+
             for i in tqdm(
                 range(0, len(gauge_ids), BATCH_SIZE), desc=f"Indexing {stage}"
             ):
@@ -77,31 +86,51 @@ def create_index_entries(
                     )
                     continue
 
-                entries.extend(stage_result.unwrap())
+                batch_entries = stage_result.unwrap()
+                if not batch_entries:
+                    continue
 
-            if not entries:
+                # Convert batch entries to Polars DataFrame
+                df_batch = pl.DataFrame(batch_entries)
+
+                # Write index entries in streaming fashion
+                table = df_batch.to_arrow()
+                if idx_writer is None:
+                    idx_writer = pq.ParquetWriter(str(idx_path), table.schema)
+                idx_writer.write_table(table)
+
+                # Compute per-batch metadata with global row numbering
+                df_meta = (
+                    df_batch.with_row_count("row_nr")
+                    .with_columns(
+                        (pl.col("row_nr") + row_counter).alias("global_row_nr")
+                    )
+                    .group_by("file_path")
+                    .agg(
+                        [
+                            pl.count().alias("count"),
+                            pl.min("global_row_nr").alias("start_row_index"),
+                        ]
+                    )
+                )
+                meta_table = df_meta.select(
+                    ["file_path", "count", "start_row_index"]
+                ).to_arrow()
+                if meta_writer is None:
+                    meta_writer = pq.ParquetWriter(str(meta_path), meta_table.schema)
+                meta_writer.write_table(meta_table)
+
+                # Advance global counter
+                row_counter += df_batch.height
+
+            # Close writers if they were used
+            if idx_writer:
+                idx_writer.close()
+            else:
                 print(f"WARNING: No valid sequences found for stage '{stage}'.")
                 continue
-
-            # Create DataFrame and save index
-            df = pl.DataFrame(entries).sort("file_path")
-            idx_path = output_dir / f"{stage}_index.parquet"
-            df.write_parquet(idx_path)
-
-            # Create and save metadata
-            meta = (
-                df.with_row_count("row_nr")
-                .group_by("file_path")
-                .agg(
-                    [
-                        pl.count().alias("count"),
-                        pl.min("row_nr").alias("start_row_index"),
-                    ]
-                )
-                .sort("file_path")
-            )
-            meta_path = output_dir / f"{stage}_index_meta.parquet"
-            meta.write_parquet(meta_path)
+            if meta_writer:
+                meta_writer.close()
 
             results[stage] = (idx_path, meta_path)
 
@@ -116,14 +145,14 @@ def create_index_entries(
 
 
 def process_stage_directory(
-    gauge_ids: list[str],
+    gauge_ids: List[str],
     stage_dir: Path,
     static_file_path: Optional[Path],
     input_length: int,
     output_length: int,
     stage: str,
     group_identifier: str,
-) -> Result[list[dict], str]:
+) -> Result[List[dict], str]:
     """
     Process time series files within a single stage directory to find valid sequences.
 
@@ -141,7 +170,7 @@ def process_stage_directory(
         a valid index entry, or Failure with an error message if processing fails
         for any file in the batch.
     """
-    entries: list[dict] = []
+    entries: List[dict] = []
     total_seq = input_length + output_length
 
     for gid in gauge_ids:
@@ -159,12 +188,11 @@ def process_stage_directory(
 
             find_result = find_valid_sequences(df, input_length, output_length)
 
-            # Handle the Result
             if isinstance(find_result, Failure):
                 print(
                     f"WARNING: Skipping {ts_path} due to error in find_valid_sequences: {find_result.failure()}"
                 )
-                continue  # Skip this file
+                continue
 
             positions, dates = find_result.unwrap()
 
@@ -200,16 +228,15 @@ def process_stage_directory(
     return Success(entries)
 
 
-@safe  # Use @safe decorator to automatically catch exceptions
+@safe
 def _calculate_valid_sequences(
     basin_data: pl.DataFrame,
     input_length: int,
     output_length: int,
     total_length: int,
-    value_columns: list[str],
-) -> tuple[np.ndarray, np.ndarray]:
+    value_columns: List[str],
+) -> Tuple[np.ndarray, np.ndarray]:
     """Helper function containing the core numpy logic, wrapped by @safe."""
-
     values = basin_data.select(value_columns).to_numpy()
     dates = basin_data.select("date").to_numpy().flatten()
 
@@ -227,7 +254,6 @@ def _calculate_valid_sequences(
 
     num_possible_starts = len(valid_row_mask) - total_length + 1
     if num_possible_starts <= 0:
-        # This case is handled before calling, but safe to keep
         return np.array([], dtype=int), dates
 
     input_ok = is_input_window_valid[:num_possible_starts]
@@ -244,7 +270,7 @@ def find_valid_sequences(
     basin_data: pl.DataFrame,
     input_length: int,
     output_length: int,
-) -> Result[tuple[np.ndarray, np.ndarray], str]:
+) -> Result[Tuple[np.ndarray, np.ndarray], str]:
     """
     Identify start indices of valid sequences within a time series DataFrame using ROP.
 
@@ -266,7 +292,6 @@ def find_valid_sequences(
     """
     total_length = input_length + output_length
 
-    # Initial checks using Result and bind
     initial_result: Result[pl.DataFrame, str] = Success(basin_data)
 
     return (
