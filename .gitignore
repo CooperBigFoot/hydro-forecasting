@@ -22,3 +22,5 @@ wheels/
 tests
 
 notebooks/lightning_logs
+experiments/TiDE_on_low_medium/output
+
