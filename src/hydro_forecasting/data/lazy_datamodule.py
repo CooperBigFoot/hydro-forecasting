@@ -920,6 +920,7 @@ class HydroLazyDataModule(pl.LightningDataModule):
             pin_memory=True,
             persistent_workers=self.num_workers > 0,
             worker_init_fn=worker_init_fn,
+            multiprocessing_context="spawn",
         )
 
     def val_dataloader(self) -> DataLoader:
@@ -943,6 +944,7 @@ class HydroLazyDataModule(pl.LightningDataModule):
             num_workers=self.num_workers,
             pin_memory=True,
             persistent_workers=True if self.num_workers > 0 else False,
+            multiprocessing_context="spawn",
         )
 
     def test_dataloader(self) -> DataLoader:
@@ -966,6 +968,7 @@ class HydroLazyDataModule(pl.LightningDataModule):
             num_workers=self.num_workers,
             pin_memory=True,
             persistent_workers=True if self.num_workers > 0 else False,
+            multiprocessing_context="spawn",
         )
 
     def inverse_transform_predictions(
