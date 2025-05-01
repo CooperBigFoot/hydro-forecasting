@@ -8,9 +8,6 @@ from returns.result import Result, Success, Failure
 from datetime import datetime
 from collections import Counter
 
-type BasinId = str
-
-
 def find_gaps_bool(missing: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """
     Find start and end indices of gaps (True values) in a boolean mask.
@@ -45,7 +42,7 @@ class SummaryQualityReport:
     passed_basins: int
     failed_basins: int
     excluded_basins: dict[str, str]  # basin_id -> failure_reason
-    retained_basins: list[BasinId] 
+    retained_basins: list[str] 
 
     def save(self, path: Path | str) -> Path:
         """
