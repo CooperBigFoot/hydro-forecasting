@@ -1,13 +1,13 @@
 import sys
 from pathlib import Path
-import os
-
-os.environ["PYTORCH_START_METHOD"] = "spawn"
 
 # Add project root to sys.path
 project_root = Path(__file__).resolve().parents[2]
 src_path = project_root / "src"
 sys.path.append(str(src_path))
+
+import torch.multiprocessing as mp
+mp.set_sharing_strategy('file_system')
 
 
 def main():
@@ -39,7 +39,7 @@ def main():
     YAML_PATH = project_root / "notebooks" / "tide.yaml"
     MAX_EPOCHS = 100
     BATCH_SIZE = 2048
-    NUM_WORKERS = 12
+    NUM_WORKERS = 4
     EARLY_STOPPING_PATIENCE = 10
     SAVE_TOP_K = 1
 
@@ -90,7 +90,7 @@ def main():
         )
 
         caravan = CaravanifyParquet(config)
-        region_basin_ids = caravan.get_all_gauge_ids()
+        region_basin_ids = caravan.get_all_gauge_ids()[:10]
 
         filtered_ids, current_discarded_ids = (
             caravan.filter_gauge_ids_by_human_influence(
@@ -223,21 +223,21 @@ def main():
         monitor="val_loss",
         dirpath=str(CHECKPOINT_DIR),  # Use configured checkpoint directory
         filename=f"{EXPERIMENT_NAME}-{{epoch:02d}}-{{val_loss:.4f}}",  # Consistent naming
-        save_top_k=SAVE_TOP_K,  # Use configured save_top_k
+        save_top_k=SAVE_TOP_K,
         mode="min",
-        save_last=True,  # Optionally save the last checkpoint
+        save_last=True,
     )
 
     print("Defining the trainer")
     trainer = pl.Trainer(
-        accelerator="auto",
+        accelerator="gpu",
         devices=1,
-        max_epochs=MAX_EPOCHS,  # Use configured max_epochs
+        max_epochs=MAX_EPOCHS, 
         enable_progress_bar=True,
-        logger=logger,  # Pass the logger instance
+        logger=logger, 
         callbacks=[
-            early_stopping_callback,  # Use defined callback instance
-            checkpoint_callback,  # Use defined callback instance
+            early_stopping_callback,  
+            checkpoint_callback,  
         ],
         num_sanity_val_steps=0,
     )

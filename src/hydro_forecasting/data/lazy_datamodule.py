@@ -40,11 +40,14 @@ def worker_init_fn(worker_id: int) -> None:
     """
     Adjust cache settings for each worker to avoid thrashing.
     """
+    import os
+    print(f"Worker {worker_id} started with PID {os.getpid()}")
     info = torch.utils.data.get_worker_info()
     if info is None:
         return
     ds = info.dataset
     ds.file_cache.max_memory_mb = 800
+    print(f"Worker {worker_id} initialized successfully")
 
 
 class HydroLazyDataModule(pl.LightningDataModule):
@@ -918,7 +921,7 @@ class HydroLazyDataModule(pl.LightningDataModule):
             batch_sampler=sampler,
             num_workers=self.num_workers,
             pin_memory=True,
-            persistent_workers=self.num_workers > 0,
+            persistent_workers=True,
             worker_init_fn=worker_init_fn,
         )
 
@@ -942,7 +945,7 @@ class HydroLazyDataModule(pl.LightningDataModule):
             batch_sampler=sampler,
             num_workers=self.num_workers,
             pin_memory=True,
-            persistent_workers=True if self.num_workers > 0 else False,
+            persistent_workers=True,
         )
 
     def test_dataloader(self) -> DataLoader:
@@ -965,7 +968,7 @@ class HydroLazyDataModule(pl.LightningDataModule):
             batch_sampler=sampler,
             num_workers=self.num_workers,
             pin_memory=True,
-            persistent_workers=True if self.num_workers > 0 else False,
+            persistent_workers=True,
         )
 
     def inverse_transform_predictions(
