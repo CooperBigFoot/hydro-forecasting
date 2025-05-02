@@ -11,7 +11,7 @@ from dataclasses import dataclass
 
 from sklearn.pipeline import Pipeline
 from .lazy_dataset import HydroLazyDataset
-from .preprocessing import run_hydro_processor, ProcessingOutput
+from .preprocessing import run_hydro_processor, ProcessingOutput, ProcessingConfig
 from .index_entry_creator import create_index_entries
 from ..preprocessing.grouped import GroupedPipeline
 from .batch_sampler import FileGroupedBatchSampler
