@@ -1,5 +1,5 @@
 from pathlib import Path
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 import polars as pl
 from typing import Optional, Any, Union, Iterator
 from returns.result import Failure, Success, Result

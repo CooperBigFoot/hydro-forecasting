@@ -11,7 +11,7 @@ from dataclasses import dataclass
 
 from sklearn.pipeline import Pipeline
 from .lazy_dataset import HydroLazyDataset
-from .preprocessing import run_hydro_processor, ProcessingOutput, ProcessingConfig
+from .preprocessing import run_hydro_processor, ProcessingOutput
 from .index_entry_creator import create_index_entries
 from ..preprocessing.grouped import GroupedPipeline
 from .batch_sampler import FileGroupedBatchSampler
@@ -920,7 +920,6 @@ class HydroLazyDataModule(pl.LightningDataModule):
             pin_memory=True,
             persistent_workers=self.num_workers > 0,
             worker_init_fn=worker_init_fn,
-            multiprocessing_context="spawn",
         )
 
     def val_dataloader(self) -> DataLoader:
@@ -944,7 +943,6 @@ class HydroLazyDataModule(pl.LightningDataModule):
             num_workers=self.num_workers,
             pin_memory=True,
             persistent_workers=True if self.num_workers > 0 else False,
-            multiprocessing_context="spawn",
         )
 
     def test_dataloader(self) -> DataLoader:
@@ -968,7 +966,6 @@ class HydroLazyDataModule(pl.LightningDataModule):
             num_workers=self.num_workers,
             pin_memory=True,
             persistent_workers=True if self.num_workers > 0 else False,
-            multiprocessing_context="spawn",
         )
 
     def inverse_transform_predictions(

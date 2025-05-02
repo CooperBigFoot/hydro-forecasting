@@ -2,7 +2,7 @@ import json
 import hashlib
 import uuid
 from pathlib import Path
-from typing import Any, Union, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 from returns.result import Result, Success, Failure  # ROP import
 
 if TYPE_CHECKING:
