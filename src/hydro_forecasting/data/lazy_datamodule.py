@@ -22,6 +22,7 @@ from .config_utils import (
     generate_run_uuid,
     load_config,
 )
+from .file_cache import FileCache
 from .clean_data import SummaryQualityReport
 from ..preprocessing.static_preprocessing import load_static_pipeline
 from ..preprocessing.time_series_preprocessing import load_time_series_pipelines
@@ -38,18 +39,21 @@ class LoadedData:
 
 
 def worker_init_fn(worker_id: int) -> None:
-    """
-    Adjust cache settings for each worker to avoid thrashing.
-    """
     import os
 
     print(f"Worker {worker_id} started with PID {os.getpid()}")
     info = torch.utils.data.get_worker_info()
     if info is None:
         return
+
+    # Create a fresh FileCache instance for this worker
+    worker_cache = FileCache(max_files=50, max_memory_mb=1000)
+
+    # Replace the shared cache with the worker-local cache
     ds: HydroLazyDataset = info.dataset
-    ds.file_cache.max_memory_mb = 1000
-    # print(f"Worker {worker_id} initialized successfully")
+    ds.file_cache = worker_cache
+
+    print(f"Worker {worker_id} initialized with dedicated cache")
 
 
 class HydroLazyDataModule(pl.LightningDataModule):

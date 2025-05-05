@@ -189,9 +189,9 @@ def process_stage_directory(
             find_result = find_valid_sequences(df, input_length, output_length)
 
             if isinstance(find_result, Failure):
-                print(
-                    f"WARNING: Skipping {ts_path} due to error in find_valid_sequences: {find_result.failure()}"
-                )
+                # print(
+                #     f"WARNING: Skipping {ts_path} due to error in find_valid_sequences: {find_result.failure()}"
+                # )
                 continue
 
             positions, dates = find_result.unwrap()
