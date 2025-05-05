@@ -68,7 +68,7 @@ class HydroLazyDataset(Dataset):
             self.input_features = self.forcing_features
         self.future_features = self.forcing_features
 
-        self.file_cache = FileCache(max_files=150)
+        self.file_cache = FileCache(max_files=50)
         self._preload_static_data()
 
     def _preload_static_data(self) -> None:

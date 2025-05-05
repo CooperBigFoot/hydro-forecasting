@@ -6,8 +6,6 @@ project_root = Path(__file__).resolve().parents[2]
 src_path = project_root / "src"
 sys.path.append(str(src_path))
 
-import torch.multiprocessing as mp
-mp.set_sharing_strategy('file_system')
 
 
 def main():
@@ -39,7 +37,7 @@ def main():
     YAML_PATH = project_root / "notebooks" / "tide.yaml"
     MAX_EPOCHS = 100
     BATCH_SIZE = 2048
-    NUM_WORKERS = 4
+    NUM_WORKERS = 10
     EARLY_STOPPING_PATIENCE = 10
     SAVE_TOP_K = 1
 
@@ -90,7 +88,7 @@ def main():
         )
 
         caravan = CaravanifyParquet(config)
-        region_basin_ids = caravan.get_all_gauge_ids()[:10]
+        region_basin_ids = caravan.get_all_gauge_ids()
 
         filtered_ids, current_discarded_ids = (
             caravan.filter_gauge_ids_by_human_influence(
@@ -178,14 +176,14 @@ def main():
         region_static_attributes_base_dirs=region_static_attributes_base_dirs,
         path_to_preprocessing_output_directory=str(preprocessing_output_dir),
         group_identifier="gauge_id",
-        batch_size=BATCH_SIZE,  # Use configured batch size
+        batch_size=BATCH_SIZE,  
         input_length=tide_hp["input_len"],
         output_length=tide_hp["output_len"],
         forcing_features=forcing_features,
         static_features=static_features,
         target="streamflow",
         preprocessing_configs=preprocessing_config,
-        num_workers=NUM_WORKERS,  # Use configured num workers
+        num_workers=NUM_WORKERS, 
         min_train_years=5,
         train_prop=0.5,
         val_prop=0.25,
@@ -193,7 +191,7 @@ def main():
         max_imputation_gap_size=5,
         list_of_gauge_ids_to_process=basin_ids,
         is_autoregressive=True,
-        files_per_batch=150,
+        files_per_batch=50,
     )
 
     print("=========TRAINING THE MODEL==========")

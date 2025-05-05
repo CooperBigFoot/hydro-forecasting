@@ -48,8 +48,8 @@ def worker_init_fn(worker_id: int) -> None:
     if info is None:
         return
     ds: HydroLazyDataset = info.dataset
-    ds.file_cache.max_memory_mb = 800
-    print(f"Worker {worker_id} initialized successfully")
+    ds.file_cache.max_memory_mb = 1000
+    # print(f"Worker {worker_id} initialized successfully")
 
 
 class HydroLazyDataModule(pl.LightningDataModule):
