@@ -36,8 +36,8 @@ def main():
     LOGS_DIR = BASE_OUTPUT_DIR / "logs"
     YAML_PATH = project_root / "notebooks" / "tide.yaml"
     MAX_EPOCHS = 100
-    BATCH_SIZE = 2048
-    NUM_WORKERS = 10
+    BATCH_SIZE = 2048 
+    NUM_WORKERS = 12
     EARLY_STOPPING_PATIENCE = 10
     SAVE_TOP_K = 1
 
