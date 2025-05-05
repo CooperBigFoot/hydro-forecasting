@@ -4,6 +4,7 @@ from typing import Union, Optional, Any
 from torch.utils.data import DataLoader
 import math
 import torch
+import torch.multiprocessing as mp
 import numpy as np
 import pandas as pd
 from returns.result import Result, Success, Failure
@@ -11,7 +12,7 @@ from dataclasses import dataclass
 
 from sklearn.pipeline import Pipeline
 from .lazy_dataset import HydroLazyDataset
-from .preprocessing import run_hydro_processor, ProcessingOutput, ProcessingConfig
+from .preprocessing import run_hydro_processor, ProcessingOutput
 from .index_entry_creator import create_index_entries
 from ..preprocessing.grouped import GroupedPipeline
 from .batch_sampler import FileGroupedBatchSampler
@@ -41,11 +42,12 @@ def worker_init_fn(worker_id: int) -> None:
     Adjust cache settings for each worker to avoid thrashing.
     """
     import os
+
     print(f"Worker {worker_id} started with PID {os.getpid()}")
     info = torch.utils.data.get_worker_info()
     if info is None:
         return
-    ds = info.dataset
+    ds: HydroLazyDataset = info.dataset
     ds.file_cache.max_memory_mb = 800
     print(f"Worker {worker_id} initialized successfully")
 
@@ -921,8 +923,9 @@ class HydroLazyDataModule(pl.LightningDataModule):
             batch_sampler=sampler,
             num_workers=self.num_workers,
             pin_memory=True,
-            persistent_workers=True,
+            persistent_workers=True if self.num_workers > 0 else False,
             worker_init_fn=worker_init_fn,
+            multiprocessing_context=mp.get_context("spawn"),
         )
 
     def val_dataloader(self) -> DataLoader:
@@ -945,7 +948,8 @@ class HydroLazyDataModule(pl.LightningDataModule):
             batch_sampler=sampler,
             num_workers=self.num_workers,
             pin_memory=True,
-            persistent_workers=True,
+            persistent_workers=True if self.num_workers > 0 else False,
+            multiprocessing_context=mp.get_context("spawn"),
         )
 
     def test_dataloader(self) -> DataLoader:
@@ -968,7 +972,8 @@ class HydroLazyDataModule(pl.LightningDataModule):
             batch_sampler=sampler,
             num_workers=self.num_workers,
             pin_memory=True,
-            persistent_workers=True,
+            persistent_workers=True if self.num_workers > 0 else False,
+            multiprocessing_context=mp.get_context("spawn"),
         )
 
     def inverse_transform_predictions(
