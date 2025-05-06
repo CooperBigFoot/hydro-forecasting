@@ -4,7 +4,7 @@ import polars as pl
 from typing import Optional, Any, Union, Iterator
 from returns.result import Failure, Success, Result
 from sklearn.pipeline import Pipeline, clone
-from .clean_data import (
+from ..data.clean_data import (
     BasinQualityReport,
     SummaryQualityReport,
     clean_data,
@@ -21,7 +21,7 @@ from ..preprocessing.static_preprocessing import (
     process_static_data,
     save_static_pipeline,
 )
-from .config_utils import save_config
+from ..data.config_utils import save_config
 
 
 @dataclass

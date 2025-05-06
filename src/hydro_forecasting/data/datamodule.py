@@ -1,5 +1,5 @@
 # filename: src/hydro_forecasting/data/in_memory_datamodule.py
-import pytorch_lightning as pl
+from pytorch_lightning import LightningDataModule
 from pathlib import Path
 from typing import Union, Optional, Any
 from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
@@ -26,7 +26,7 @@ from .config_utils import (
 from .clean_data import SummaryQualityReport
 from ..preprocessing.static_preprocessing import (
     load_static_pipeline,
-    load_static_attributes,
+    read_static_data_from_disk,
 )
 from ..preprocessing.time_series_preprocessing import load_time_series_pipelines
 import logging
@@ -46,7 +46,7 @@ class LoadedData:
     processed_static_path: Optional[Path]
 
 
-class HydroInMemoryDataModule(pl.LightningDataModule):
+class HydroInMemoryDataModule(LightningDataModule):
     """
     A PyTorch Lightning DataModule that loads data in chunks into memory.
     """

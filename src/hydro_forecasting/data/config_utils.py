@@ -6,7 +6,7 @@ from typing import Any, TYPE_CHECKING, Union
 from returns.result import Result, Success, Failure  # ROP import
 
 if TYPE_CHECKING:
-    from .lazy_datamodule import HydroLazyDataModule
+    from ..data_deprecated.lazy_datamodule import HydroLazyDataModule
     from sklearn.pipeline import Pipeline
     from ..preprocessing.grouped import GroupedPipeline
 
