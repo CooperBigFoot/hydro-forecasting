@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.preprocessing import MinMaxScaler
 
-from src.hydro_forecasting.data.caravanify_parquet import (
+from src.hydro_forecasting.data_deprecated.caravanify_parquet import (
     CaravanifyParquet,
     CaravanifyParquetConfig,
 )

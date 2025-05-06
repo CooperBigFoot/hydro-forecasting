@@ -17,11 +17,11 @@ def main():
     from pytorch_lightning.loggers import TensorBoardLogger
     from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 
-    from hydro_forecasting.data.lazy_datamodule import HydroLazyDataModule
+    from hydro_forecasting.data_deprecated.lazy_datamodule import HydroLazyDataModule
     from hydro_forecasting.preprocessing.grouped import GroupedPipeline
     from sklearn.pipeline import Pipeline
     from hydro_forecasting.preprocessing.standard_scale import StandardScaleTransformer
-    from hydro_forecasting.data.caravanify_parquet import (
+    from hydro_forecasting.data_deprecated.caravanify_parquet import (
         CaravanifyParquet,
         CaravanifyParquetConfig,
     )
