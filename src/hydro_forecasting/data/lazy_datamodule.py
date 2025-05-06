@@ -49,7 +49,6 @@ def worker_init_fn(worker_id: int) -> None:
     # Create a fresh FileCache instance for this worker
     worker_cache = FileCache(max_files=50, max_memory_mb=1000)
 
-    # Replace the shared cache with the worker-local cache
     ds: HydroLazyDataset = info.dataset
     ds.file_cache = worker_cache
 
@@ -610,6 +609,20 @@ class HydroLazyDataModule(pl.LightningDataModule):
     def _validate_loaded_config(
         self, loaded_config: dict, current_config: dict
     ) -> Optional[str]:
+        """
+        Validate that the loaded configuration matches the current configuration.
+        
+        Compares critical configuration parameters including preprocessing pipeline
+        transformer details to ensure exact matching between the loaded and current
+        configurations.
+
+        Args:
+            loaded_config: Configuration loaded from a previous run
+            current_config: Configuration of the current data module instance
+
+        Returns:
+            None if configurations match, or an error message string describing the mismatch
+        """
         critical_keys = [
             "input_length",
             "output_length",
@@ -629,6 +642,43 @@ class HydroLazyDataModule(pl.LightningDataModule):
                         f"Configuration mismatch for key '{key}': "
                         f"loaded={loaded_config[key]}, current={current_config[key]}"
                     )
+        
+        # Validate preprocessing transformer details
+        loaded_transformer_details = loaded_config.get("preprocessing_transformer_details", {})
+        current_transformer_details = current_config.get("preprocessing_transformer_details", {})
+        
+        # If one has transformer details and the other doesn't, it's a mismatch
+        if bool(loaded_transformer_details) != bool(current_transformer_details):
+            return (
+                f"Configuration mismatch for preprocessing transformer details: "
+                f"{'present' if loaded_transformer_details else 'absent'} in loaded config, "
+                f"{'present' if current_transformer_details else 'absent'} in current config"
+            )
+        
+        # If both configs have transformer details, compare them
+        if loaded_transformer_details and current_transformer_details:
+            # Get all pipeline types across both configurations
+            all_pipeline_types = set(loaded_transformer_details.keys()) | set(current_transformer_details.keys())
+            
+            for pipeline_type in all_pipeline_types:
+                # Check if pipeline type exists in both configs
+                if pipeline_type not in loaded_transformer_details:
+                    return f"Pipeline type '{pipeline_type}' exists in current config but not in loaded config"
+                if pipeline_type not in current_transformer_details:
+                    return f"Pipeline type '{pipeline_type}' exists in loaded config but not in current config"
+                
+                # Get transformer names for this pipeline type
+                loaded_transformers = loaded_transformer_details[pipeline_type]
+                current_transformers = current_transformer_details[pipeline_type]
+                
+                # Compare transformer sequences (both content and order must match)
+                if loaded_transformers != current_transformers:
+                    return (
+                        f"Transformer sequence mismatch for '{pipeline_type}' pipeline. "
+                        f"Expected: {loaded_transformers}, "
+                        f"Got: {current_transformers}"
+                    )
+        
         return None
 
     def _load_pipelines_from_output(self, processing_output: ProcessingOutput) -> None:

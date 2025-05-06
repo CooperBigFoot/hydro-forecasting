@@ -132,3 +132,100 @@ While optimizing code, consider these hardware options:
 Your current architecture is optimized for basin diversity but not for I/O efficiency. The key insight is to maintain this diversity while dramatically reducing the number of separate file operations per GPU computation cycle.
 
 The two-level batching strategy combined with an improved caching system should provide substantial gains without requiring a complete redesign of your data pipeline.
+
+---
+
+# Details on how to implement two stage training
+
+Here’s a sketch of how you can recompute your 1 000‐basin chunks every 10 reloads, by integrating that logic into your LightningDataModule. You’ll:
+
+- keep a master list of all 10 000 basins  
+- on `setup()` build the initial shuffled chunks  
+- in `train_dataloader()` recompute (reshuffle & re-chunk) whenever `current_epoch % recompute_every == 0`  
+
+```python
+from __future__ import annotations
+import random
+from pathlib import Path
+from typing import Optional
+from torch.utils.data import DataLoader, RandomSampler
+from pytorch_lightning import LightningDataModule, Trainer
+from .lazy_dataset import HydroLazyDataset
+from dataclasses import dataclass, field
+
+@dataclass
+class HydroLazyDataModule(LightningDataModule):
+    region_time_series_base_dirs: dict[str, Path]
+    region_static_attributes_base_dirs: dict[str, Path]
+    list_of_gauge_ids_to_process: list[str]
+    batch_size: int
+    input_length: int
+    output_length: int
+    files_per_batch: int
+    num_workers: int
+    chunk_size: int = 1000
+    recompute_every: int = 10
+
+    _all_basin_ids: list[str] = field(init=False)
+    _chunks: list[list[str]] = field(init=False)
+
+    def setup(self, stage: Optional[str] = None) -> None:
+        # called once per fit; store and initial-shuffle all basin IDs
+        self._all_basin_ids = self.list_of_gauge_ids_to_process.copy()
+        self._recompute_chunks()
+
+    def _recompute_chunks(self) -> None:
+        """Shuffle full list and partition into chunk_size pieces."""
+        random.shuffle(self._all_basin_ids)
+        self._chunks = [
+            self._all_basin_ids[i : i + self.chunk_size]
+            for i in range(0, len(self._all_basin_ids), self.chunk_size)
+        ]
+
+    def train_dataloader(self) -> DataLoader:
+        """Called every epoch when reload_dataloaders_every_n_epochs=1."""
+        epoch = cast(int, self.trainer.current_epoch)
+        # every `recompute_every` epochs, reshuffle & rebuild chunks
+        if epoch % self.recompute_every == 0:
+            self._recompute_chunks()
+
+        # pick which chunk to load this epoch
+        chunk_idx = epoch % len(self._chunks)
+        basin_ids = self._chunks[chunk_idx]
+
+        # load data & build a HydroLazyDataset for these basin_ids
+        ds = HydroLazyDataset(
+            region_time_series_dirs=self.region_time_series_base_dirs,
+            region_static_dirs=self.region_static_attributes_base_dirs,
+            gauge_ids=basin_ids,
+            input_length=self.input_length,
+            output_length=self.output_length,
+            files_per_batch=self.files_per_batch,
+            # … any other args …
+        )
+        sampler = RandomSampler(ds)
+        return DataLoader(
+            ds,
+            batch_size=self.batch_size,
+            sampler=sampler,
+            num_workers=self.num_workers,
+            pin_memory=True,
+        )
+```
+
+Then in your training script:
+
+```python
+from pytorch_lightning import Trainer
+trainer = Trainer(
+    max_epochs=10,                      # 10 Lightning epochs → full 10 000-basin sweep
+    reload_dataloaders_every_n_epochs=1 # reload every epoch/chunk
+)
+trainer.fit(model, datamodule=datamodule)
+```
+
+This way:
+
+- each Lightning epoch loads 1 000 new basins  
+- after 10 epochs you’ve covered all 10 000  
+- every 10 epochs you reshuffle/repartition for a fresh random sweep

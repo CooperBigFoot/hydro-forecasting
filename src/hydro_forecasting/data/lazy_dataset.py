@@ -80,7 +80,6 @@ class HydroLazyDataset(Dataset):
             .collect()
         )
         static_paths = set(df["static_file_path"].to_list())
-        gids = set(df[self.group_identifier].to_list())
         dfs = []
         for path in static_paths:
             try:

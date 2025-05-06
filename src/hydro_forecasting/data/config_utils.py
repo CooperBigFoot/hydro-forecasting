@@ -2,11 +2,13 @@ import json
 import hashlib
 import uuid
 from pathlib import Path
-from typing import Any, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING, Union, List
 from returns.result import Result, Success, Failure  # ROP import
 
 if TYPE_CHECKING:
     from .lazy_datamodule import HydroLazyDataModule
+    from sklearn.pipeline import Pipeline
+    from ..preprocessing.grouped import GroupedPipeline
 
 # Fixed namespace for hydro-forecasting processing runs
 PROCESSING_NAMESPACE = uuid.UUID("f47ac10b-58cc-4372-a567-0e02b2c3d479")
@@ -147,6 +149,37 @@ def load_config(filepath: Path) -> Result[dict[str, Any], str]:
         return Failure(str(e))
 
 
+def extract_transformer_names(pipeline_obj: Union["Pipeline", "GroupedPipeline"]) -> list[str]:
+    """
+    Extract the class names of transformers in a pipeline.
+    
+    Handles both sklearn Pipeline and GroupedPipeline objects.
+    For GroupedPipeline, extracts names from the template pipeline.
+    
+    Args:
+        pipeline_obj: A sklearn Pipeline or GroupedPipeline instance
+        
+    Returns:
+        List of transformer class names in order of pipeline steps
+    """
+    from sklearn.pipeline import Pipeline
+    
+    # Handle GroupedPipeline
+    if hasattr(pipeline_obj, "pipeline") and not isinstance(pipeline_obj, Pipeline):
+        # For GroupedPipeline, use its pipeline attribute
+        pipeline = pipeline_obj.pipeline
+    else:
+        # For sklearn Pipeline, use directly
+        pipeline = pipeline_obj
+        
+    # Extract transformer class names from pipeline steps
+    transformer_names = []
+    for _, transformer in pipeline.steps:
+        transformer_names.append(transformer.__class__.__name__)
+        
+    return transformer_names
+
+
 def extract_relevant_config(datamodule: "HydroLazyDataModule") -> dict[str, Any]:
     """
     Extract relevant configuration parameters from a HydroLazyDataModule instance.
@@ -199,5 +232,16 @@ def extract_relevant_config(datamodule: "HydroLazyDataModule") -> dict[str, Any]
         # Instead, we store the keys which identify the pipeline configurations
         "preprocessing_pipeline_keys": list(datamodule.preprocessing_configs.keys()),
     }
+    
+    # Add transformer details for each preprocessing pipeline
+    transformer_details = {}
+    for pipeline_key, pipeline_config in datamodule.preprocessing_configs.items():
+        if "pipeline" in pipeline_config:
+            pipeline_obj = pipeline_config["pipeline"]
+            transformer_details[pipeline_key] = extract_transformer_names(pipeline_obj)
+    
+    # Add transformer details to config if any were found
+    if transformer_details:
+        relevant_config["preprocessing_transformer_details"] = transformer_details
 
     return relevant_config
