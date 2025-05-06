@@ -21,7 +21,7 @@ def main():
     from hydro_forecasting.preprocessing.grouped import GroupedPipeline
     from sklearn.pipeline import Pipeline
     from hydro_forecasting.preprocessing.standard_scale import StandardScaleTransformer
-    from hydro_forecasting.data_deprecated.caravanify_parquet import (
+    from data.caravanify_parquet import (
         CaravanifyParquet,
         CaravanifyParquetConfig,
     )
