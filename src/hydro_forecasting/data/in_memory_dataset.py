@@ -1,20 +1,20 @@
-# filename: src/hydro_forecasting/data/in_memory_dataset.py
 import torch
 from torch.utils.data import Dataset
 import polars as pl
 import numpy as np
+import datetime
 from pathlib import Path
 from typing import Optional, Union, List, Tuple
 from returns.result import Result, Success, Failure, safe
 import logging
 import time
+import gc
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-# --- Sequence Finding Logic (Adapted from index_entry_creator.py) ---
 @safe
 def _calculate_valid_sequences(
     basin_data: pl.DataFrame,
@@ -36,7 +36,19 @@ def _calculate_valid_sequences(
     Returns:
         Tuple containing an array of valid start indices and an array of dates.
     """
-    values = basin_data.select(value_columns).to_numpy()
+    # Ensure all value_columns exist in basin_data before selecting
+    existing_value_columns = [col for col in value_columns if col in basin_data.columns]
+    if not existing_value_columns:
+        # This case should ideally be caught before calling this function,
+        # but as a safeguard:
+        logger.warning(
+            f"No value columns found in basin_data for NaN checking. Columns expected: {value_columns}, Columns present: {basin_data.columns}"
+        )
+        return np.array([], dtype=int), basin_data.select(
+            "date"
+        ).to_numpy().flatten() if "date" in basin_data.columns else np.array([])
+
+    values = basin_data.select(existing_value_columns).to_numpy()
     dates = basin_data.select("date").to_numpy().flatten()
 
     # Create a mask where True indicates a valid (non-NaN) row across all value_columns
@@ -88,7 +100,8 @@ def find_valid_sequences(
 
     Args:
         basin_data: A Polars DataFrame containing time series data for a single
-                    basin/group, including a 'date' column.
+                    basin/group. It *should not* contain the group_identifier column
+                    at this point, only 'date' and value columns.
         input_length: The required length of the input sequence.
         output_length: The required length of the output sequence.
 
@@ -115,10 +128,12 @@ def find_valid_sequences(
             if "date" in df.columns
             else Failure("DataFrame missing 'date' column")
         )
-        .bind(lambda df: Success((df, [col for col in df.columns if col != "date"])))
+        .bind(
+            lambda df: Success((df, [col for col in df.columns if col != "date"]))
+        )  # value_columns are all non-date columns
         .bind(
             lambda df_cols: Success(df_cols)
-            if df_cols[1]
+            if df_cols[1]  # Check if value_columns list is not empty
             else Failure("No value columns found for null checking (besides 'date')")
         )
         .bind(
@@ -127,13 +142,12 @@ def find_valid_sequences(
                 input_length=input_length,
                 output_length=output_length,
                 total_length=total_length,
-                value_columns=df_cols[1],
+                value_columns=df_cols[1],  # Pass the identified value columns
             ).alt(lambda exc: f"NumPy calculation error: {exc}")
         )
     )
 
 
-# --- Dataset Class ---
 class InMemoryChunkDataset(Dataset):
     """
     Dataset that loads a chunk of basin data into memory and serves samples.
@@ -194,7 +208,7 @@ class InMemoryChunkDataset(Dataset):
         self.chunk_data: Optional[pl.DataFrame] = None
         self.index_entries: list[
             tuple[str, int, int]
-        ] = []  # (basin_id, start_row, end_row)
+        ] = []  # (basin_id, start_row_in_original_basin_df, end_row_in_original_basin_df)
         self.basin_row_map: dict[
             str, tuple[int, int]
         ] = {}  # basin_id -> (start_row_in_chunk_data, num_rows)
@@ -214,20 +228,20 @@ class InMemoryChunkDataset(Dataset):
         skipped_count = 0
 
         stage_dir = self.processed_data_dir / self.stage
-        required_cols = ["date", self.target] + self.forcing_features
+        required_ts_cols = ["date", self.target] + self.forcing_features
+        required_ts_cols = sorted(list(set(required_ts_cols)))
 
         for basin_id in self.basin_ids:
             file_path = stage_dir / f"{basin_id}.parquet"
             if file_path.exists():
                 try:
-                    # Use scan_parquet for potentially better memory efficiency during loading
-                    # Select only necessary columns early
                     lf = (
                         pl.scan_parquet(str(file_path))
-                        .select(required_cols)
+                        .select(required_ts_cols)  # Select only necessary TS columns
                         .sort("date")
                     )
-                    df = lf.collect()  # Collect into memory
+                    df = lf.collect()
+
                     dfs_to_concat.append(
                         df.with_columns(pl.lit(basin_id).alias(self.group_identifier))
                     )
@@ -241,11 +255,10 @@ class InMemoryChunkDataset(Dataset):
 
         if not dfs_to_concat:
             logger.error(f"No valid data loaded for chunk in stage '{self.stage}'.")
-            self.chunk_data = pl.DataFrame()
+            self.chunk_data = pl.DataFrame()  # Ensure it's an empty DF
             self.index_entries = []
             return
 
-        # Concatenate all basin data for the chunk
         try:
             self.chunk_data = pl.concat(dfs_to_concat, how="vertical")
             logger.info(
@@ -253,49 +266,64 @@ class InMemoryChunkDataset(Dataset):
             )
         except Exception as e:
             logger.error(f"Failed to concatenate dataframes for chunk: {e}")
-            # Handle potential memory errors during concatenation
-            # Fallback or error logging
-            self.chunk_data = pl.DataFrame()  # Ensure chunk_data is an empty DF
+            self.chunk_data = pl.DataFrame()  # Ensure it's an empty DF
             self.index_entries = []
             return
 
-        # Free up memory
         del dfs_to_concat
-        import gc
-
         gc.collect()
 
-        # Precompute index
         logger.info("Precomputing index for in-memory chunk...")
-        current_row = 0
-        for basin_id in self.basin_ids:
-            # Filter the chunk_data for the current basin
-            # Ensure we handle cases where a basin might have been skipped during loading
-            basin_df = self.chunk_data.filter(pl.col(self.group_identifier) == basin_id)
+        current_absolute_start_row = 0
+        for basin_id in (
+            self.basin_ids
+        ):  # Iterate using the original list of basin_ids for this chunk
+            basin_df_with_id = self.chunk_data.filter(
+                pl.col(self.group_identifier) == basin_id
+            )
 
-            if basin_df.height == 0:
+            if basin_df_with_id.height == 0:
                 logger.warning(
                     f"No data found for basin {basin_id} in concatenated chunk, skipping indexing."
                 )
                 continue
 
-            # Map basin_id to its row range in the concatenated DataFrame
-            self.basin_row_map[basin_id] = (current_row, basin_df.height)
+            # Store the mapping from basin_id to its absolute start row and length in the concatenated chunk_data
+            self.basin_row_map[basin_id] = (
+                current_absolute_start_row,
+                basin_df_with_id.height,
+            )
+
+            # For indexing, create a DataFrame without the group_identifier
+            # This ensures find_valid_sequences works correctly as it expects only date + value columns
+            if self.group_identifier in basin_df_with_id.columns:
+                basin_df_for_indexing = basin_df_with_id.drop(self.group_identifier)
+            else:
+                basin_df_for_indexing = (
+                    basin_df_with_id  # Should not happen if logic above is correct
+                )
 
             find_result = find_valid_sequences(
-                basin_df, self.input_length, self.output_length
+                basin_df_for_indexing, self.input_length, self.output_length
             )
 
             if isinstance(find_result, Success):
-                positions, _ = find_result.unwrap()
-                for start_idx in positions:
-                    # Store index entry relative to the start of this basin's data within the chunk
-                    # We'll use basin_row_map later in __getitem__ to get absolute rows
+                positions, _ = (
+                    find_result.unwrap()
+                )  # dates_from_find are from basin_df_for_indexing
+                for start_idx_relative_to_basin in positions:
+                    # start_idx is relative to the beginning of basin_df_for_indexing
                     self.index_entries.append(
                         (
-                            basin_id,
-                            int(start_idx),
-                            int(start_idx + self.input_length + self.output_length),
+                            basin_id,  # Store the basin_id
+                            int(
+                                start_idx_relative_to_basin
+                            ),  # Store relative start index
+                            int(
+                                start_idx_relative_to_basin
+                                + self.input_length
+                                + self.output_length
+                            ),  # Store relative end index
                         )
                     )
             else:
@@ -303,9 +331,8 @@ class InMemoryChunkDataset(Dataset):
                     f"Could not find valid sequences for {basin_id}: {find_result.failure()}"
                 )
 
-            current_row += basin_df.height  # Update the starting row for the next basin
+            current_absolute_start_row += basin_df_with_id.height
 
-        # Shuffle index entries for training stage
         if self.stage == "train":
             np.random.shuffle(self.index_entries)
 
@@ -317,61 +344,68 @@ class InMemoryChunkDataset(Dataset):
         )
 
     def __len__(self) -> int:
-        """Return the total number of valid samples in this chunk."""
         return len(self.index_entries)
 
-    def __getitem__(self, idx: int) -> dict[str, Union[torch.Tensor, str, int]]:
-        """Retrieve a single sample from the in-memory chunk."""
+    def __getitem__(
+        self, idx: int
+    ) -> dict[
+        str, Union[torch.Tensor, str, int, None]
+    ]:  # input_end_date is int or None
         if not (0 <= idx < len(self.index_entries)):
             raise IndexError(
                 f"Index {idx} out of range for chunk size {len(self.index_entries)}"
             )
 
-        # 1. Get precomputed index entry
         basin_id, basin_start_row_relative, basin_end_row_relative = self.index_entries[
             idx
         ]
 
-        # 2. Find the absolute row range for this basin in the concatenated chunk_data
         chunk_basin_start_abs, basin_len = self.basin_row_map.get(
             basin_id, (None, None)
         )
-        if chunk_basin_start_abs is None:
+        if chunk_basin_start_abs is None or basin_len is None:
             raise RuntimeError(
-                f"Basin {basin_id} not found in basin_row_map. This should not happen."
+                f"Basin {basin_id} missing from basin_row_map or invalid length recorded."
             )
 
-        # Calculate absolute start and end rows for the required slice within the chunk_data
         start_abs = chunk_basin_start_abs + basin_start_row_relative
-        end_abs = chunk_basin_start_abs + basin_end_row_relative  # end_row is exclusive
+        duration = basin_end_row_relative - basin_start_row_relative
+        end_abs = start_abs + duration
 
-        # 3. Slice the sequence directly from the in-memory DataFrame
-        # Use slice instead of iloc for polars; end index is exclusive
+        if end_abs > chunk_basin_start_abs + basin_len:
+            logger.error(
+                f"Slicing error for basin {basin_id} at index {idx}: "
+                f"Attempting to slice from absolute start {start_abs} for duration {duration} (ends at {end_abs}). "
+                f"Basin data in chunk starts at {chunk_basin_start_abs} and has length {basin_len} "
+                f"(ends at {chunk_basin_start_abs + basin_len}). "
+            )
+            raise IndexError(
+                f"Calculated end index {end_abs} exceeds concatenated data length for basin {basin_id}."
+            )
+
         try:
-            # Ensure slicing doesn't go out of bounds for the basin's data within the chunk
-            if end_abs > chunk_basin_start_abs + basin_len:
-                raise IndexError(
-                    f"Calculated end index {end_abs} exceeds basin data length ({chunk_basin_start_abs + basin_len})"
+            sequence_df_with_id = self.chunk_data.slice(start_abs, duration)
+            relevant_ts_cols = sorted(
+                list(set(["date", self.target] + self.forcing_features))
+            )
+            sequence_df_numeric = sequence_df_with_id.select(relevant_ts_cols)
+
+            if sequence_df_numeric.height != (self.input_length + self.output_length):
+                logger.error(
+                    f"Sliced sequence for index {idx}, basin {basin_id} has incorrect length: {sequence_df_numeric.height}. "
+                    f"Expected: {self.input_length + self.output_length}."
                 )
-
-            sequence_df = self.chunk_data.slice(start_abs, end_abs - start_abs)
-
-            if sequence_df.height != (self.input_length + self.output_length):
                 raise ValueError(
-                    f"Sliced sequence for index {idx} has incorrect length: {sequence_df.height}. Expected: {self.input_length + self.output_length}"
+                    f"Sliced sequence for index {idx}, basin {basin_id} has incorrect length."
                 )
-
         except Exception as e:
             logger.error(
-                f"Error slicing data for index {idx}, basin {basin_id}, start_abs {start_abs}, end_abs {end_abs}: {e}"
+                f"Error during data slicing for index {idx}, basin {basin_id}: {e}"
             )
-            # Return a dummy sample or re-raise the error depending on desired behavior
             raise RuntimeError(f"Failed to slice data for index {idx}") from e
 
-        # 4. Extract X, y, and future features
-        # Use .slice again for input and output splits
-        inp_df = sequence_df.slice(0, self.input_length)
-        out_df = sequence_df.slice(self.input_length, self.output_length)
+        inp_df = sequence_df_numeric.slice(0, self.input_length)
+        out_df = sequence_df_numeric.slice(self.input_length, self.output_length)
 
         try:
             X_np = inp_df.select(self.input_features).to_numpy().astype(np.float32)
@@ -387,28 +421,18 @@ class InMemoryChunkDataset(Dataset):
                 f"Failed to convert data to NumPy for index {idx}"
             ) from e
 
-        # 5. Retrieve static features
-        static_arr = self.static_data_cache.get(
-            basin_id,
-            np.zeros(len(self.static_features), dtype=np.float32),  # Default if missing
-        )
-        if static_arr.shape[0] != len(self.static_features):
-            logger.warning(
-                f"Static feature array shape mismatch for basin {basin_id}. Expected {len(self.static_features)}, Got {static_arr.shape[0]}. Using zeros."
-            )
+        static_arr = self.static_data_cache.get(basin_id)
+        if static_arr is None:
             static_arr = np.zeros(len(self.static_features), dtype=np.float32)
+        elif static_arr.shape[0] != len(self.static_features):
+            static_arr = np.zeros(len(self.static_features), dtype=np.float32)
+        static_arr = static_arr.astype(np.float32)
 
-        # 6. Convert to PyTorch tensors
         try:
-            X = torch.tensor(X_np, dtype=torch.float32)
-            y = torch.tensor(y_np, dtype=torch.float32)
-            future = torch.tensor(future_np, dtype=torch.float32)
-            static = torch.tensor(static_arr, dtype=torch.float32)
-
-            # Optional: Add NaN checks here if needed during debugging
-            # if torch.isnan(X).any() or torch.isnan(y).any() or torch.isnan(future).any() or torch.isnan(static).any():
-            #     logger.warning(f"NaN found in tensors for sample index {idx}, basin {basin_id}")
-
+            X = torch.from_numpy(X_np)
+            y = torch.from_numpy(y_np)
+            future = torch.from_numpy(future_np)
+            static = torch.from_numpy(static_arr)
         except Exception as e:
             logger.error(
                 f"Error converting NumPy arrays to tensors for index {idx}, basin {basin_id}: {e}"
@@ -417,22 +441,53 @@ class InMemoryChunkDataset(Dataset):
                 f"Failed to convert data to Tensors for index {idx}"
             ) from e
 
-        # 7. Get metadata (input end date)
+        input_end_ts_ms: Optional[int] = None  # Initialize as int or None
         try:
-            # Get the date corresponding to the *end* of the input sequence
-            input_end_date_val = inp_df.select(pl.col("date")).item(
-                -1, 0
-            )  # Get last date from input slice
+            if "date" in inp_df.columns and inp_df.height > 0:
+                date_scalar = inp_df.get_column("date").item(
+                    -1
+                )  # This is often a Python datetime.datetime
 
-            # Convert to timestamp (e.g., milliseconds since epoch)
-            # Polars datetime is microseconds since epoch, convert to milliseconds or seconds as needed
-            input_end_ts_ms = int(input_end_date_val.timestamp(time_unit="ms"))
+                py_datetime_obj: Optional[datetime.datetime] = None
+                if isinstance(date_scalar, datetime.datetime):
+                    py_datetime_obj = date_scalar
+                elif hasattr(
+                    date_scalar, "to_pydatetime"
+                ):  # For some Polars specific scalar date/datetime types
+                    py_datetime_obj = date_scalar.to_pydatetime()
+                elif date_scalar is None:
+                    pass  # py_datetime_obj remains None
+                else:
+                    logger.warning(
+                        f"Unexpected type for date scalar: {type(date_scalar)} for index {idx}, basin {basin_id}. "
+                        f"Value: {date_scalar}. Cannot convert to Python datetime."
+                    )
+
+                if py_datetime_obj:
+                    # Convert to UTC if timezone aware, then get timestamp
+                    if (
+                        py_datetime_obj.tzinfo is not None
+                        and py_datetime_obj.tzinfo.utcoffset(py_datetime_obj)
+                        is not None
+                    ):
+                        py_datetime_obj_utc = py_datetime_obj.astimezone(
+                            datetime.timezone.utc
+                        )
+                    else:  # Assume naive is UTC or handle as per application logic
+                        py_datetime_obj_utc = py_datetime_obj
+                    input_end_ts_ms = int(py_datetime_obj_utc.timestamp() * 1000)
+                # If py_datetime_obj is None, input_end_ts_ms remains None
+            else:
+                logger.warning(
+                    f"Date column missing or inp_df is empty for index {idx}, basin {basin_id}."
+                )
 
         except Exception as e:
             logger.error(
-                f"Error getting input end date for index {idx}, basin {basin_id}: {e}"
+                f"Error getting input end date for index {idx}, basin {basin_id}. Error: {e}"
             )
-            input_end_ts_ms = 0  # Assign a default value or handle appropriately
+            # input_end_ts_ms remains None or could be set to a default like 0 if preferred
+            # input_end_ts_ms = 0 # Example default if None is not desired
 
         return {
             "X": X,
@@ -440,5 +495,5 @@ class InMemoryChunkDataset(Dataset):
             "static": static,
             "future": future,
             self.group_identifier: basin_id,
-            "input_end_date": input_end_ts_ms,
+            "input_end_date": input_end_ts_ms,  # Integer millisecond timestamp or None
         }

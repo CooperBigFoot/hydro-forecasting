@@ -6,6 +6,10 @@ project_root = Path(__file__).resolve().parents[2]
 src_path = project_root / "src"
 sys.path.append(str(src_path))
 
+# --- NEW: Assuming validators are in data/datamodule_validators.py ---
+# This import might be needed if you directly use validation functions here,
+# though typically it's handled within the DataModule itself.
+# from hydro_forecasting.data.datamodule_validators import ...
 
 
 def main():
@@ -17,11 +21,14 @@ def main():
     from pytorch_lightning.loggers import TensorBoardLogger
     from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 
-    from hydro_forecasting.data_deprecated.lazy_datamodule import HydroLazyDataModule
+    from hydro_forecasting.data.datamodule import HydroInMemoryDataModule
+
     from hydro_forecasting.preprocessing.grouped import GroupedPipeline
     from sklearn.pipeline import Pipeline
     from hydro_forecasting.preprocessing.standard_scale import StandardScaleTransformer
-    from data.caravanify_parquet import (
+    from hydro_forecasting.preprocessing.normalize import NormalizeTransformer
+
+    from hydro_forecasting.data.caravanify_parquet import (
         CaravanifyParquet,
         CaravanifyParquetConfig,
     )
@@ -30,22 +37,23 @@ def main():
     from hydro_forecasting.model_evaluation.hp_from_yaml import hp_from_yaml
 
     # --- Configuration ---
-    EXPERIMENT_NAME = "tide_low_medium_influence"
+    EXPERIMENT_NAME = "tide_low_medium_influence_inmemory"
     BASE_OUTPUT_DIR = project_root / "experiments" / "TiDE_on_low_medium" / "output"
     CHECKPOINT_DIR = BASE_OUTPUT_DIR / "checkpoints"
     LOGS_DIR = BASE_OUTPUT_DIR / "logs"
     YAML_PATH = project_root / "notebooks" / "tide.yaml"
     MAX_EPOCHS = 100
-    BATCH_SIZE = 2048 
+    BATCH_SIZE = 2048
     NUM_WORKERS = 12
+    CHUNK_SIZE = 700
     EARLY_STOPPING_PATIENCE = 10
     SAVE_TOP_K = 1
+    RELOAD_EPOCHS = 1
 
     # Create output directories if they don't exist
     CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
-    # --- Data Loading ---
     regions = [
         "CL",
         "CH",
@@ -58,55 +66,59 @@ def main():
     ]
 
     basin_ids = []
-    discarded_ids = []  # Renamed for clarity
+    discarded_ids = []
 
     print("==========LOADING LOW AND MEDIUM HUMAN INFLUENCE BASINS==========")
     for region in regions:
         # Construct paths relative to project root or use absolute paths as needed
-        attributes_dir = (
-            f"/workspace/CaravanifyParquet/{region}/post_processed/attributes"
-        )
-        timeseries_dir = (
-            f"/workspace/CaravanifyParquet/{region}/post_processed/timeseries/csv"
-        )
+        attributes_dir = f"/workspace/CaravanifyParquet/{region}/post_processed/attributes"
+        timeseries_dir = f"/workspace/CaravanifyParquet/{region}/post_processed/timeseries/csv"
         human_influence_path = (
-            project_root
-            / "scripts"
-            / "human_influence_index"
-            / "results"
-            / "human_influence_classification.parquet"
+            project_root / "scripts" / "human_influence_index" / "results" / "human_influence_classification.parquet"
         )
 
-        config = CaravanifyParquetConfig(
-            attributes_dir=attributes_dir,
-            timeseries_dir=timeseries_dir,
-            human_influence_path=str(human_influence_path),
-            gauge_id_prefix=f"{region}",
-            use_hydroatlas_attributes=True,
-            use_caravan_attributes=True,
-            use_other_attributes=True,
-        )
-
-        caravan = CaravanifyParquet(config)
-        region_basin_ids = caravan.get_all_gauge_ids()
-
-        filtered_ids, current_discarded_ids = (
-            caravan.filter_gauge_ids_by_human_influence(
-                region_basin_ids, ["Low", "Medium"]
+        try:
+            config = CaravanifyParquetConfig(
+                attributes_dir=attributes_dir,
+                timeseries_dir=timeseries_dir,
+                human_influence_path=str(human_influence_path),
+                gauge_id_prefix=f"{region}",
+                use_hydroatlas_attributes=True,
+                use_caravan_attributes=True,
+                use_other_attributes=True,
             )
-        )
+            caravan = CaravanifyParquet(config)
+            region_basin_ids = caravan.get_all_gauge_ids()
 
-        basin_ids.extend(filtered_ids)
-        discarded_ids.extend(current_discarded_ids)
+            if human_influence_path.exists():
+                filtered_ids, current_discarded_ids = caravan.filter_gauge_ids_by_human_influence(
+                    region_basin_ids, ["Low", "Medium"]
+                )
+            else:
+                print(
+                    f"Warning: Human influence file not found at {human_influence_path}. Using all basins for region {region}."
+                )
+                filtered_ids = region_basin_ids
+                current_discarded_ids = []
+
+            basin_ids.extend(filtered_ids)
+            discarded_ids.extend(current_discarded_ids)
+        except FileNotFoundError as e:
+            print(f"Warning: Data directory not found for region {region}. Skipping. Error: {e}")
+        except Exception as e:
+            print(f"Warning: Could not process region {region}. Error: {e}")
 
     print(f"Total basins to process: {len(basin_ids)}")
-    print(f"Total discarded basins: {len(discarded_ids)}")
+    print(f"Total discarded basins (due to human influence filter): {len(discarded_ids)}")
+
+    if not basin_ids:
+        print("Error: No basin IDs found after filtering. Exiting.")
+        sys.exit(1)
 
     print("==========LOADING TiDE HYPERPARAMETERS==========")
-    # Use configured YAML_PATH
     tide_hp = hp_from_yaml("tide", YAML_PATH)
 
-    print("=========SETTING UP LAZY DATA MODULE==========")
+    print("=========SETTING UP IN-MEMORY DATA MODULE==========")
     print("Defining features")
     forcing_features = [
         "snow_depth_water_equivalent_mean",
@@ -119,7 +131,6 @@ def main():
         "temperature_2m_max",
         "total_precipitation_sum",
     ]
-
     static_features = [
         "p_mean",
         "area",
@@ -132,17 +143,16 @@ def main():
         "aridity_ERA5_LAND",
         "aridity_FAO_PM",
     ]
-
+    target_variable = "streamflow"
     print("Defining pipeline")
-
     feature_pipeline = GroupedPipeline(
-        Pipeline([("scaler", StandardScaleTransformer())]),
+        Pipeline([("scaler", StandardScaleTransformer()), ("normalizer", NormalizeTransformer())]),
         columns=forcing_features,
         group_identifier="gauge_id",
     )
 
     target_pipeline = GroupedPipeline(
-        Pipeline([("scaler", StandardScaleTransformer())]),
+        Pipeline([("scaler", StandardScaleTransformer()), ("normalizer", NormalizeTransformer())]),
         columns=["streamflow"],
         group_identifier="gauge_id",
     )
@@ -155,72 +165,67 @@ def main():
         "static_features": {"pipeline": static_pipeline, "columns": static_features},
     }
 
-    print("Defining region directory maps")
+    print("Defining region directory maps (pointing to SOURCE data)")
     region_time_series_base_dirs = {
-        region: f"/workspace/CaravanifyParquet/{region}/post_processed/timeseries/csv/{region}"
-        for region in regions
+        region: f"/workspace/CaravanifyParquet/{region}/post_processed/timeseries/csv/{region}" for region in regions
     }
-
     region_static_attributes_base_dirs = {
-        region: f"/workspace/CaravanifyParquet/{region}/post_processed/attributes/{region}"
-        for region in regions
+        region: f"/workspace/CaravanifyParquet/{region}/post_processed/attributes/{region}" for region in regions
     }
 
     print("Defining data module")
-    # Define preprocessing output directory relative to BASE_OUTPUT_DIR
     preprocessing_output_dir = BASE_OUTPUT_DIR / "preprocessing_cache"
     preprocessing_output_dir.mkdir(parents=True, exist_ok=True)
 
-    datamodule = HydroLazyDataModule(
+    # --- Instantiate HydroInMemoryDataModule ---
+    datamodule = HydroInMemoryDataModule(
         region_time_series_base_dirs=region_time_series_base_dirs,
         region_static_attributes_base_dirs=region_static_attributes_base_dirs,
         path_to_preprocessing_output_directory=str(preprocessing_output_dir),
         group_identifier="gauge_id",
-        batch_size=BATCH_SIZE,  
+        batch_size=BATCH_SIZE,
         input_length=tide_hp["input_len"],
         output_length=tide_hp["output_len"],
         forcing_features=forcing_features,
         static_features=static_features,
-        target="streamflow",
+        target=target_variable,
         preprocessing_configs=preprocessing_config,
-        num_workers=NUM_WORKERS, 
+        num_workers=NUM_WORKERS,
         min_train_years=5,
         train_prop=0.5,
         val_prop=0.25,
         test_prop=0.25,
         max_imputation_gap_size=5,
+        chunk_size=CHUNK_SIZE,
         list_of_gauge_ids_to_process=basin_ids,
+        domain_id="multi-region-low-medium",
+        domain_type="source",
         is_autoregressive=True,
-        files_per_batch=50,
+        load_engine="polars",
     )
 
     print("=========TRAINING THE MODEL==========")
     print("Instantiating the model")
-
     config = TiDEConfig(**tide_hp)
     model = LitTiDE(config)
 
     print("Defining the logger and callbacks")
-    # Setup TensorBoard Logger
     logger = TensorBoardLogger(
         save_dir=str(LOGS_DIR),
         name=EXPERIMENT_NAME,
-        version="run_0",  # Example versioning, adjust if running multiple times
+        version="run_0",
     )
-
-    # Setup Callbacks
+    # Keep callback definitions as is
     early_stopping_callback = EarlyStopping(
         monitor="val_loss",
-        patience=EARLY_STOPPING_PATIENCE,  # Use configured patience
+        patience=EARLY_STOPPING_PATIENCE,
         verbose=True,
         mode="min",
     )
-
-    # Setup Model Checkpoint to save in the configured directory
     checkpoint_callback = ModelCheckpoint(
         monitor="val_loss",
-        dirpath=str(CHECKPOINT_DIR),  # Use configured checkpoint directory
-        filename=f"{EXPERIMENT_NAME}-{{epoch:02d}}-{{val_loss:.4f}}",  # Consistent naming
+        dirpath=str(CHECKPOINT_DIR),
+        filename=f"{EXPERIMENT_NAME}-{{epoch:02d}}-{{val_loss:.4f}}",
         save_top_k=SAVE_TOP_K,
         mode="min",
         save_last=True,
@@ -230,25 +235,26 @@ def main():
     trainer = pl.Trainer(
         accelerator="gpu",
         devices=1,
-        max_epochs=MAX_EPOCHS, 
+        max_epochs=MAX_EPOCHS,
         enable_progress_bar=True,
-        logger=logger, 
-        callbacks=[
-            early_stopping_callback,  
-            checkpoint_callback,  
-        ],
+        logger=logger,
+        callbacks=[early_stopping_callback, checkpoint_callback],
         num_sanity_val_steps=0,
+        reload_dataloaders_every_n_epochs=RELOAD_EPOCHS,  # IMPORTANT for chunking
     )
+
     print("Training the model")
-    trainer.fit(
-        model,
-        datamodule=datamodule,
-    )
+    trainer.fit(model, datamodule=datamodule)
 
     print("=========DONE==========")
     print(f"Checkpoints saved to: {CHECKPOINT_DIR}")
     print(f"Logs saved to: {LOGS_DIR}/{EXPERIMENT_NAME}/run_0")
-    print(f"Best checkpoint path: {checkpoint_callback.best_model_path}")
+    best_path = (
+        checkpoint_callback.best_model_path
+        if checkpoint_callback.best_model_path
+        else "No best model saved (check training progress)."
+    )
+    print(f"Best checkpoint path: {best_path}")
 
 
 if __name__ == "__main__":
