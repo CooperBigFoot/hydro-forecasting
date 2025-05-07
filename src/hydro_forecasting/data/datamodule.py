@@ -2,6 +2,7 @@ from pytorch_lightning import LightningDataModule
 from pathlib import Path
 from typing import Union, Optional, Any
 from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
+import torch.multiprocessing as mp
 import random
 
 import torch
@@ -408,8 +409,10 @@ class HydroInMemoryDataModule(LightningDataModule):
             batch_size=self.batch_size,
             sampler=RandomSampler(train_dataset),
             num_workers=self.num_workers,
-            pin_memory=torch.cuda.is_available(),
+            pin_memory=False,
             persistent_workers=True if self.num_workers > 0 else False,
+            multiprocessing_context=mp.get_context("spawn"),
+
         )
 
     def val_dataloader(self) -> DataLoader:
@@ -466,8 +469,11 @@ class HydroInMemoryDataModule(LightningDataModule):
             batch_size=self.batch_size,
             sampler=SequentialSampler(val_dataset),
             num_workers=self.num_workers,
-            pin_memory=torch.cuda.is_available(),
+            pin_memory=False,
             persistent_workers=True if self.num_workers > 0 else False,
+            multiprocessing_context=mp.get_context("spawn"),
+
+
         )
 
     def test_dataloader(self) -> DataLoader:
@@ -509,8 +515,11 @@ class HydroInMemoryDataModule(LightningDataModule):
             batch_size=self.batch_size,
             sampler=SequentialSampler(test_dataset),
             num_workers=self.num_workers,
-            pin_memory=torch.cuda.is_available(),
+            pin_memory=False,
             persistent_workers=True if self.num_workers > 0 else False,
+            multiprocessing_context=mp.get_context("spawn"),
+
+
         )
 
     def _load_static_data(self) -> None:

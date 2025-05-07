@@ -6,11 +6,6 @@ project_root = Path(__file__).resolve().parents[2]
 src_path = project_root / "src"
 sys.path.append(str(src_path))
 
-# --- NEW: Assuming validators are in data/datamodule_validators.py ---
-# This import might be needed if you directly use validation functions here,
-# though typically it's handled within the DataModule itself.
-# from hydro_forecasting.data.datamodule_validators import ...
-
 
 def main():
     import pytorch_lightning as pl
@@ -42,9 +37,9 @@ def main():
     CHECKPOINT_DIR = BASE_OUTPUT_DIR / "checkpoints"
     LOGS_DIR = BASE_OUTPUT_DIR / "logs"
     YAML_PATH = project_root / "notebooks" / "tide.yaml"
-    MAX_EPOCHS = 100
+    MAX_EPOCHS = 300
     BATCH_SIZE = 2048
-    NUM_WORKERS = 12
+    NUM_WORKERS = 10
     CHUNK_SIZE = 700
     EARLY_STOPPING_PATIENCE = 10
     SAVE_TOP_K = 1
@@ -233,7 +228,7 @@ def main():
 
     print("Defining the trainer")
     trainer = pl.Trainer(
-        accelerator="gpu",
+        accelerator="cuda",
         devices=1,
         max_epochs=MAX_EPOCHS,
         enable_progress_bar=True,
