@@ -233,7 +233,7 @@ def main():
 
     print("Defining the trainer")
     trainer = pl.Trainer(
-        accelerator="gpu",
+        accelerator="cuda",
         devices=1,
         max_epochs=MAX_EPOCHS,
         enable_progress_bar=True,
