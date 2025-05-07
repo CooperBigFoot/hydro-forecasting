@@ -1,12 +1,4 @@
 #!/bin/bash
-
-echo "Creating a virtual environment"
-python3 -m venv runpod_env
-source runpod_env/bin/activate
-
-echo "Installing pip"
-pip install --upgrade pip
-
 echo "Installing all packages"
 pip install "duckdb>=1.2.2" \
     "geopandas>=1.0.1" \
