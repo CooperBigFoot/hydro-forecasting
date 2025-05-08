@@ -1,11 +1,13 @@
-import torch
-from torch.utils.data import Dataset
+from functools import lru_cache
+from pathlib import Path
+
+import duckdb
 import numpy as np
 import polars as pl
-import duckdb
-from pathlib import Path
+import torch
+from torch.utils.data import Dataset
+
 from .file_cache import FileCache
-from functools import lru_cache
 
 
 class HydroLazyDataset(Dataset):
@@ -61,9 +63,7 @@ class HydroLazyDataset(Dataset):
 
         # define ordered feature lists for X and future
         if is_autoregressive:
-            self.input_features = [target] + [
-                f for f in self.forcing_features if f != target
-            ]
+            self.input_features = [target] + [f for f in self.forcing_features if f != target]
         else:
             self.input_features = self.forcing_features
         self.future_features = self.forcing_features
@@ -74,18 +74,13 @@ class HydroLazyDataset(Dataset):
     def _preload_static_data(self) -> None:
         # Scan index file for unique static_file_path and group_identifier
         df = (
-            pl.scan_parquet(self.index_file_path)
-            .select([self.group_identifier, "static_file_path"])
-            .unique()
-            .collect()
+            pl.scan_parquet(self.index_file_path).select([self.group_identifier, "static_file_path"]).unique().collect()
         )
         static_paths = set(df["static_file_path"].to_list())
         dfs = []
         for path in static_paths:
             try:
-                df_static = pl.read_parquet(
-                    path, columns=[self.group_identifier] + self.static_features
-                )
+                df_static = pl.read_parquet(path, columns=[self.group_identifier] + self.static_features)
             except (FileNotFoundError, pl.ColumnNotFoundError) as e:
                 print(f"Skipping static file {path}: {e}")
                 continue
@@ -95,9 +90,7 @@ class HydroLazyDataset(Dataset):
         else:
             combined = pl.DataFrame()
         self.static_data_cache = {
-            row[self.group_identifier]: np.array(
-                [row.get(f, 0.0) for f in self.static_features], dtype=np.float32
-            )
+            row[self.group_identifier]: np.array([row.get(f, 0.0) for f in self.static_features], dtype=np.float32)
             for row in combined.iter_rows(named=True)
         }
 
@@ -148,15 +141,11 @@ class HydroLazyDataset(Dataset):
                 entry["file_path"],
                 columns=["date", self.target, *self.forcing_features],
             )
-            ts = df_full.slice(
-                entry["start_idx"], self.input_length + self.output_length
-            )
+            ts = df_full.slice(entry["start_idx"], self.input_length + self.output_length)
             inp = ts.slice(0, self.input_length)
             out = ts.slice(self.input_length, self.output_length)
         except Exception as e:
-            raise IOError(
-                f"Error loading/slicing data for idx {idx}, path {entry['file_path']}: {e}"
-            )
+            raise OSError(f"Error loading/slicing data for idx {idx}, path {entry['file_path']}: {e}")
         try:
             X_np = inp.select(self.input_features).to_numpy().astype(np.float32)
             X = torch.tensor(X_np, dtype=torch.float32)
@@ -188,13 +177,9 @@ class HydroLazyDataset(Dataset):
         try:
             import pandas as pd
 
-            input_end_ts = int(
-                pd.to_datetime(input_end).to_datetime64().astype(np.int64)
-            )
+            input_end_ts = int(pd.to_datetime(input_end).to_datetime64().astype(np.int64))
         except Exception as e:
-            raise ValueError(
-                f"Could not convert input_end_date '{input_end}' to int64 for index {idx}: {e}"
-            )
+            raise ValueError(f"Could not convert input_end_date '{input_end}' to int64 for index {idx}: {e}")
         return {
             "X": X,
             "y": y,

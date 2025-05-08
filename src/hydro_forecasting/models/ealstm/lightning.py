@@ -1,7 +1,9 @@
 """PyTorch Lightning module for EA-LSTM model."""
 
-from typing import Dict, Any, Optional, Union
+from typing import Any
+
 import torch
+
 from ..base.base_lit_model import BaseLitModel
 from .config import EALSTMConfig
 from .model import EALSTM, BiEALSTM
@@ -16,7 +18,7 @@ class LitEALSTM(BaseLitModel):
 
     def __init__(
         self,
-        config: Union[EALSTMConfig, Dict[str, Any]],
+        config: EALSTMConfig | dict[str, Any],
     ) -> None:
         """
         Initialize the LitEALSTM module.
@@ -42,8 +44,8 @@ class LitEALSTM(BaseLitModel):
     def forward(
         self,
         x: torch.Tensor,
-        static: Optional[torch.Tensor] = None,
-        future: Optional[torch.Tensor] = None,
+        static: torch.Tensor | None = None,
+        future: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """
         Forward pass that delegates to the EA-LSTM model.
@@ -58,7 +60,7 @@ class LitEALSTM(BaseLitModel):
         """
         return self.model(x, static, future)
 
-    def configure_optimizers(self) -> Dict[str, Any]:
+    def configure_optimizers(self) -> dict[str, Any]:
         """
         Configure optimizer with potentially different learning rates for model components.
 

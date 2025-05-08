@@ -1,4 +1,5 @@
-from typing import ClassVar, List, Optional
+from typing import ClassVar
+
 from ..base.base_config import BaseConfig
 
 
@@ -14,7 +15,7 @@ class EALSTMConfig(BaseConfig):
     """
 
     # Define model-specific parameters
-    MODEL_PARAMS: ClassVar[List[str]] = [
+    MODEL_PARAMS: ClassVar[list[str]] = [
         "num_layers",
         "bias",
         "scheduler_patience",
@@ -35,7 +36,7 @@ class EALSTMConfig(BaseConfig):
         output_len: int,
         input_size: int,
         static_size: int = 0,
-        future_input_size: Optional[int] = None,
+        future_input_size: int | None = None,
         hidden_size: int = 64,
         dropout: float = 0.0,
         learning_rate: float = 1e-3,
@@ -45,8 +46,8 @@ class EALSTMConfig(BaseConfig):
         num_layers: int = 1,
         bias: bool = True,
         # Bidirectional EA-LSTM parameters
-        future_hidden_size: Optional[int] = None,
-        future_layers: Optional[int] = None,
+        future_hidden_size: int | None = None,
+        future_layers: int | None = None,
         bidirectional_fusion: str = "concat",
         bidirectional: bool = True,
         **kwargs,
@@ -109,6 +110,4 @@ class EALSTMConfig(BaseConfig):
         if self.future_layers < 1:
             raise ValueError("future_layers must be at least 1")
         if self.bidirectional_fusion not in ["concat", "add", "average"]:
-            raise ValueError(
-                "bidirectional_fusion must be one of: concat, add, average"
-            )
+            raise ValueError("bidirectional_fusion must be one of: concat, add, average")

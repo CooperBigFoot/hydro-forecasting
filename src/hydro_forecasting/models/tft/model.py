@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from typing import Optional, Tuple, Dict
+
 from .config import TFTConfig
 
 
@@ -50,7 +50,7 @@ class GatedResidualNetwork(nn.Module):
         hidden_size: int,
         output_size: int,
         dropout: float,
-        context_size: Optional[int] = None,
+        context_size: int | None = None,
         residual: bool = True,
     ):
         """Initialize GRN.
@@ -81,9 +81,7 @@ class GatedResidualNetwork(nn.Module):
 
         # Context projection if provided
         if self.context_size is not None:
-            self.context_layer = nn.Linear(
-                self.context_size, self.hidden_size, bias=False
-            )
+            self.context_layer = nn.Linear(self.context_size, self.hidden_size, bias=False)
 
         self.fc2 = nn.Linear(self.hidden_size, self.output_size)
         self.dropout = nn.Dropout(dropout)
@@ -92,9 +90,7 @@ class GatedResidualNetwork(nn.Module):
         self.gate = GLU(self.output_size)
         self.layer_norm = nn.LayerNorm(self.output_size)
 
-    def forward(
-        self, x: torch.Tensor, context: Optional[torch.Tensor] = None
-    ) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, context: torch.Tensor | None = None) -> torch.Tensor:
         """Forward pass through the GRN.
 
         Args:
@@ -146,7 +142,7 @@ class VariableSelectionNetwork(nn.Module):
         num_inputs: int,
         hidden_size: int,
         dropout: float,
-        context_size: Optional[int] = None,
+        context_size: int | None = None,
     ):
         """Initialize variable selection network.
 
@@ -195,9 +191,7 @@ class VariableSelectionNetwork(nn.Module):
 
         self.softmax = nn.Softmax(dim=-1)
 
-    def forward(
-        self, flattened_embedding: torch.Tensor, context: Optional[torch.Tensor] = None
-    ) -> torch.Tensor:
+    def forward(self, flattened_embedding: torch.Tensor, context: torch.Tensor | None = None) -> torch.Tensor:
         """Forward pass through variable selection network.
 
         Args:
@@ -224,9 +218,7 @@ class VariableSelectionNetwork(nn.Module):
         var_outputs = []
         for i in range(self.num_inputs):
             # Extract embedding for specific variable
-            var_embedding = flattened_embedding[
-                ..., (i * self.input_dim) : ((i + 1) * self.input_dim)
-            ]
+            var_embedding = flattened_embedding[..., (i * self.input_dim) : ((i + 1) * self.input_dim)]
             var_outputs.append(self.var_processors[i](var_embedding))
 
         var_outputs = torch.stack(var_outputs, dim=-1)
@@ -334,23 +326,15 @@ class InterpretableMultiHeadAttention(nn.Module):
 
         # Dimension per head
         self.head_dim = hidden_size // num_heads
-        assert self.head_dim * num_heads == hidden_size, (
-            "hidden_size must be divisible by num_heads"
-        )
+        assert self.head_dim * num_heads == hidden_size, "hidden_size must be divisible by num_heads"
 
         # Linear layers for queries and keys (head-specific)
         self.q_projections = nn.ModuleList(
-            [
-                nn.Linear(hidden_size, self.head_dim, bias=False)
-                for _ in range(self.num_heads)
-            ]
+            [nn.Linear(hidden_size, self.head_dim, bias=False) for _ in range(self.num_heads)]
         )
 
         self.k_projections = nn.ModuleList(
-            [
-                nn.Linear(hidden_size, self.head_dim, bias=False)
-                for _ in range(self.num_heads)
-            ]
+            [nn.Linear(hidden_size, self.head_dim, bias=False) for _ in range(self.num_heads)]
         )
 
         # Shared value projection across all heads
@@ -367,7 +351,7 @@ class InterpretableMultiHeadAttention(nn.Module):
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
-        mask: Optional[torch.Tensor] = None,
+        mask: torch.Tensor | None = None,
     ) -> tuple:
         """Forward pass of interpretable multi-head attention.
 
@@ -394,12 +378,8 @@ class InterpretableMultiHeadAttention(nn.Module):
         # Process each head
         for head_idx in range(self.num_heads):
             # Project queries and keys for this head
-            q_proj = self.q_projections[head_idx](
-                q
-            )  # [batch_size, target_len, head_dim]
-            k_proj = self.k_projections[head_idx](
-                k
-            )  # [batch_size, source_len, head_dim]
+            q_proj = self.q_projections[head_idx](q)  # [batch_size, target_len, head_dim]
+            k_proj = self.k_projections[head_idx](k)  # [batch_size, source_len, head_dim]
 
             # Compute attention scores
             attn_scores = torch.bmm(
@@ -415,17 +395,13 @@ class InterpretableMultiHeadAttention(nn.Module):
                 attn_scores = attn_scores.masked_fill(mask == 0, -1e9)
 
             # Apply softmax to get attention weights
-            attn_weights = torch.softmax(
-                attn_scores, dim=-1
-            )  # [batch_size, target_len, source_len]
+            attn_weights = torch.softmax(attn_scores, dim=-1)  # [batch_size, target_len, source_len]
             attn_weights = self.attn_dropout(attn_weights)
 
             attn_weights_per_head.append(attn_weights)
 
         # Average attention weights across heads
-        avg_attn_weights = torch.stack(attn_weights_per_head).mean(
-            dim=0
-        )  # [batch_size, target_len, source_len]
+        avg_attn_weights = torch.stack(attn_weights_per_head).mean(dim=0)  # [batch_size, target_len, source_len]
 
         # Apply attention weights to values
         context = torch.bmm(
@@ -434,9 +410,7 @@ class InterpretableMultiHeadAttention(nn.Module):
         )  # [batch_size, target_len, head_dim]
 
         # Apply output projection
-        output = self.output_projection(
-            context
-        )  # [batch_size, target_len, hidden_size]
+        output = self.output_projection(context)  # [batch_size, target_len, hidden_size]
 
         return output, avg_attn_weights
 
@@ -465,9 +439,7 @@ class TemporalFusionTransformer(nn.Module):
         self.output_len = config.output_len
         self.hidden_size = config.hidden_size
         self.dropout = config.dropout
-        self.future_input_size = config.future_input_size or max(
-            1, config.input_size - 1
-        )
+        self.future_input_size = config.future_input_size or max(1, config.input_size - 1)
 
         # Input processing
         # We use linear layers for continuous variables
@@ -565,7 +537,7 @@ class TemporalFusionTransformer(nn.Module):
         # Output layer
         self.output_layer = nn.Linear(self.hidden_size, 1)  # Single quantile for now
 
-    def _process_static(self, static: torch.Tensor) -> Dict[str, torch.Tensor]:
+    def _process_static(self, static: torch.Tensor) -> dict[str, torch.Tensor]:
         """Process static covariates through the static encoder.
 
         Args:
@@ -579,9 +551,7 @@ class TemporalFusionTransformer(nn.Module):
             return self.static_encoder(static_emb)
         return None
 
-    def _process_inputs(
-        self, x: torch.Tensor, future: Optional[torch.Tensor] = None
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _process_inputs(self, x: torch.Tensor, future: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
         """Process historical and future inputs.
 
         Args:
@@ -595,15 +565,11 @@ class TemporalFusionTransformer(nn.Module):
 
         # Process historical data
         target = x[:, :, 0:1]  # [batch_size, input_len, 1]
-        target_emb = self.target_input_proj(
-            target
-        )  # [batch_size, input_len, hidden_size]
+        target_emb = self.target_input_proj(target)  # [batch_size, input_len, hidden_size]
 
         if self.input_size > 1:
             past_feats = x[:, :, 1:]  # [batch_size, input_len, input_size-1]
-            past_feats_emb = self.past_feat_proj(
-                past_feats
-            )  # [batch_size, input_len, hidden_size]
+            past_feats_emb = self.past_feat_proj(past_feats)  # [batch_size, input_len, hidden_size]
         else:
             # Create a dummy past features embedding if we only have the target
             past_feats_emb = torch.zeros_like(target_emb)
@@ -611,23 +577,17 @@ class TemporalFusionTransformer(nn.Module):
         # Process future data if available
         if self.future_input_size > 0:
             if future is None:
-                future = torch.zeros(
-                    batch_size, self.output_len, self.future_input_size, device=x.device
-                )
-            future_feats_emb = self.future_feat_proj(
-                future
-            )  # [batch_size, output_len, hidden_size]
+                future = torch.zeros(batch_size, self.output_len, self.future_input_size, device=x.device)
+            future_feats_emb = self.future_feat_proj(future)  # [batch_size, output_len, hidden_size]
         else:
-            future_feats_emb = torch.zeros(
-                batch_size, self.output_len, self.hidden_size, device=x.device
-            )
+            future_feats_emb = torch.zeros(batch_size, self.output_len, self.hidden_size, device=x.device)
 
         return (target_emb, past_feats_emb), future_feats_emb
 
     def _apply_variable_selection(
         self,
-        embeddings: Tuple[torch.Tensor, torch.Tensor],
-        static_context: Optional[Dict[str, torch.Tensor]] = None,
+        embeddings: tuple[torch.Tensor, torch.Tensor],
+        static_context: dict[str, torch.Tensor] | None = None,
         is_past: bool = True,
     ) -> torch.Tensor:
         """Apply variable selection to input embeddings.
@@ -646,24 +606,17 @@ class TemporalFusionTransformer(nn.Module):
         if is_past:
             # Stack target and past features
             inputs = torch.cat(
-                [
-                    emb.reshape(batch_size, seq_len, 1, self.hidden_size)
-                    for emb in embeddings
-                ],
+                [emb.reshape(batch_size, seq_len, 1, self.hidden_size) for emb in embeddings],
                 dim=2,
             )  # [batch_size, seq_len, num_inputs, hidden_size]
 
             # Apply variable selection network efficiently
-            flattened = inputs.reshape(
-                batch_size * seq_len, -1
-            )  # [batch_size * seq_len, num_inputs * hidden_size]
+            flattened = inputs.reshape(batch_size * seq_len, -1)  # [batch_size * seq_len, num_inputs * hidden_size]
 
             # Get static context for variable selection
             c_s = None
             if static_context is not None:
-                c_s = static_context["c_s"].repeat(
-                    seq_len, 1
-                )  # [batch_size * seq_len, hidden_size]
+                c_s = static_context["c_s"].repeat(seq_len, 1)  # [batch_size * seq_len, hidden_size]
 
             # Apply variable selection
             selected, _ = self.past_vsn(flattened, c_s)
@@ -673,16 +626,12 @@ class TemporalFusionTransformer(nn.Module):
             inputs = embeddings[0].reshape(batch_size, seq_len, 1, self.hidden_size)
 
             # Apply variable selection network efficiently
-            flattened = inputs.reshape(
-                batch_size * seq_len, -1
-            )  # [batch_size * seq_len, hidden_size]
+            flattened = inputs.reshape(batch_size * seq_len, -1)  # [batch_size * seq_len, hidden_size]
 
             # Get static context for variable selection
             c_s = None
             if static_context is not None:
-                c_s = static_context["c_s"].repeat(
-                    seq_len, 1
-                )  # [batch_size * seq_len, hidden_size]
+                c_s = static_context["c_s"].repeat(seq_len, 1)  # [batch_size * seq_len, hidden_size]
 
             # Apply variable selection
             selected, _ = self.future_vsn(flattened, c_s)
@@ -691,7 +640,7 @@ class TemporalFusionTransformer(nn.Module):
     def _apply_static_enrichment(
         self,
         temporal_features: torch.Tensor,
-        static_context: Optional[Dict[str, torch.Tensor]] = None,
+        static_context: dict[str, torch.Tensor] | None = None,
     ) -> torch.Tensor:
         """Apply static enrichment to temporal features.
 
@@ -710,9 +659,7 @@ class TemporalFusionTransformer(nn.Module):
         # Get static enrichment context
         c_e = None
         if static_context is not None:
-            c_e = static_context["c_e"].repeat(
-                seq_len, 1
-            )  # [batch_size * seq_len, hidden_size]
+            c_e = static_context["c_e"].repeat(seq_len, 1)  # [batch_size * seq_len, hidden_size]
 
         # Apply enrichment
         enriched = self.static_enrichment(reshaped, c_e)
@@ -737,8 +684,8 @@ class TemporalFusionTransformer(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        static: Optional[torch.Tensor] = None,
-        future: Optional[torch.Tensor] = None,
+        static: torch.Tensor | None = None,
+        future: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Forward pass of the TFT model.
 
@@ -759,28 +706,18 @@ class TemporalFusionTransformer(nn.Module):
         historical_embeddings, future_embeddings = self._process_inputs(x, future)
 
         # 3. Apply variable selection
-        historical_features = self._apply_variable_selection(
-            historical_embeddings, static_context, is_past=True
-        )
-        future_features = self._apply_variable_selection(
-            (future_embeddings,), static_context, is_past=False
-        )
+        historical_features = self._apply_variable_selection(historical_embeddings, static_context, is_past=True)
+        future_features = self._apply_variable_selection((future_embeddings,), static_context, is_past=False)
 
         # 4. Initialize LSTM hidden states with static context if available
         init_hidden = None
         if static_context is not None:
-            h0 = (
-                static_context["c_h"].unsqueeze(0).repeat(self.config.lstm_layers, 1, 1)
-            )
-            c0 = (
-                static_context["c_c"].unsqueeze(0).repeat(self.config.lstm_layers, 1, 1)
-            )
+            h0 = static_context["c_h"].unsqueeze(0).repeat(self.config.lstm_layers, 1, 1)
+            c0 = static_context["c_c"].unsqueeze(0).repeat(self.config.lstm_layers, 1, 1)
             init_hidden = (h0, c0)
 
         # 5. LSTM encoding for historical data
-        historical_lstm, lstm_state = self.lstm_encoder(
-            historical_features, init_hidden
-        )
+        historical_lstm, lstm_state = self.lstm_encoder(historical_features, init_hidden)
 
         # 6. LSTM decoding for future data
         future_lstm, _ = self.lstm_decoder(future_features, lstm_state)
@@ -802,9 +739,7 @@ class TemporalFusionTransformer(nn.Module):
         attn_mask = attn_mask.unsqueeze(0).expand(batch_size, -1, -1)
 
         # 11. Apply interpretable multi-head attention
-        attn_output, attn_weights = self.attention(
-            enriched, enriched, enriched, mask=attn_mask
-        )
+        attn_output, attn_weights = self.attention(enriched, enriched, enriched, mask=attn_mask)
 
         # 12. Extract the future part for prediction (we only care about the output horizon)
         attn_output = attn_output[:, self.input_len :, :]

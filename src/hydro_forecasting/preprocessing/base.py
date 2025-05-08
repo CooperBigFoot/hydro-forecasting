@@ -1,6 +1,7 @@
-from typing import List, Optional, Union, Dict, Any
-import pandas as pd
+from typing import Any
+
 import numpy as np
+import pandas as pd
 from sklearn.base import BaseEstimator, TransformerMixin
 
 
@@ -18,7 +19,7 @@ class HydroTransformer(BaseEstimator, TransformerMixin):
         _feature_names: List of feature names after transformation
     """
 
-    def __init__(self, columns: Optional[List[str]] = None):
+    def __init__(self, columns: list[str] | None = None):
         """Initialize transformer.
 
         Args:
@@ -26,10 +27,10 @@ class HydroTransformer(BaseEstimator, TransformerMixin):
         """
         self.columns = columns
         self._fitted = False
-        self._fitted_state: Dict[str, Any] = {}
+        self._fitted_state: dict[str, Any] = {}
         self._feature_names = None
 
-    def _validate_input(self, X: Union[pd.DataFrame, np.ndarray]) -> None:
+    def _validate_input(self, X: pd.DataFrame | np.ndarray) -> None:
         """Validate input data.
 
         Args:
@@ -43,7 +44,7 @@ class HydroTransformer(BaseEstimator, TransformerMixin):
             if missing_cols:
                 raise ValueError(f"Columns not found in data: {missing_cols}")
 
-    def _get_feature_columns(self, X: Union[pd.DataFrame, np.ndarray]) -> List[str]:
+    def _get_feature_columns(self, X: pd.DataFrame | np.ndarray) -> list[str]:
         """Get list of feature columns to transform.
 
         Args:
@@ -61,9 +62,7 @@ class HydroTransformer(BaseEstimator, TransformerMixin):
                 return list(range(X.shape[1]))
             return self.columns
 
-    def fit(
-        self, X: Union[pd.DataFrame, np.ndarray], y: Optional[pd.Series] = None
-    ) -> "HydroTransformer":
+    def fit(self, X: pd.DataFrame | np.ndarray, y: pd.Series | None = None) -> "HydroTransformer":
         """Fit transformer to data.
 
         Args:
@@ -82,9 +81,7 @@ class HydroTransformer(BaseEstimator, TransformerMixin):
             self.feature_names_in_ = np.array(X.columns.tolist())
         else:
             self.n_features_in_ = X.shape[1]
-            self.feature_names_in_ = np.array(
-                [f"feature_{i}" for i in range(X.shape[1])]
-            )
+            self.feature_names_in_ = np.array([f"feature_{i}" for i in range(X.shape[1])])
 
         # Original code
         if isinstance(X, pd.DataFrame):
@@ -96,9 +93,7 @@ class HydroTransformer(BaseEstimator, TransformerMixin):
         self._fitted = True
         return self
 
-    def transform(
-        self, X: Union[pd.DataFrame, np.ndarray]
-    ) -> Union[pd.DataFrame, np.ndarray]:
+    def transform(self, X: pd.DataFrame | np.ndarray) -> pd.DataFrame | np.ndarray:
         """Transform data.
 
         Args:
@@ -118,9 +113,7 @@ class HydroTransformer(BaseEstimator, TransformerMixin):
         # Default implementation: return data unchanged
         return X
 
-    def inverse_transform(
-        self, X: Union[pd.DataFrame, np.ndarray]
-    ) -> Union[pd.DataFrame, np.ndarray]:
+    def inverse_transform(self, X: pd.DataFrame | np.ndarray) -> pd.DataFrame | np.ndarray:
         """Inverse transform data.
 
         Args:
@@ -133,16 +126,14 @@ class HydroTransformer(BaseEstimator, TransformerMixin):
             ValueError: If transformer hasn't been fitted
         """
         if not self._fitted:
-            raise ValueError(
-                "Transformer must be fitted before calling inverse_transform"
-            )
+            raise ValueError("Transformer must be fitted before calling inverse_transform")
 
         self._validate_input(X)
 
         # Default implementation: return data unchanged
         return X
 
-    def get_feature_names_out(self) -> List[str]:
+    def get_feature_names_out(self) -> list[str]:
         """Get output feature names.
 
         Returns:

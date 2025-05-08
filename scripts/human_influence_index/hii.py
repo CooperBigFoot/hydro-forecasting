@@ -1,18 +1,18 @@
 import sys
 from pathlib import Path
-sys.path.append(str(Path(__file__).resolve().parents[2] / 'src'))
+
+sys.path.append(str(Path(__file__).resolve().parents[2] / "src"))
 
 
-import pandas as pd
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
 import seaborn as sns
-from sklearn.preprocessing import MinMaxScaler
-
 from data.caravanify_parquet import (
     CaravanifyParquet,
     CaravanifyParquetConfig,
 )
+from sklearn.preprocessing import MinMaxScaler
 
 
 def main():
@@ -79,9 +79,7 @@ def main():
         raise ValueError("No data loaded from any region")
 
     all_static_data = pd.concat(all_region_data.values(), ignore_index=True)
-    print(
-        f"Combined data from {len(all_region_data)} regions: {len(all_static_data)} catchments"
-    )
+    print(f"Combined data from {len(all_region_data)} regions: {len(all_static_data)} catchments")
 
     # Check which anthropogenic attributes are available
     available_anthro = [col for col in anthro_columns if col in all_static_data.columns]
@@ -103,9 +101,7 @@ def main():
 
     # Normalize the data using MinMaxScaler
     scaler = MinMaxScaler()
-    norm_data = pd.DataFrame(
-        scaler.fit_transform(anthro_data[available_anthro]), columns=available_anthro
-    )
+    norm_data = pd.DataFrame(scaler.fit_transform(anthro_data[available_anthro]), columns=available_anthro)
 
     # Add gauge_id back to normalized data
     norm_data["gauge_id"] = anthro_data["gauge_id"].values
@@ -167,9 +163,7 @@ def main():
     result_df = norm_data[["gauge_id", "hii", "human_influence_category"]]
 
     # Save to CSV
-    output_dir = Path(
-        "/Users/cooper/Desktop/hydro-forecasting/scripts/human_influence_index/results"
-    )
+    output_dir = Path("/Users/cooper/Desktop/hydro-forecasting/scripts/human_influence_index/results")
     output_dir.mkdir(exist_ok=True)
     output_path = output_dir / "human_influence_classification.parquet"
     result_df.to_parquet(output_path, index=False)

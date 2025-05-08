@@ -13,23 +13,20 @@ def main():
 
     torch.set_float32_matmul_precision("medium")
 
-    from pytorch_lightning.loggers import TensorBoardLogger
     from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
-
-    from hydro_forecasting.data.in_memory_datamodule import HydroInMemoryDataModule
-
-    from hydro_forecasting.preprocessing.grouped import GroupedPipeline
+    from pytorch_lightning.loggers import TensorBoardLogger
     from sklearn.pipeline import Pipeline
-    from hydro_forecasting.preprocessing.standard_scale import StandardScaleTransformer
-    from hydro_forecasting.preprocessing.normalize import NormalizeTransformer
 
     from hydro_forecasting.data.caravanify_parquet import (
         CaravanifyParquet,
         CaravanifyParquetConfig,
     )
-
-    from hydro_forecasting.models.tide import LitTiDE, TiDEConfig
+    from hydro_forecasting.data.in_memory_datamodule import HydroInMemoryDataModule
     from hydro_forecasting.model_evaluation.hp_from_yaml import hp_from_yaml
+    from hydro_forecasting.models.tide import LitTiDE, TiDEConfig
+    from hydro_forecasting.preprocessing.grouped import GroupedPipeline
+    from hydro_forecasting.preprocessing.normalize import NormalizeTransformer
+    from hydro_forecasting.preprocessing.standard_scale import StandardScaleTransformer
 
     # --- Configuration ---
     EXPERIMENT_NAME = "tide_low_medium_influence_inmemory"

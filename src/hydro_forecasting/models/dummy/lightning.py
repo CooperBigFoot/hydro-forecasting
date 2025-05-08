@@ -2,11 +2,13 @@
 PyTorch Lightning module for the RepeatLastValues model.
 """
 
-from typing import Dict, Any, Union
+from typing import Any
+
 import torch
+
 from ..base.base_lit_model import BaseLitModel
-from .model import RepeatLastValues
 from .config import RepeatLastValuesConfig
+from .model import RepeatLastValues
 
 
 class LitRepeatLastValues(BaseLitModel):
@@ -18,7 +20,7 @@ class LitRepeatLastValues(BaseLitModel):
 
     def __init__(
         self,
-        config: Union[RepeatLastValuesConfig, Dict[str, Any]],
+        config: RepeatLastValuesConfig | dict[str, Any],
     ):
         """Initialize the Lightning Module with a RepeatLastValuesConfig.
 
@@ -35,9 +37,7 @@ class LitRepeatLastValues(BaseLitModel):
         # Create the RepeatLastValues model using the config
         self.model = RepeatLastValues(config)
 
-    def forward(
-        self, x: torch.Tensor, static: torch.Tensor = None, future: torch.Tensor = None
-    ) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, static: torch.Tensor = None, future: torch.Tensor = None) -> torch.Tensor:
         """Forward pass that delegates to the RepeatLastValues model.
 
         Args:

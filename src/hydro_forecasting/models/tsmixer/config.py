@@ -1,4 +1,5 @@
-from typing import Optional, ClassVar, List
+from typing import ClassVar
+
 from ..base.base_config import BaseConfig
 
 
@@ -10,7 +11,7 @@ class TSMixerConfig(BaseConfig):
     """
 
     # Define model-specific parameters
-    MODEL_PARAMS: ClassVar[List[str]] = [
+    MODEL_PARAMS: ClassVar[list[str]] = [
         "static_embedding_size",
         "num_mixing_layers",
         "scheduler_patience",
@@ -26,7 +27,7 @@ class TSMixerConfig(BaseConfig):
         output_len: int,
         input_size: int,
         static_size: int = 0,
-        future_input_size: Optional[int] = None,
+        future_input_size: int | None = None,
         hidden_size: int = 64,
         static_embedding_size: int = 10,
         num_mixing_layers: int = 5,
@@ -82,14 +83,10 @@ class TSMixerConfig(BaseConfig):
 
         # Validate parameters
         if fusion_method not in ["add", "concat"]:
-            raise ValueError(
-                f"Invalid fusion_method: {fusion_method}. Must be 'add' or 'concat'."
-            )
+            raise ValueError(f"Invalid fusion_method: {fusion_method}. Must be 'add' or 'concat'.")
 
         if self.num_mixing_layers < 1:
-            raise ValueError(
-                f"num_mixing_layers must be at least 1, got {self.num_mixing_layers}"
-            )
+            raise ValueError(f"num_mixing_layers must be at least 1, got {self.num_mixing_layers}")
 
         # Remove redundant attributes as you already have
         if hasattr(self, "past_feature_projection_size"):

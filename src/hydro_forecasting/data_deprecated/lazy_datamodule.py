@@ -1,31 +1,32 @@
-import pytorch_lightning as pl
-from pathlib import Path
-from typing import Union, Optional, Any
-from torch.utils.data import DataLoader
 import math
-import torch
-import torch.multiprocessing as mp
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Union
+
 import numpy as np
 import pandas as pd
-from returns.result import Result, Success, Failure
-from dataclasses import dataclass
-
+import pytorch_lightning as pl
+import torch
+import torch.multiprocessing as mp
+from returns.result import Failure, Result, Success
 from sklearn.pipeline import Pipeline
-from .lazy_dataset import HydroLazyDataset
-from .preprocessing import run_hydro_processor, ProcessingOutput
-from .index_entry_creator import create_index_entries
-from ..preprocessing.grouped import GroupedPipeline
-from .batch_sampler import FileGroupedBatchSampler
+from torch.utils.data import DataLoader
+
+from ..data.clean_data import SummaryQualityReport
 from ..data.config_utils import (
     extract_relevant_config,
-    save_config,
     generate_run_uuid,
     load_config,
+    save_config,
 )
-from .file_cache import FileCache
-from ..data.clean_data import SummaryQualityReport
+from ..preprocessing.grouped import GroupedPipeline
 from ..preprocessing.static_preprocessing import load_static_pipeline
 from ..preprocessing.time_series_preprocessing import load_time_series_pipelines
+from .batch_sampler import FileGroupedBatchSampler
+from .file_cache import FileCache
+from .index_entry_creator import create_index_entries
+from .lazy_dataset import HydroLazyDataset
+from .preprocessing import ProcessingOutput, run_hydro_processor
 
 
 @dataclass
@@ -33,9 +34,9 @@ class LoadedData:
     """Data structure for loaded preprocessing artifacts."""
 
     summary_quality_report: SummaryQualityReport
-    fitted_pipelines: dict[str, Union[Pipeline, GroupedPipeline]]
+    fitted_pipelines: dict[str, Pipeline | GroupedPipeline]
     processed_ts_dir: Path
-    processed_static_path: Optional[Path]
+    processed_static_path: Path | None
 
 
 def worker_init_fn(worker_id: int) -> None:
@@ -62,9 +63,9 @@ class HydroLazyDataModule(pl.LightningDataModule):
 
     def __init__(
         self,
-        region_time_series_base_dirs: dict[str, Union[str, Path]],
-        region_static_attributes_base_dirs: dict[str, Union[str, Path]],
-        path_to_preprocessing_output_directory: Union[str, Union[str, Path]],
+        region_time_series_base_dirs: dict[str, str | Path],
+        region_static_attributes_base_dirs: dict[str, str | Path],
+        path_to_preprocessing_output_directory: str | str | Path,
         group_identifier: str,
         batch_size: int,
         input_length: int,
@@ -72,14 +73,14 @@ class HydroLazyDataModule(pl.LightningDataModule):
         forcing_features: list[str],
         static_features: list[str],
         target: str,
-        preprocessing_configs: dict[str, Union[Pipeline, GroupedPipeline]],
+        preprocessing_configs: dict[str, Pipeline | GroupedPipeline],
         num_workers: int,
         min_train_years: int,
         train_prop: float,
         val_prop: float,
         test_prop: float,
         max_imputation_gap_size: int,
-        list_of_gauge_ids_to_process: Optional[list[str]] = None,
+        list_of_gauge_ids_to_process: list[str] | None = None,
         domain_id: str = "source",
         domain_type: str = "source",
         is_autoregressive: bool = False,
@@ -89,9 +90,7 @@ class HydroLazyDataModule(pl.LightningDataModule):
 
         self.region_time_series_base_dirs = region_time_series_base_dirs
         self.region_static_attributes_base_dirs = region_static_attributes_base_dirs
-        self.path_to_preprocessing_output_directory = Path(
-            path_to_preprocessing_output_directory
-        )
+        self.path_to_preprocessing_output_directory = Path(path_to_preprocessing_output_directory)
         self.group_identifier = group_identifier
         self.batch_size = batch_size
         self.input_length = input_length
@@ -132,9 +131,7 @@ class HydroLazyDataModule(pl.LightningDataModule):
         # Validation using Railway Oriented Programming
         validation_result = self._validate_all()
         if isinstance(validation_result, Failure):
-            raise ValueError(
-                f"Invalid configuration for HydroLazyDataModule: {validation_result.failure()}"
-            )
+            raise ValueError(f"Invalid configuration for HydroLazyDataModule: {validation_result.failure()}")
 
     def _validate_all(self) -> Result[None, str]:
         """Run all validations using railway pattern, returning Success or Failure."""
@@ -142,76 +139,32 @@ class HydroLazyDataModule(pl.LightningDataModule):
             # Start with a Success value to begin the railway
             Success(None)
             # Chain all validation steps with bind
+            .bind(lambda _: self._validate_positive_integer("batch_size", self.batch_size))
+            .bind(lambda _: self._validate_positive_integer("input_length", self.input_length))
+            .bind(lambda _: self._validate_positive_integer("output_length", self.output_length))
+            .bind(lambda _: self._validate_positive_integer("num_workers", self.num_workers))
+            .bind(lambda _: self._validate_positive_integer("files_per_batch", self.files_per_batch))
             .bind(
-                lambda _: self._validate_positive_integer("batch_size", self.batch_size)
+                lambda _: self._validate_non_negative_integer("max_imputation_gap_size", self.max_imputation_gap_size)
             )
-            .bind(
-                lambda _: self._validate_positive_integer(
-                    "input_length", self.input_length
-                )
-            )
-            .bind(
-                lambda _: self._validate_positive_integer(
-                    "output_length", self.output_length
-                )
-            )
-            .bind(
-                lambda _: self._validate_positive_integer(
-                    "num_workers", self.num_workers
-                )
-            )
-            .bind(
-                lambda _: self._validate_positive_integer(
-                    "files_per_batch", self.files_per_batch
-                )
-            )
-            .bind(
-                lambda _: self._validate_non_negative_integer(
-                    "max_imputation_gap_size", self.max_imputation_gap_size
-                )
-            )
-            .bind(
-                lambda _: self._validate_positive_float(
-                    "min_train_years", self.min_train_years
-                )
-            )
+            .bind(lambda _: self._validate_positive_float("min_train_years", self.min_train_years))
             .bind(
                 lambda _: self._validate_gauge_id_list(
                     "list_of_gauge_ids_to_process", self.list_of_gauge_ids_to_process
                 )
             )
-            .bind(
-                lambda _: self._validate_string_list(
-                    "forcing_features", self.forcing_features
-                )
-            )
-            .bind(
-                lambda _: self._validate_string_list(
-                    "static_features", self.static_features
-                )
-            )
+            .bind(lambda _: self._validate_string_list("forcing_features", self.forcing_features))
+            .bind(lambda _: self._validate_string_list("static_features", self.static_features))
             .bind(lambda _: self._validate_non_empty_string("target", self.target))
-            .bind(
-                lambda _: self._validate_non_empty_string(
-                    "group_identifier", self.group_identifier
-                )
-            )
-            .bind(
-                lambda _: self._validate_non_empty_string("domain_id", self.domain_id)
-            )
+            .bind(lambda _: self._validate_non_empty_string("group_identifier", self.group_identifier))
+            .bind(lambda _: self._validate_non_empty_string("domain_id", self.domain_id))
             .bind(lambda _: self._validate_domain_type("domain_type", self.domain_type))
-            .bind(
-                lambda _: self._validate_preprocessing_config(
-                    self.preprocessing_configs
-                )
-            )
+            .bind(lambda _: self._validate_preprocessing_config(self.preprocessing_configs))
             .bind(lambda _: self._validate_train_val_test_prop())
             .bind(lambda _: self._validate_target_not_in_forcing_features())
         )
 
-    def _validate_positive_integer(
-        self, param_name: str, value: int
-    ) -> Result[int, str]:
+    def _validate_positive_integer(self, param_name: str, value: int) -> Result[int, str]:
         """
         Validate that a parameter is a positive integer.
 
@@ -223,18 +176,12 @@ class HydroLazyDataModule(pl.LightningDataModule):
             Success with the value if valid, or Failure with error message
         """
         if not isinstance(value, int):
-            return Failure(
-                f"Parameter '{param_name}' must be an integer, got {type(value).__name__}"
-            )
+            return Failure(f"Parameter '{param_name}' must be an integer, got {type(value).__name__}")
         if value <= 0:
-            return Failure(
-                f"Parameter '{param_name}' must be greater than 0, got {value}"
-            )
+            return Failure(f"Parameter '{param_name}' must be greater than 0, got {value}")
         return Success(value)
 
-    def _validate_non_negative_integer(
-        self, param_name: str, value: int
-    ) -> Result[int, str]:
+    def _validate_non_negative_integer(self, param_name: str, value: int) -> Result[int, str]:
         """
         Validate that a parameter is a non-negative integer.
 
@@ -246,18 +193,12 @@ class HydroLazyDataModule(pl.LightningDataModule):
             Success with the value if valid, or Failure with error message
         """
         if not isinstance(value, int):
-            return Failure(
-                f"Parameter '{param_name}' must be an integer, got {type(value).__name__}"
-            )
+            return Failure(f"Parameter '{param_name}' must be an integer, got {type(value).__name__}")
         if value < 0:
-            return Failure(
-                f"Parameter '{param_name}' must be greater than or equal to 0, got {value}"
-            )
+            return Failure(f"Parameter '{param_name}' must be greater than or equal to 0, got {value}")
         return Success(value)
 
-    def _validate_positive_float(
-        self, param_name: str, value: float
-    ) -> Result[float, str]:
+    def _validate_positive_float(self, param_name: str, value: float) -> Result[float, str]:
         """
         Validate that a parameter is a positive float.
 
@@ -269,18 +210,12 @@ class HydroLazyDataModule(pl.LightningDataModule):
             Success with the value if valid, or Failure with error message
         """
         if not isinstance(value, (int, float)):
-            return Failure(
-                f"Parameter '{param_name}' must be a number, got {type(value).__name__}"
-            )
+            return Failure(f"Parameter '{param_name}' must be a number, got {type(value).__name__}")
         if value <= 0:
-            return Failure(
-                f"Parameter '{param_name}' must be greater than 0, got {value}"
-            )
+            return Failure(f"Parameter '{param_name}' must be greater than 0, got {value}")
         return Success(value)
 
-    def _validate_gauge_id_list(
-        self, param_name: str, value: Optional[list[str]]
-    ) -> Result[Optional[list[str]], str]:
+    def _validate_gauge_id_list(self, param_name: str, value: list[str] | None) -> Result[list[str] | None, str]:
         """
         Validate that a parameter is a list of gauge IDs.
 
@@ -294,18 +229,14 @@ class HydroLazyDataModule(pl.LightningDataModule):
         if value is None:
             return Success(None)
         if not isinstance(value, list):
-            return Failure(
-                f"Parameter '{param_name}' must be a list, got {type(value).__name__}"
-            )
+            return Failure(f"Parameter '{param_name}' must be a list, got {type(value).__name__}")
         if len(value) == 0:
             return Failure(f"Parameter '{param_name}' must not be an empty list")
         if not all(isinstance(item, str) for item in value):
             return Failure(f"All items in '{param_name}' must be strings")
         return Success(value)
 
-    def _validate_string_list(
-        self, param_name: str, value: list[str]
-    ) -> Result[list[str], str]:
+    def _validate_string_list(self, param_name: str, value: list[str]) -> Result[list[str], str]:
         """
         Validate that a parameter is a non-empty list of strings.
 
@@ -317,18 +248,14 @@ class HydroLazyDataModule(pl.LightningDataModule):
             Success with the value if valid, or Failure with error message
         """
         if not isinstance(value, list):
-            return Failure(
-                f"Parameter '{param_name}' must be a list, got {type(value).__name__}"
-            )
+            return Failure(f"Parameter '{param_name}' must be a list, got {type(value).__name__}")
         if len(value) == 0:
             return Failure(f"Parameter '{param_name}' must not be an empty list")
         if not all(isinstance(item, str) for item in value):
             return Failure(f"All items in '{param_name}' must be strings")
         return Success(value)
 
-    def _validate_non_empty_string(
-        self, param_name: str, value: str
-    ) -> Result[str, str]:
+    def _validate_non_empty_string(self, param_name: str, value: str) -> Result[str, str]:
         """
         Validate that a parameter is a non-empty string.
 
@@ -340,9 +267,7 @@ class HydroLazyDataModule(pl.LightningDataModule):
             Success with the value if valid, or Failure with error message
         """
         if not isinstance(value, str):
-            return Failure(
-                f"Parameter '{param_name}' must be a string, got {type(value).__name__}"
-            )
+            return Failure(f"Parameter '{param_name}' must be a string, got {type(value).__name__}")
         if len(value) == 0:
             return Failure(f"Parameter '{param_name}' must not be an empty string")
         return Success(value)
@@ -359,13 +284,9 @@ class HydroLazyDataModule(pl.LightningDataModule):
             Success with the value if valid, or Failure with error message
         """
         if not isinstance(value, str):
-            return Failure(
-                f"Parameter '{param_name}' must be a string, got {type(value).__name__}"
-            )
+            return Failure(f"Parameter '{param_name}' must be a string, got {type(value).__name__}")
         if value not in ["source", "target"]:
-            return Failure(
-                f"Parameter '{param_name}' must be either 'source' or 'target', got '{value}'"
-            )
+            return Failure(f"Parameter '{param_name}' must be either 'source' or 'target', got '{value}'")
         return Success(value)
 
     def _validate_preprocessing_config(
@@ -386,9 +307,7 @@ class HydroLazyDataModule(pl.LightningDataModule):
 
             pipeline = cfg["pipeline"]
             if not isinstance(pipeline, (Pipeline, GroupedPipeline)):
-                return Failure(
-                    f"Pipeline for {data_type} must be Pipeline or GroupedPipeline, got {type(pipeline)}"
-                )
+                return Failure(f"Pipeline for {data_type} must be Pipeline or GroupedPipeline, got {type(pipeline)}")
 
             if isinstance(pipeline, GroupedPipeline):
                 if pipeline.group_identifier != self.group_identifier:
@@ -426,9 +345,7 @@ class HydroLazyDataModule(pl.LightningDataModule):
             required_methods = ["fit", "transform", "inverse_transform"]
             missing = [m for m in required_methods if not hasattr(transformer, m)]
             if missing:
-                return Failure(
-                    f"Transformer {transformer.__class__.__name__} missing required methods: {missing}"
-                )
+                return Failure(f"Transformer {transformer.__class__.__name__} missing required methods: {missing}")
 
         return Success(pipeline)
 
@@ -441,9 +358,7 @@ class HydroLazyDataModule(pl.LightningDataModule):
         """
         total_prop = math.fsum([self.train_prop, self.val_prop, self.test_prop])
         if not math.isclose(total_prop, 1.0, abs_tol=1e-6):
-            return Failure(
-                f"Training, validation, and test proportions must sum to 1. Current sum: {total_prop}"
-            )
+            return Failure(f"Training, validation, and test proportions must sum to 1. Current sum: {total_prop}")
         return Success(None)
 
     def _validate_target_not_in_forcing_features(self) -> Result[None, str]:
@@ -462,7 +377,7 @@ class HydroLazyDataModule(pl.LightningDataModule):
 
     def _check_and_reuse_existing_processed_data(
         self,
-    ) -> tuple[bool, Optional[LoadedData], Optional[str]]:
+    ) -> tuple[bool, LoadedData | None, str | None]:
         """
         Check if processed data exists for the current configuration and load it if valid.
 
@@ -541,15 +456,13 @@ class HydroLazyDataModule(pl.LightningDataModule):
 
             # Load quality report
             summary_path = run_dir / "quality_summary.json"
-            with open(summary_path, "r") as f:
+            with open(summary_path) as f:
                 import json
 
                 # Load the dictionary from JSON
                 summary_quality_report_dict = json.load(f)
                 # Convert the dictionary to a SummaryQualityReport object
-                summary_quality_report_obj = SummaryQualityReport(
-                    **summary_quality_report_dict
-                )
+                summary_quality_report_obj = SummaryQualityReport(**summary_quality_report_dict)
 
             # Set up fitted pipelines dictionary
             fitted_pipelines = {}
@@ -606,12 +519,10 @@ class HydroLazyDataModule(pl.LightningDataModule):
                 f"Error checking for existing processed data: {e}\n{traceback.format_exc()}",
             )
 
-    def _validate_loaded_config(
-        self, loaded_config: dict, current_config: dict
-    ) -> Optional[str]:
+    def _validate_loaded_config(self, loaded_config: dict, current_config: dict) -> str | None:
         """
         Validate that the loaded configuration matches the current configuration.
-        
+
         Compares critical configuration parameters including preprocessing pipeline
         transformer details to ensure exact matching between the loaded and current
         configurations.
@@ -642,11 +553,11 @@ class HydroLazyDataModule(pl.LightningDataModule):
                         f"Configuration mismatch for key '{key}': "
                         f"loaded={loaded_config[key]}, current={current_config[key]}"
                     )
-        
+
         # Validate preprocessing transformer details
         loaded_transformer_details = loaded_config.get("preprocessing_transformer_details", {})
         current_transformer_details = current_config.get("preprocessing_transformer_details", {})
-        
+
         # If one has transformer details and the other doesn't, it's a mismatch
         if bool(loaded_transformer_details) != bool(current_transformer_details):
             return (
@@ -654,23 +565,23 @@ class HydroLazyDataModule(pl.LightningDataModule):
                 f"{'present' if loaded_transformer_details else 'absent'} in loaded config, "
                 f"{'present' if current_transformer_details else 'absent'} in current config"
             )
-        
+
         # If both configs have transformer details, compare them
         if loaded_transformer_details and current_transformer_details:
             # Get all pipeline types across both configurations
             all_pipeline_types = set(loaded_transformer_details.keys()) | set(current_transformer_details.keys())
-            
+
             for pipeline_type in all_pipeline_types:
                 # Check if pipeline type exists in both configs
                 if pipeline_type not in loaded_transformer_details:
                     return f"Pipeline type '{pipeline_type}' exists in current config but not in loaded config"
                 if pipeline_type not in current_transformer_details:
                     return f"Pipeline type '{pipeline_type}' exists in loaded config but not in current config"
-                
+
                 # Get transformer names for this pipeline type
                 loaded_transformers = loaded_transformer_details[pipeline_type]
                 current_transformers = current_transformer_details[pipeline_type]
-                
+
                 # Compare transformer sequences (both content and order must match)
                 if loaded_transformers != current_transformers:
                     return (
@@ -678,7 +589,7 @@ class HydroLazyDataModule(pl.LightningDataModule):
                         f"Expected: {loaded_transformers}, "
                         f"Got: {current_transformers}"
                     )
-        
+
         return None
 
     def _load_pipelines_from_output(self, processing_output: ProcessingOutput) -> None:
@@ -699,9 +610,7 @@ class HydroLazyDataModule(pl.LightningDataModule):
         ts_pipelines_result = load_time_series_pipelines(ts_pipelines_path)
 
         if isinstance(ts_pipelines_result, Failure):
-            raise RuntimeError(
-                f"Failed to load time series pipelines: {ts_pipelines_result.failure()}"
-            )
+            raise RuntimeError(f"Failed to load time series pipelines: {ts_pipelines_result.failure()}")
 
         # Add time series pipelines to the dictionary
         self.fitted_pipelines.update(ts_pipelines_result.unwrap())
@@ -712,16 +621,12 @@ class HydroLazyDataModule(pl.LightningDataModule):
             static_pipeline_result = load_static_pipeline(static_pipeline_path)
 
             if isinstance(static_pipeline_result, Failure):
-                print(
-                    f"WARNING: Failed to load static pipeline: {static_pipeline_result.failure()}"
-                )
+                print(f"WARNING: Failed to load static pipeline: {static_pipeline_result.failure()}")
             else:
                 # Add static pipeline to the dictionary
                 self.fitted_pipelines["static"] = static_pipeline_result.unwrap()
 
-        print(
-            f"INFO: Successfully loaded {len(self.fitted_pipelines)} fitted pipelines."
-        )
+        print(f"INFO: Successfully loaded {len(self.fitted_pipelines)} fitted pipelines.")
 
     def prepare_data(self) -> None:
         """
@@ -743,9 +648,7 @@ class HydroLazyDataModule(pl.LightningDataModule):
         required_columns = self.forcing_features + [self.target]
 
         # 1. Attempt to reuse existing processed data
-        reuse_success, loaded_data, reuse_message, run_uuid = (
-            self._check_and_reuse_existing_processed_data()
-        )
+        reuse_success, loaded_data, reuse_message, run_uuid = self._check_and_reuse_existing_processed_data()
 
         processed_gauge_ids: list[str] = []
 
@@ -761,9 +664,7 @@ class HydroLazyDataModule(pl.LightningDataModule):
                 self.list_of_gauge_ids_to_process = processed_gauge_ids
             else:
                 self.list_of_gauge_ids_to_process = [
-                    gid
-                    for gid in self.list_of_gauge_ids_to_process
-                    if gid in processed_gauge_ids
+                    gid for gid in self.list_of_gauge_ids_to_process if gid in processed_gauge_ids
                 ]
 
             print(
@@ -771,9 +672,7 @@ class HydroLazyDataModule(pl.LightningDataModule):
             )
 
         else:
-            print(
-                f"INFO: No reusable data found or reuse failed. Reason: {reuse_message}. Running preprocessing..."
-            )
+            print(f"INFO: No reusable data found or reuse failed. Reason: {reuse_message}. Running preprocessing...")
             # 2. Run hydro processor
             relevant_config = extract_relevant_config(self)
             run_uuid = generate_run_uuid(relevant_config)
@@ -799,9 +698,7 @@ class HydroLazyDataModule(pl.LightningDataModule):
             )
 
             if isinstance(processing_result, Failure):
-                raise RuntimeError(
-                    f"Hydro processor failed: {processing_result.failure()}"
-                )
+                raise RuntimeError(f"Hydro processor failed: {processing_result.failure()}")
 
             processing_output = processing_result.unwrap()
             print("INFO: Hydro processor completed successfully.")
@@ -809,9 +706,7 @@ class HydroLazyDataModule(pl.LightningDataModule):
             # 3. Update DataModule state
             self.summary_quality_report = processing_output.summary_quality_report
             self.processed_time_series_dir = processing_output.processed_timeseries_dir
-            self.processed_static_attributes_path = (
-                processing_output.processed_static_attributes_path
-            )
+            self.processed_static_attributes_path = processing_output.processed_static_attributes_path
 
             # 4. Load fitted pipelines
             print("INFO: Loading fitted pipelines...")
@@ -828,13 +723,9 @@ class HydroLazyDataModule(pl.LightningDataModule):
         # 6. Create index entries
         print("INFO: Creating index entries...")
         if not self.processed_time_series_dir:
-            raise RuntimeError(
-                "Processed time series directory is not set before creating index."
-            )
+            raise RuntimeError("Processed time series directory is not set before creating index.")
 
-        index_output_dir = (
-            self.path_to_preprocessing_output_directory / run_uuid / "index"
-        )
+        index_output_dir = self.path_to_preprocessing_output_directory / run_uuid / "index"
         index_output_dir.mkdir(parents=True, exist_ok=True)
 
         # Create stage directories dictionary
@@ -854,23 +745,15 @@ class HydroLazyDataModule(pl.LightningDataModule):
         )
 
         if isinstance(index_result, Failure):
-            raise ValueError(
-                f"Failed to create index entries: {index_result.failure()}"
-            )
+            raise ValueError(f"Failed to create index entries: {index_result.failure()}")
 
         # Key fix: Properly unpack the returned tuples of (index_path, meta_path)
         stage_to_paths = index_result.unwrap()
 
         # Store both index and meta paths
-        self.train_index_path, self.train_index_meta_path = stage_to_paths.get(
-            "train", (None, None)
-        )
-        self.val_index_path, self.val_index_meta_path = stage_to_paths.get(
-            "val", (None, None)
-        )
-        self.test_index_path, self.test_index_meta_path = stage_to_paths.get(
-            "test", (None, None)
-        )
+        self.train_index_path, self.train_index_meta_path = stage_to_paths.get("train", (None, None))
+        self.val_index_path, self.val_index_meta_path = stage_to_paths.get("val", (None, None))
+        self.test_index_path, self.test_index_meta_path = stage_to_paths.get("test", (None, None))
 
         print(f"INFO: Index entries created successfully at {index_output_dir}.")
 
@@ -878,7 +761,7 @@ class HydroLazyDataModule(pl.LightningDataModule):
         self._prepare_data_has_run = True
         print("INFO: Data preparation finished.")
 
-    def setup(self, stage: Optional[str] = None):
+    def setup(self, stage: str | None = None):
         """
         Create datasets for training, validation, and testing.
 
@@ -889,10 +772,7 @@ class HydroLazyDataModule(pl.LightningDataModule):
             stage: Stage of training ('fit', 'validate', 'test', or None for all)
         """
         # Ensure prepare_data has been called
-        if (
-            not hasattr(self, "processed_time_series_dir")
-            or not self.processed_time_series_dir
-        ):
+        if not hasattr(self, "processed_time_series_dir") or not self.processed_time_series_dir:
             raise RuntimeError("prepare_data() must be called before setup()")
 
         # Validate that index paths exist
@@ -942,12 +822,8 @@ class HydroLazyDataModule(pl.LightningDataModule):
                 index_meta_file_path=self.val_index_meta_path,
                 **common_args,
             )
-            print(
-                f"INFO: Created training dataset with {len(self.train_dataset)} samples"
-            )
-            print(
-                f"INFO: Created validation dataset with {len(self.val_dataset)} samples"
-            )
+            print(f"INFO: Created training dataset with {len(self.train_dataset)} samples")
+            print(f"INFO: Created validation dataset with {len(self.val_dataset)} samples")
 
         if stage == "test" or stage is None:
             self.test_dataset = HydroLazyDataset(
@@ -1064,7 +940,7 @@ class HydroLazyDataModule(pl.LightningDataModule):
         inv_vals = inv_df[self.target].values
         return inv_vals.reshape(orig_shape)
 
-    def save_configuration(self, filepath: Union[str, Path]) -> Optional[str]:
+    def save_configuration(self, filepath: str | Path) -> str | None:
         """
         Save the DataModule configuration to a JSON file.
 

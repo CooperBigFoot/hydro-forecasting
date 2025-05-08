@@ -3,7 +3,8 @@ Configuration for the RepeatLastValues model, a simple baseline that repeats
 the last observed value for the entire forecast horizon.
 """
 
-from typing import ClassVar, List, Optional
+from typing import ClassVar
+
 from ..base.base_config import BaseConfig
 
 
@@ -15,7 +16,7 @@ class RepeatLastValuesConfig(BaseConfig):
     """
 
     # This model has no specific parameters beyond the standard ones
-    MODEL_PARAMS: ClassVar[List[str]] = []
+    MODEL_PARAMS: ClassVar[list[str]] = []
 
     def __init__(
         self,
@@ -23,7 +24,7 @@ class RepeatLastValuesConfig(BaseConfig):
         output_len: int,
         input_size: int,
         static_size: int = 0,
-        future_input_size: Optional[int] = None,
+        future_input_size: int | None = None,
         hidden_size: int = 8,  # Not used but kept for API compatibility
         dropout: float = 0.0,  # Not used but kept for API compatibility
         learning_rate: float = 1e-10,  # Very small since this model doesn't learn

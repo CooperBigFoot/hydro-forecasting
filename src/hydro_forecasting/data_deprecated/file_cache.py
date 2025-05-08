@@ -1,7 +1,7 @@
 import threading
 import time
+
 import polars as pl
-from typing import Optional, Dict
 
 
 class FileCache:
@@ -10,8 +10,8 @@ class FileCache:
     """
 
     def __init__(self, max_files: int = 10, max_memory_mb: int = 500) -> None:
-        self._cache: Dict[str, pl.DataFrame] = {}
-        self._access: Dict[str, float] = {}
+        self._cache: dict[str, pl.DataFrame] = {}
+        self._access: dict[str, float] = {}
         self.max_files = max_files
         self.max_memory_mb = max_memory_mb
         self._current_mem = 0.0
@@ -28,9 +28,7 @@ class FileCache:
         # recreate lock after unpickle
         self._lock = threading.Lock()
 
-    def get_file(
-        self, file_path: str, columns: Optional[list[str]] = None
-    ) -> Optional[pl.DataFrame]:
+    def get_file(self, file_path: str, columns: list[str] | None = None) -> pl.DataFrame | None:
         """
         Return a Polars DataFrame, loading and caching it if necessary.
         """
@@ -45,8 +43,7 @@ class FileCache:
 
                 # evict if needed
                 while (
-                    len(self._cache) >= self.max_files
-                    or self._current_mem + size_mb > self.max_memory_mb
+                    len(self._cache) >= self.max_files or self._current_mem + size_mb > self.max_memory_mb
                 ) and self._cache:
                     lru = min(self._access, key=self._access.get)
                     freed = self._cache[lru].estimated_size() / (1024 * 1024)

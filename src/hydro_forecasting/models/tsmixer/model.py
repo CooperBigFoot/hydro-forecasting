@@ -4,9 +4,9 @@ TSMixer model implementation based on the paper:
 https://arxiv.org/abs/2303.06053
 """
 
-from typing import Optional
 import torch
 import torch.nn as nn
+
 from .config import TSMixerConfig
 
 
@@ -17,9 +17,7 @@ class TemporalProjection(nn.Module):
     which maps sequences from length L to length T.
     """
 
-    def __init__(
-        self, input_len: int, output_len: int, hidden_size: Optional[int] = None
-    ):
+    def __init__(self, input_len: int, output_len: int, hidden_size: int | None = None):
         """Initialize temporal projection layer.
 
         Args:
@@ -87,9 +85,7 @@ class AlignmentStage(nn.Module):
         super().__init__()
 
         # Historical feature branch: temporal projection + feature mixing
-        self.historical_temporal_proj = TemporalProjection(
-            input_len=input_len, output_len=output_len
-        )
+        self.historical_temporal_proj = TemporalProjection(input_len=input_len, output_len=output_len)
         self.historical_feature_mixing = nn.Sequential(
             nn.Linear(input_size, hidden_size),
             nn.ReLU(),
@@ -126,7 +122,7 @@ class AlignmentStage(nn.Module):
         self,
         historical: torch.Tensor,  # [batch_size, input_len, input_size]
         future: torch.Tensor,  # [batch_size, output_len, future_input_size]
-        static: Optional[torch.Tensor] = None,  # [batch_size, static_size]
+        static: torch.Tensor | None = None,  # [batch_size, static_size]
     ) -> torch.Tensor:
         """Process and align heterogeneous inputs.
 
@@ -360,9 +356,7 @@ class MixerLayer(nn.Module):
         super().__init__()
 
         # Time mixing component
-        self.time_mixing = TimeMixing(
-            seq_len=seq_len, hidden_size=hidden_size, dropout=dropout
-        )
+        self.time_mixing = TimeMixing(seq_len=seq_len, hidden_size=hidden_size, dropout=dropout)
 
         # Conditional feature mixing component
         self.feature_mixing = ConditionalFeatureMixing(
@@ -376,7 +370,7 @@ class MixerLayer(nn.Module):
     def forward(
         self,
         x: torch.Tensor,  # [batch_size, seq_len, feature_dim]
-        static: Optional[torch.Tensor] = None,  # [batch_size, static_size]
+        static: torch.Tensor | None = None,  # [batch_size, static_size]
     ) -> torch.Tensor:
         """Apply mixer layer operations.
 
@@ -451,10 +445,8 @@ class MixingStage(nn.Module):
     def forward(
         self,
         x: torch.Tensor,  # [batch_size, input_len, input_size]
-        static: Optional[torch.Tensor] = None,  # [batch_size, static_size]
-        future: Optional[
-            torch.Tensor
-        ] = None,  # [batch_size, output_len, future_input_size]
+        static: torch.Tensor | None = None,  # [batch_size, static_size]
+        future: torch.Tensor | None = None,  # [batch_size, output_len, future_input_size]
     ) -> torch.Tensor:
         """Process inputs through alignment and mixing stages.
 
@@ -471,12 +463,8 @@ class MixingStage(nn.Module):
             # If no future forcing is provided, use zeros
             batch_size = x.size(0)
             output_len = getattr(self.alignment_stage, "output_len", x.size(1))
-            future_input_size = getattr(
-                self.alignment_stage.future_feature_mixing[0], "in_features", 1
-            )
-            future = torch.zeros(
-                batch_size, output_len, future_input_size, device=x.device
-            )
+            future_input_size = getattr(self.alignment_stage.future_feature_mixing[0], "in_features", 1)
+            future = torch.zeros(batch_size, output_len, future_input_size, device=x.device)
 
         # Align features
         aligned = self.alignment_stage(historical=x, future=future, static=static)
@@ -546,15 +534,13 @@ class TSMixer(nn.Module):
         self.mixing_stage = MixingStage(config)
 
         # Head using the feature dimension from the mixing stage
-        self.head = TSMixerHead(
-            feature_dim=self.mixing_stage.feature_dim, hidden_size=config.hidden_size
-        )
+        self.head = TSMixerHead(feature_dim=self.mixing_stage.feature_dim, hidden_size=config.hidden_size)
 
     def forward(
         self,
         x: torch.Tensor,
-        static: Optional[torch.Tensor] = None,
-        future: Optional[torch.Tensor] = None,
+        static: torch.Tensor | None = None,
+        future: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Generate forecasts from input data.
 
@@ -571,9 +557,7 @@ class TSMixer(nn.Module):
         if static is not None:
             assert static.ndim == 2, "Static tensor must be of shape [B, static_size]"
         if future is not None:
-            assert future.ndim == 3, (
-                "Future tensor must be of shape [B, output_len, future_input_size]"
-            )
+            assert future.ndim == 3, "Future tensor must be of shape [B, output_len, future_input_size]"
 
         # Process through mixing stage
         features = self.mixing_stage(x, static, future)

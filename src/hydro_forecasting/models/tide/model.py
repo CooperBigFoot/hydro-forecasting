@@ -4,9 +4,9 @@ TiDE (Time-series Dense Encoder) model implementation based on the paper:
 https://arxiv.org/pdf/2304.08424
 """
 
-from typing import Optional
 import torch
 import torch.nn as nn
+
 from .config import TiDEConfig
 
 
@@ -213,8 +213,8 @@ class TiDEModel(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        static: Optional[torch.Tensor] = None,
-        future: Optional[torch.Tensor] = None,
+        static: torch.Tensor | None = None,
+        future: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """
         Forward pass through TiDE model.
@@ -238,22 +238,16 @@ class TiDEModel(nn.Module):
 
         # Process past features if available
         if self.past_feature_size > 0:
-            x_past = x[
-                :, :, output_size : output_size + self.past_feature_size
-            ]  # [B, L, past_feature_size]
+            x_past = x[:, :, output_size : output_size + self.past_feature_size]  # [B, L, past_feature_size]
             if self.past_projection is not None:
-                x_past = self.past_projection(
-                    x_past
-                )  # [B, L, past_feature_projection_size]
+                x_past = self.past_projection(x_past)  # [B, L, past_feature_projection_size]
         else:
             x_past = None
 
         # Process future covariates if provided
         if future is not None and future.shape[-1] > 0:
             if self.future_projection is not None:
-                future_proj = self.future_projection(
-                    future
-                )  # [B, H, future_forcing_projection_size]
+                future_proj = self.future_projection(future)  # [B, H, future_forcing_projection_size]
             else:
                 future_proj = future  # [B, H, future_input_size]
         else:
@@ -280,17 +274,13 @@ class TiDEModel(nn.Module):
 
         # Temporal decoding: fuse decoder output with (projected) future forcing if available
         if future_proj is not None:
-            temporal_input = torch.cat(
-                [dec_out, future_proj], dim=-1
-            )  # [B, H, decoder_output_size + future_proj_dim]
+            temporal_input = torch.cat([dec_out, future_proj], dim=-1)  # [B, H, decoder_output_size + future_proj_dim]
         else:
             temporal_input = dec_out
         temporal_decoded = self.temporal_decoder(temporal_input)  # [B, H, output_size]
 
         # Lookback skip: project the target history from length L to H
-        skip = self.lookback_skip(x_target.transpose(1, 2)).transpose(
-            1, 2
-        )  # [B, H, output_size]
+        skip = self.lookback_skip(x_target.transpose(1, 2)).transpose(1, 2)  # [B, H, output_size]
 
         # Final output: add skip connection
         out = temporal_decoded + skip

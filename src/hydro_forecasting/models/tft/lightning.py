@@ -1,6 +1,8 @@
-from typing import Dict, Any, Optional, Union, List
+from typing import Any
+
 import torch
 import torch.nn as nn
+
 from ..base.base_lit_model import BaseLitModel
 from .config import TFTConfig
 from .model import TemporalFusionTransformer
@@ -13,7 +15,7 @@ class QuantileLoss(nn.Module):
     differently based on the specified quantile.
     """
 
-    def __init__(self, quantiles: List[float]):
+    def __init__(self, quantiles: list[float]):
         """
         Initialize quantile loss.
 
@@ -57,7 +59,7 @@ class LitTFT(BaseLitModel):
 
     def __init__(
         self,
-        config: Union[TFTConfig, Dict[str, Any]],
+        config: TFTConfig | dict[str, Any],
     ) -> None:
         """
         Initialize the LitTFT module.
@@ -85,8 +87,8 @@ class LitTFT(BaseLitModel):
     def forward(
         self,
         x: torch.Tensor,
-        static: Optional[torch.Tensor] = None,
-        future: Optional[torch.Tensor] = None,
+        static: torch.Tensor | None = None,
+        future: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """
         Forward pass that delegates to the TFT model.
@@ -101,9 +103,7 @@ class LitTFT(BaseLitModel):
         """
         return self.model(x, static, future)
 
-    def _compute_loss(
-        self, predictions: torch.Tensor, targets: torch.Tensor
-    ) -> torch.Tensor:
+    def _compute_loss(self, predictions: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         """Compute loss between predictions and targets.
 
         Args:
@@ -119,9 +119,7 @@ class LitTFT(BaseLitModel):
             # If not using quantile loss, use MSE (default from BaseLitModel)
             return super()._compute_loss(predictions, targets)
 
-    def training_step(
-        self, batch: Dict[str, torch.Tensor], batch_idx: int
-    ) -> torch.Tensor:
+    def training_step(self, batch: dict[str, torch.Tensor], batch_idx: int) -> torch.Tensor:
         """Execute training step with additional logging.
 
         Args:
@@ -146,7 +144,7 @@ class LitTFT(BaseLitModel):
 
         return loss
 
-    def configure_optimizers(self) -> Dict[str, Any]:
+    def configure_optimizers(self) -> dict[str, Any]:
         """
         Configure optimizer with appropriate parameters.
 

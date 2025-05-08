@@ -1,8 +1,10 @@
 import math
 import random
-from torch.utils.data import Sampler
 from pathlib import Path
+
 import polars as pl
+from torch.utils.data import Sampler
+
 
 class FileGroupedBatchSampler(Sampler[list[int]]):
     """
@@ -36,9 +38,7 @@ class FileGroupedBatchSampler(Sampler[list[int]]):
             }
             for row in meta_df.iter_rows(named=True)
         ]
-        self._file_to_meta = {
-            m["file_path"]: (m["count"], m["start_row_index"]) for m in self._file_meta
-        }
+        self._file_to_meta = {m["file_path"]: (m["count"], m["start_row_index"]) for m in self._file_meta}
         self._files = [m["file_path"] for m in self._file_meta]
         total_samples = sum(m["count"] for m in self._file_meta)
         self._num_batches = math.ceil(total_samples / batch_size)

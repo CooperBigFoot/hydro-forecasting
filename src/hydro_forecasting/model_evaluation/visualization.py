@@ -1,14 +1,12 @@
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-import matplotlib.dates as mdates
-import seaborn as sns
-from typing import Dict, List, Tuple, Union, Optional
-
 # Replace contextily with cartopy
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 import matplotlib.colors as mcolors
+import matplotlib.dates as mdates
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import seaborn as sns
 from matplotlib.cm import ScalarMappable
 
 
@@ -18,8 +16,8 @@ def plot_rolling_forecast(
     group_identifier: str,
     fig_size: tuple = (12, 6),
     title: str = "",
-    color_scheme: Dict[str, str] = None,
-) -> Tuple[plt.Figure, plt.Axes]:
+    color_scheme: dict[str, str] = None,
+) -> tuple[plt.Figure, plt.Axes]:
     """
     Create a rolling forecast plot for a specific basin and horizon.
 
@@ -43,9 +41,7 @@ def plot_rolling_forecast(
 
     if basin_df.empty:
         available_ids = df["basin_id"].unique()
-        raise ValueError(
-            f"Group identifier '{group_identifier}' not found in results. Available IDs: {available_ids}"
-        )
+        raise ValueError(f"Group identifier '{group_identifier}' not found in results. Available IDs: {available_ids}")
 
     # Create plot with Seaborn style
     fig, ax = plt.subplots(figsize=fig_size)
@@ -89,14 +85,14 @@ def plot_rolling_forecast(
 
 
 def plot_metric_boxplot(
-    evaluator_results: Dict[str, Dict],
-    model_names: List[str],
+    evaluator_results: dict[str, dict],
+    model_names: list[str],
     metric: str = "NSE",
-    horizons: Optional[List[int]] = None,
-    fig_size: Tuple[int, int] = (14, 7),
-    title: Optional[str] = None,
-    palette: Optional[Union[str, List[str]]] = None,
-) -> Tuple[plt.Figure, plt.Axes]:
+    horizons: list[int] | None = None,
+    fig_size: tuple[int, int] = (14, 7),
+    title: str | None = None,
+    palette: str | list[str] | None = None,
+) -> tuple[plt.Figure, plt.Axes]:
     """
     Create a boxplot comparing multiple models' metrics across horizons.
 
@@ -162,9 +158,7 @@ def plot_metric_boxplot(
     fig, ax = plt.subplots(figsize=fig_size)
 
     # Create boxplot
-    sns.boxplot(
-        x="horizon", y="metric_value", hue="model", data=df, palette=palette, ax=ax
-    )
+    sns.boxplot(x="horizon", y="metric_value", hue="model", data=df, palette=palette, ax=ax)
 
     # Add median value labels for each model and horizon
     if len(model_names) <= 3:  # Only add labels if not too many models
@@ -229,18 +223,18 @@ def plot_metric_boxplot(
 
 
 def plot_metric_cdf(
-    evaluator_results: Dict[str, Dict],
-    model_names: List[str],
+    evaluator_results: dict[str, dict],
+    model_names: list[str],
     metric: str = "NSE",
     horizon: int = 1,
-    fig_size: Tuple[int, int] = (10, 6),
-    title: Optional[str] = None,
-    colors: Optional[List[str]] = None,
-    threshold_lines: Optional[List[float]] = None,
-    threshold_labels: Optional[List[str]] = None,
+    fig_size: tuple[int, int] = (10, 6),
+    title: str | None = None,
+    colors: list[str] | None = None,
+    threshold_lines: list[float] | None = None,
+    threshold_labels: list[str] | None = None,
     include_median_lines: bool = True,
     legend_loc: str = "best",
-) -> Tuple[plt.Figure, plt.Axes]:
+) -> tuple[plt.Figure, plt.Axes]:
     """
     Plot the cumulative distribution functions (CDFs) of a metric for multiple models.
 
@@ -299,9 +293,7 @@ def plot_metric_cdf(
                     metric_values.append(value)
 
         if not metric_values:
-            print(
-                f"Warning: No data available for model '{model_name}', metric '{metric}' at horizon {horizon}"
-            )
+            print(f"Warning: No data available for model '{model_name}', metric '{metric}' at horizon {horizon}")
             continue
 
         # Sort values for CDF
@@ -345,11 +337,9 @@ def plot_metric_cdf(
         if not threshold_labels:
             threshold_labels = [f"Threshold: {t}" for t in threshold_lines]
 
-        for threshold, label in zip(threshold_lines, threshold_labels):
+        for threshold, label in zip(threshold_lines, threshold_labels, strict=False):
             # Add vertical line at threshold
-            ax.axvline(
-                x=threshold, color="gray", linestyle="-.", alpha=0.7, label=label
-            )
+            ax.axvline(x=threshold, color="gray", linestyle="-.", alpha=0.7, label=label)
 
     # Set labels and title
     ax.set_xlabel(f"{metric} Value", fontsize=12)
@@ -377,23 +367,23 @@ def plot_metric_cdf(
 
 
 def plot_basin_map(
-    evaluator_results: Dict[str, Dict],
+    evaluator_results: dict[str, dict],
     model_name: str,
     metric: str = "NSE",
     horizon: int = 1,
-    gauge_ids: Optional[List[str]] = None,
+    gauge_ids: list[str] | None = None,
     caravanify_instance=None,
-    fig_size: Tuple[int, int] = (12, 10),
+    fig_size: tuple[int, int] = (12, 10),
     cmap: str = "RdYlBu",
-    vmin: Optional[float] = None,
-    vmax: Optional[float] = None,
-    title: Optional[str] = None,
+    vmin: float | None = None,
+    vmax: float | None = None,
+    title: str | None = None,
     basemap: bool = True,
-    legend_title: Optional[str] = None,
-    threshold: Optional[float] = None,
+    legend_title: str | None = None,
+    threshold: float | None = None,
     show_axes: bool = True,
     grid_alpha: float = 0.5,
-) -> Tuple[plt.Figure, plt.Axes]:
+) -> tuple[plt.Figure, plt.Axes]:
     """
     Plot basins on a map colored by their performance metric.
 
@@ -436,26 +426,18 @@ def plot_basin_map(
                 metric_values[basin] = value
 
     if not metric_values:
-        raise ValueError(
-            f"No data available for metric '{metric}' at horizon {horizon}"
-        )
+        raise ValueError(f"No data available for metric '{metric}' at horizon {horizon}")
 
     # Filter to specific gauge IDs if provided
     if gauge_ids:
-        metric_values = {
-            basin: value for basin, value in metric_values.items() if basin in gauge_ids
-        }
+        metric_values = {basin: value for basin, value in metric_values.items() if basin in gauge_ids}
         if not metric_values:
-            raise ValueError(
-                f"None of the specified gauge IDs have data for metric '{metric}' at horizon {horizon}"
-            )
+            raise ValueError(f"None of the specified gauge IDs have data for metric '{metric}' at horizon {horizon}")
 
     # Get basin shapefiles
     try:
         all_shapefiles = caravanify_instance.get_shapefiles()
-        basin_gdf = all_shapefiles[
-            all_shapefiles["gauge_id"].isin(metric_values.keys())
-        ].copy()
+        basin_gdf = all_shapefiles[all_shapefiles["gauge_id"].isin(metric_values.keys())].copy()
         if basin_gdf.empty:
             raise ValueError("No basin shapefiles found for the specified gauge IDs")
         if basin_gdf.crs is not None and basin_gdf.crs != "EPSG:4326":
@@ -509,15 +491,11 @@ def plot_basin_map(
     cbar.set_label(legend_title or f"{metric} Value", size=12)
 
     # Set title
-    ax.set_title(
-        title or f"{metric} at {horizon}-day Horizon for {model_name}", fontsize=14
-    )
+    ax.set_title(title or f"{metric} at {horizon}-day Horizon for {model_name}", fontsize=14)
 
     # Configure grid and axes
     if show_axes:
-        gl = ax.gridlines(
-            draw_labels=True, linewidth=0.5, alpha=grid_alpha, linestyle="--"
-        )
+        gl = ax.gridlines(draw_labels=True, linewidth=0.5, alpha=grid_alpha, linestyle="--")
         gl.top_labels, gl.right_labels = False, False
         gl.xlabel_style, gl.ylabel_style = {"size": 8}, {"size": 8}
     else:
@@ -527,25 +505,25 @@ def plot_basin_map(
 
 
 def plot_basin_difference_map(
-    evaluator_results: Dict[str, Dict],
+    evaluator_results: dict[str, dict],
     model1_name: str,
     model2_name: str,
     metric: str = "NSE",
     horizon: int = 1,
-    gauge_ids: Optional[List[str]] = None,
+    gauge_ids: list[str] | None = None,
     caravanify_instance=None,
-    fig_size: Tuple[int, int] = (12, 10),
+    fig_size: tuple[int, int] = (12, 10),
     cmap: str = "RdBu_r",  # Red-Blue reversed (red=negative, blue=positive differences)
-    vmin: Optional[float] = None,
-    vmax: Optional[float] = None,
-    title: Optional[str] = None,
+    vmin: float | None = None,
+    vmax: float | None = None,
+    title: str | None = None,
     basemap: bool = True,
-    difference_legend_title: Optional[str] = None,
-    threshold: Optional[float] = None,
+    difference_legend_title: str | None = None,
+    threshold: float | None = None,
     show_axes: bool = True,
     grid_alpha: float = 0.5,
     hist_in_legend: bool = True,
-) -> Tuple[plt.Figure, plt.Axes]:
+) -> tuple[plt.Figure, plt.Axes]:
     """
     Plot basins on a map colored by the difference in performance metrics between two models.
 
@@ -602,9 +580,7 @@ def plot_basin_difference_map(
     # Ensure there are common basins to compare
     common_basins = set(metric_values1.keys()) & set(metric_values2.keys())
     if not common_basins:
-        raise ValueError(
-            f"No common basins found between models for metric '{metric}' at horizon {horizon}"
-        )
+        raise ValueError(f"No common basins found between models for metric '{metric}' at horizon {horizon}")
 
     # Calculate metric differences (model2 - model1)
     metric_differences = {}
@@ -619,9 +595,7 @@ def plot_basin_difference_map(
     # Get basin shapefiles
     try:
         all_shapefiles = caravanify_instance.get_shapefiles()
-        basin_gdf = all_shapefiles[
-            all_shapefiles["gauge_id"].isin(metric_differences.keys())
-        ].copy()
+        basin_gdf = all_shapefiles[all_shapefiles["gauge_id"].isin(metric_differences.keys())].copy()
         if basin_gdf.empty:
             raise ValueError("No basin shapefiles found for the specified gauge IDs")
         if basin_gdf.crs is not None and basin_gdf.crs != "EPSG:4326":
@@ -645,9 +619,7 @@ def plot_basin_difference_map(
 
     # Set colormap range to be symmetric around zero if not specified
     if vmin is None and vmax is None:
-        abs_max = max(
-            abs(min(metric_differences.values())), abs(max(metric_differences.values()))
-        )
+        abs_max = max(abs(min(metric_differences.values())), abs(max(metric_differences.values())))
         vmin, vmax = -abs_max, abs_max
     elif vmin is None:
         vmin = -vmax
@@ -749,9 +721,7 @@ def plot_basin_difference_map(
     if threshold is not None:
         sig_pos_count = sum(1 for x in metric_differences.values() if x > threshold)
         sig_neg_count = sum(1 for x in metric_differences.values() if x < -threshold)
-        insig_count = sum(
-            1 for x in metric_differences.values() if -threshold <= x <= threshold
-        )
+        insig_count = sum(1 for x in metric_differences.values() if -threshold <= x <= threshold)
 
         stats_text = (
             f"Model Comparison Summary:\n"
@@ -779,16 +749,13 @@ def plot_basin_difference_map(
 
     # Set title
     ax.set_title(
-        title
-        or f"Difference in {metric} at {horizon}-day Horizon: {model2_name} vs {model1_name}",
+        title or f"Difference in {metric} at {horizon}-day Horizon: {model2_name} vs {model1_name}",
         fontsize=14,
     )
 
     # Configure grid and axes
     if show_axes:
-        gl = ax.gridlines(
-            draw_labels=True, linewidth=0.5, alpha=grid_alpha, linestyle="--"
-        )
+        gl = ax.gridlines(draw_labels=True, linewidth=0.5, alpha=grid_alpha, linestyle="--")
         gl.top_labels, gl.right_labels = False, False
         gl.xlabel_style, gl.ylabel_style = {"size": 8}, {"size": 8}
     else:

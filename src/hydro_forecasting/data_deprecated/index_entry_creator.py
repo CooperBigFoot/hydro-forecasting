@@ -1,24 +1,24 @@
-import polars as pl
-import numpy as np
-import pyarrow.parquet as pq
-from pathlib import Path
-from typing import Optional, List, Dict, Tuple
-from returns.result import Result, Success, Failure, safe
-from tqdm import tqdm
 import traceback  # Import traceback
+from pathlib import Path
+
+import numpy as np
+import polars as pl
+import pyarrow.parquet as pq
+from returns.result import Failure, Result, Success, safe
+from tqdm import tqdm
 
 BATCH_SIZE = 100
 
 
 def create_index_entries(
-    gauge_ids: List[str],
-    time_series_dirs: Dict[str, Path],
-    static_file_path: Optional[Path],
+    gauge_ids: list[str],
+    time_series_dirs: dict[str, Path],
+    static_file_path: Path | None,
     input_length: int,
     output_length: int,
     output_dir: Path,
     group_identifier: str = "gauge_id",
-) -> Result[Dict[str, Tuple[Path, Path]], str]:
+) -> Result[dict[str, tuple[Path, Path]], str]:
     """
     Build and write index and metadata Parquet files for train/val/test stages.
 
@@ -54,22 +54,20 @@ def create_index_entries(
             return Failure(f"Directory for '{stage}' does not exist: {dir_path}")
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    results: Dict[str, Tuple[Path, Path]] = {}
+    results: dict[str, tuple[Path, Path]] = {}
 
     try:
         for stage, dir_path in time_series_dirs.items():
             idx_path = output_dir / f"{stage}_index.parquet"
             meta_path = output_dir / f"{stage}_index_meta.parquet"
 
-            idx_writer: Optional[pq.ParquetWriter] = None
-            meta_writer: Optional[pq.ParquetWriter] = None
+            idx_writer: pq.ParquetWriter | None = None
+            meta_writer: pq.ParquetWriter | None = None
             row_counter = 0
 
             total_seq = input_length + output_length
 
-            for i in tqdm(
-                range(0, len(gauge_ids), BATCH_SIZE), desc=f"Indexing {stage}"
-            ):
+            for i in tqdm(range(0, len(gauge_ids), BATCH_SIZE), desc=f"Indexing {stage}"):
                 batch = gauge_ids[i : i + BATCH_SIZE]
                 stage_result = process_stage_directory(
                     gauge_ids=batch,
@@ -81,9 +79,7 @@ def create_index_entries(
                     group_identifier=group_identifier,
                 )
                 if isinstance(stage_result, Failure):
-                    print(
-                        f"ERROR: Failed processing batch for stage {stage}: {stage_result.failure()}"
-                    )
+                    print(f"ERROR: Failed processing batch for stage {stage}: {stage_result.failure()}")
                     continue
 
                 batch_entries = stage_result.unwrap()
@@ -102,9 +98,7 @@ def create_index_entries(
                 # Compute per-batch metadata with global row numbering
                 df_meta = (
                     df_batch.with_row_count("row_nr")
-                    .with_columns(
-                        (pl.col("row_nr") + row_counter).alias("global_row_nr")
-                    )
+                    .with_columns((pl.col("row_nr") + row_counter).alias("global_row_nr"))
                     .group_by("file_path")
                     .agg(
                         [
@@ -113,9 +107,7 @@ def create_index_entries(
                         ]
                     )
                 )
-                meta_table = df_meta.select(
-                    ["file_path", "count", "start_row_index"]
-                ).to_arrow()
+                meta_table = df_meta.select(["file_path", "count", "start_row_index"]).to_arrow()
                 if meta_writer is None:
                     meta_writer = pq.ParquetWriter(str(meta_path), meta_table.schema)
                 meta_writer.write_table(meta_table)
@@ -139,20 +131,18 @@ def create_index_entries(
 
         return Success(results)
     except Exception as e:
-        return Failure(
-            f"Unexpected error during index creation: {e}\n{traceback.format_exc()}"
-        )
+        return Failure(f"Unexpected error during index creation: {e}\n{traceback.format_exc()}")
 
 
 def process_stage_directory(
-    gauge_ids: List[str],
+    gauge_ids: list[str],
     stage_dir: Path,
-    static_file_path: Optional[Path],
+    static_file_path: Path | None,
     input_length: int,
     output_length: int,
     stage: str,
     group_identifier: str,
-) -> Result[List[dict], str]:
+) -> Result[list[dict], str]:
     """
     Process time series files within a single stage directory to find valid sequences.
 
@@ -170,7 +160,7 @@ def process_stage_directory(
         a valid index entry, or Failure with an error message if processing fails
         for any file in the batch.
     """
-    entries: List[dict] = []
+    entries: list[dict] = []
     total_seq = input_length + output_length
 
     for gid in gauge_ids:
@@ -182,9 +172,7 @@ def process_stage_directory(
             if group_identifier in df.columns:
                 df = df.drop(group_identifier)
             else:
-                print(
-                    f"WARNING: Column '{group_identifier}' not found in {ts_path}. Skipping drop."
-                )
+                print(f"WARNING: Column '{group_identifier}' not found in {ts_path}. Skipping drop.")
 
             find_result = find_valid_sequences(df, input_length, output_length)
 
@@ -215,15 +203,11 @@ def process_stage_directory(
                     "input_end_date": end_date,
                     "valid_sequence": True,
                     "stage": stage,
-                    "static_file_path": str(static_file_path)
-                    if static_file_path
-                    else None,
+                    "static_file_path": str(static_file_path) if static_file_path else None,
                 }
                 entries.append(entry)
         except Exception as e:
-            print(
-                f"ERROR: Failed to process file {ts_path} for gauge {gid}: {e}\n{traceback.format_exc()}"
-            )
+            print(f"ERROR: Failed to process file {ts_path} for gauge {gid}: {e}\n{traceback.format_exc()}")
             continue
     return Success(entries)
 
@@ -234,22 +218,18 @@ def _calculate_valid_sequences(
     input_length: int,
     output_length: int,
     total_length: int,
-    value_columns: List[str],
-) -> Tuple[np.ndarray, np.ndarray]:
+    value_columns: list[str],
+) -> tuple[np.ndarray, np.ndarray]:
     """Helper function containing the core numpy logic, wrapped by @safe."""
     values = basin_data.select(value_columns).to_numpy()
     dates = basin_data.select("date").to_numpy().flatten()
 
     valid_row_mask = ~np.isnan(values).any(axis=1)
 
-    input_valid_sums = np.convolve(
-        valid_row_mask, np.ones(input_length, dtype=int), mode="valid"
-    )
+    input_valid_sums = np.convolve(valid_row_mask, np.ones(input_length, dtype=int), mode="valid")
     is_input_window_valid = input_valid_sums == input_length
 
-    output_valid_sums = np.convolve(
-        valid_row_mask, np.ones(output_length, dtype=int), mode="valid"
-    )
+    output_valid_sums = np.convolve(valid_row_mask, np.ones(output_length, dtype=int), mode="valid")
     is_output_window_valid = output_valid_sums == output_length
 
     num_possible_starts = len(valid_row_mask) - total_length + 1
@@ -257,9 +237,7 @@ def _calculate_valid_sequences(
         return np.array([], dtype=int), dates
 
     input_ok = is_input_window_valid[:num_possible_starts]
-    output_ok = is_output_window_valid[
-        input_length : input_length + num_possible_starts
-    ]
+    output_ok = is_output_window_valid[input_length : input_length + num_possible_starts]
     valid_sequence_starts = input_ok & output_ok
     positions = np.where(valid_sequence_starts)[0]
 
@@ -270,7 +248,7 @@ def find_valid_sequences(
     basin_data: pl.DataFrame,
     input_length: int,
     output_length: int,
-) -> Result[Tuple[np.ndarray, np.ndarray], str]:
+) -> Result[tuple[np.ndarray, np.ndarray], str]:
     """
     Identify start indices of valid sequences within a time series DataFrame using ROP.
 
@@ -298,15 +276,9 @@ def find_valid_sequences(
         initial_result.bind(
             lambda df: Success(df)
             if df.height >= total_length
-            else Failure(
-                f"Data height ({df.height}) is less than total sequence length ({total_length})"
-            )
+            else Failure(f"Data height ({df.height}) is less than total sequence length ({total_length})")
         )
-        .bind(
-            lambda df: Success(df)
-            if "date" in df.columns
-            else Failure("DataFrame missing 'date' column")
-        )
+        .bind(lambda df: Success(df) if "date" in df.columns else Failure("DataFrame missing 'date' column"))
         .bind(lambda df: Success((df, [col for col in df.columns if col != "date"])))
         .bind(
             lambda df_cols: Success(df_cols)

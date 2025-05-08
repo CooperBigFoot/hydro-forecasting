@@ -11,8 +11,8 @@ This module provides implementations for:
 """
 
 from .config import TiDEConfig
-from .model import TiDEModel, TiDEResBlock
 from .lightning import LitTiDE
+from .model import TiDEModel, TiDEResBlock
 
 __all__ = [
     "TiDEConfig",

@@ -1,7 +1,9 @@
 """PyTorch Lightning module for TiDE model."""
 
-from typing import Dict, Any, Optional, Union
+from typing import Any
+
 import torch
+
 from ..base.base_lit_model import BaseLitModel
 from .config import TiDEConfig
 from .model import TiDEModel
@@ -16,7 +18,7 @@ class LitTiDE(BaseLitModel):
 
     def __init__(
         self,
-        config: Union[TiDEConfig, Dict[str, Any]],
+        config: TiDEConfig | dict[str, Any],
     ) -> None:
         """
         Initialize the LitTiDE module.
@@ -39,8 +41,8 @@ class LitTiDE(BaseLitModel):
     def forward(
         self,
         x: torch.Tensor,
-        static: Optional[torch.Tensor] = None,
-        future: Optional[torch.Tensor] = None,
+        static: torch.Tensor | None = None,
+        future: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """
         Forward pass that delegates to the TiDE model.

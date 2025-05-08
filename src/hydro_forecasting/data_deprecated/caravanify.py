@@ -1,8 +1,8 @@
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Union, Optional
+
 import pandas as pd
-from concurrent.futures import ThreadPoolExecutor
 
 
 @dataclass
@@ -21,12 +21,12 @@ class CaravanifyConfig:
         human_influence_path: Path to human influence classification CSV (with gauge_id and human_influence_category columns)
     """
 
-    attributes_dir: Union[str, Path]
-    timeseries_dir: Union[str, Path]
+    attributes_dir: str | Path
+    timeseries_dir: str | Path
     gauge_id_prefix: str
-    shapefile_dir: Optional[Union[str, Path]] = None
+    shapefile_dir: str | Path | None = None
 
-    human_influence_path: Optional[Union[str, Path]] = None
+    human_influence_path: str | Path | None = None
 
     use_caravan_attributes: bool = True
     use_hydroatlas_attributes: bool = False
@@ -83,9 +83,7 @@ class Caravanify:
         prefix = f"{self.config.gauge_id_prefix}_"
         invalid_ids = [gid for gid in gauge_ids if not gid.startswith(prefix)]
         if invalid_ids:
-            raise ValueError(
-                f"Found gauge IDs that don't match prefix {prefix}: {invalid_ids}"
-            )
+            raise ValueError(f"Found gauge IDs that don't match prefix {prefix}: {invalid_ids}")
 
         return sorted(gauge_ids)
 
@@ -153,7 +151,7 @@ class Caravanify:
         gauge_ids_set = set(gauge_ids)
         dfs = []
 
-        def load_attributes(file_name: str) -> Union[pd.DataFrame, None]:
+        def load_attributes(file_name: str) -> pd.DataFrame | None:
             """
             Load attribute data from a CSV file, filter by gauge IDs, and set 'gauge_id' as the index.
 
@@ -174,23 +172,17 @@ class Caravanify:
 
         # Load enabled attribute types based on configuration flags
         if self.config.use_other_attributes:
-            other_df = load_attributes(
-                f"attributes_other_{self.config.gauge_id_prefix}.csv"
-            )
+            other_df = load_attributes(f"attributes_other_{self.config.gauge_id_prefix}.csv")
             if other_df is not None:
                 dfs.append(other_df)
 
         if self.config.use_hydroatlas_attributes:
-            hydro_df = load_attributes(
-                f"attributes_hydroatlas_{self.config.gauge_id_prefix}.csv"
-            )
+            hydro_df = load_attributes(f"attributes_hydroatlas_{self.config.gauge_id_prefix}.csv")
             if hydro_df is not None:
                 dfs.append(hydro_df)
 
         if self.config.use_caravan_attributes:
-            caravan_df = load_attributes(
-                f"attributes_caravan_{self.config.gauge_id_prefix}.csv"
-            )
+            caravan_df = load_attributes(f"attributes_caravan_{self.config.gauge_id_prefix}.csv")
             if caravan_df is not None:
                 dfs.append(caravan_df)
 
@@ -225,10 +217,7 @@ class Caravanify:
         if not self.time_series:
             return pd.DataFrame()
         df = pd.concat(self.time_series.values(), ignore_index=True)
-        return df[
-            ["gauge_id", "date"]
-            + [c for c in df.columns if c not in ("gauge_id", "date")]
-        ]
+        return df[["gauge_id", "date"] + [c for c in df.columns if c not in ("gauge_id", "date")]]
 
     def get_static_attributes(self) -> pd.DataFrame:
         """

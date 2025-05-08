@@ -13,8 +13,8 @@ This module provides implementations for:
 """
 
 from .config import EALSTMConfig
-from .model import EALSTM, EALSTMCell, BiEALSTM
 from .lightning import LitEALSTM
+from .model import EALSTM, BiEALSTM, EALSTMCell
 
 __all__ = [
     "EALSTMConfig",

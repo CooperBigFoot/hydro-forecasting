@@ -12,15 +12,15 @@ This module provides implementations for:
 """
 
 from .config import TFTConfig
-from .model import (
-    TemporalFusionTransformer,
-    GatedResidualNetwork,
-    VariableSelectionNetwork,
-    StaticCovariateEncoder,
-    InterpretableMultiHeadAttention,
-    GLU,
-)
 from .lightning import LitTFT
+from .model import (
+    GLU,
+    GatedResidualNetwork,
+    InterpretableMultiHeadAttention,
+    StaticCovariateEncoder,
+    TemporalFusionTransformer,
+    VariableSelectionNetwork,
+)
 
 __all__ = [
     "TFTConfig",

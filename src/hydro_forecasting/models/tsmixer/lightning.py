@@ -1,6 +1,7 @@
 """PyTorch Lightning module for TSMixer model."""
 
-from typing import Dict, Any, Optional, Union
+from typing import Any
+
 import torch
 from torch.optim import Adam
 
@@ -19,7 +20,7 @@ class LitTSMixer(BaseLitModel):
 
     def __init__(
         self,
-        config: Union[TSMixerConfig, Dict[str, Any]],
+        config: TSMixerConfig | dict[str, Any],
     ) -> None:
         """
         Initialize the LitTSMixer module.
@@ -42,8 +43,8 @@ class LitTSMixer(BaseLitModel):
     def forward(
         self,
         x: torch.Tensor,
-        static: Optional[torch.Tensor] = None,
-        future: Optional[torch.Tensor] = None,
+        static: torch.Tensor | None = None,
+        future: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """
         Forward pass that delegates to the TSMixer model.
@@ -82,7 +83,7 @@ class LitTSMixer(BaseLitModel):
             param.requires_grad = True
         self.log("info", "Head parameters unfrozen")
 
-    def configure_optimizers(self) -> Dict[str, Any]:
+    def configure_optimizers(self) -> dict[str, Any]:
         """
         Configure optimizer and learning rate scheduler.
 

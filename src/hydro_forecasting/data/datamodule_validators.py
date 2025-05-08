@@ -1,6 +1,6 @@
 import math
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional, Union
+from typing import TYPE_CHECKING, Any
 
 from returns.result import Failure, Result, Success
 from sklearn.pipeline import Pipeline
@@ -132,9 +132,7 @@ def validate_target_in_features(
     return Success(None)
 
 
-def _validate_pipeline_compatibility(
-    pipeline_obj: Union[Pipeline, GroupedPipeline], pipeline_name: str
-) -> Result[None, str]:
+def _validate_pipeline_compatibility(pipeline_obj: Pipeline | GroupedPipeline, pipeline_name: str) -> Result[None, str]:
     """Helper to validate steps of a single pipeline."""
     if isinstance(pipeline_obj, GroupedPipeline):
         # Validate the template pipeline within GroupedPipeline
@@ -149,11 +147,11 @@ def _validate_pipeline_compatibility(
         return Failure(f"'{pipeline_name}' is not a valid Pipeline or GroupedPipeline instance.")
 
     for step_name, transformer in p_to_check.steps:
-        if not (hasattr(transformer, "fit") and callable(getattr(transformer, "fit"))):
+        if not (hasattr(transformer, "fit") and callable(transformer.fit)):
             return Failure(f"Transformer '{step_name}' in pipeline '{pipeline_name}' is missing a 'fit' method.")
-        if not (hasattr(transformer, "transform") and callable(getattr(transformer, "transform"))):
+        if not (hasattr(transformer, "transform") and callable(transformer.transform)):
             return Failure(f"Transformer '{step_name}' in pipeline '{pipeline_name}' is missing a 'transform' method.")
-        if not (hasattr(transformer, "inverse_transform") and callable(getattr(transformer, "inverse_transform"))):
+        if not (hasattr(transformer, "inverse_transform") and callable(transformer.inverse_transform)):
             return Failure(
                 f"Transformer '{step_name}' in pipeline '{pipeline_name}' is missing an 'inverse_transform' method."
             )
@@ -161,7 +159,7 @@ def _validate_pipeline_compatibility(
 
 
 def validate_preprocessing_pipelines_config(
-    preprocessing_configs_attr: Optional[dict[str, dict[str, Any]]],
+    preprocessing_configs_attr: dict[str, dict[str, Any]] | None,
     datamodule_group_identifier: str,
 ) -> Result[None, str]:
     """Validate the structure and compatibility of preprocessing_configs."""

@@ -1,10 +1,12 @@
-import polars as pl
-import numpy as np
-from dataclasses import dataclass, asdict
-from pathlib import Path
 import json
-from typing import Optional, Any
-from returns.result import Result, Success, Failure
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import polars as pl
+from returns.result import Failure, Result, Success
+
 
 def find_gaps_bool(missing: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """
@@ -31,7 +33,7 @@ class BasinQualityReport:
     processing_steps: list[str]
     imputation_info: dict[str, dict[str, int]]
     passed_quality_check: bool = True
-    failure_reason: Optional[str] = None
+    failure_reason: str | None = None
 
 
 @dataclass
@@ -40,7 +42,7 @@ class SummaryQualityReport:
     passed_basins: int
     failed_basins: int
     excluded_basins: dict[str, str]  # basin_id -> failure_reason
-    retained_basins: list[str] 
+    retained_basins: list[str]
 
     def save(self, path: Path | str) -> Path:
         """
@@ -97,19 +99,12 @@ def clean_data(
         lf = lf.sort([gid, "date"])
 
         # 3. Trim leading/trailing nulls per basin
-        fwd = [
-            pl.col(c).is_not_null().cum_sum().over(gid).alias(f"_fwd_{c}") for c in cols
-        ]
-        bwd = [
-            pl.col(c).is_not_null().reverse().cum_sum().over(gid).alias(f"_bwd_{c}")
-            for c in cols
-        ]
+        fwd = [pl.col(c).is_not_null().cum_sum().over(gid).alias(f"_fwd_{c}") for c in cols]
+        bwd = [pl.col(c).is_not_null().reverse().cum_sum().over(gid).alias(f"_bwd_{c}") for c in cols]
         lf = lf.with_columns(fwd + bwd)
         fwd_mask = pl.all_horizontal([pl.col(f"_fwd_{c}") > 0 for c in cols])
         bwd_mask = pl.all_horizontal([pl.col(f"_bwd_{c}") > 0 for c in cols])
-        lf = lf.filter(fwd_mask & bwd_mask).drop(
-            [f"_fwd_{c}" for c in cols] + [f"_bwd_{c}" for c in cols]
-        )
+        lf = lf.filter(fwd_mask & bwd_mask).drop([f"_fwd_{c}" for c in cols] + [f"_bwd_{c}" for c in cols])
 
         # 4. Mark original nulls per column
         for c in cols:
@@ -117,9 +112,7 @@ def clean_data(
 
         # 5. Impute short gaps via ffill only (removed bfill to avoid data leakage)
         for c in cols:
-            lf = lf.with_columns(
-                pl.col(c).forward_fill(limit=max_gap).over(gid).alias(c)
-            )
+            lf = lf.with_columns(pl.col(c).forward_fill(limit=max_gap).over(gid).alias(c))
 
         # 6. Collect to eager DataFrame
         df = lf.collect()
@@ -139,7 +132,7 @@ def clean_data(
                 before_na = int(group[f"_before_null_{c}"].sum())
                 after_na = int(group[c].is_null().sum())
                 starts, ends = find_gaps_bool(group[f"_before_null_{c}"].to_numpy())
-                short_gaps = int(sum((e - s) <= max_gap for s, e in zip(starts, ends)))
+                short_gaps = int(sum((e - s) <= max_gap for s, e in zip(starts, ends, strict=False)))
                 info[c] = {
                     "short_gaps_count": short_gaps,
                     "imputed_values_count": before_na - after_na,
@@ -184,10 +177,8 @@ def clean_data(
                 if train_days < min_required_train_days:
                     report.passed_quality_check = False
                     available_years = train_days / 365.25
-                    report.failure_reason = (
-                        f"Insufficient training data ({available_years:.2f} years available). \
+                    report.failure_reason = f"Insufficient training data ({available_years:.2f} years available). \
                          Minimum required training years: {min_train_years}"
-                    )
                 else:
                     report.processing_steps.append("data_sufficiency_check_passed")
                     valid_basin_ids.append(basin_id)
@@ -209,9 +200,7 @@ def clean_data(
         if existing_helpers:
             filtered_df = filtered_df.drop(existing_helpers)
 
-        print(
-            f"INFO: Processed {len(reports)} basins, {len(valid_basin_ids)} passed quality checks"
-        )
+        print(f"INFO: Processed {len(reports)} basins, {len(valid_basin_ids)} passed quality checks")
 
         return Success((filtered_df, reports))
 
@@ -267,7 +256,7 @@ def summarize_quality_reports_from_folder(
         all_reports_data: list[dict[str, Any]] = []
         for file_path in json_files:
             try:
-                with open(file_path, "r", encoding="utf-8") as f:
+                with open(file_path, encoding="utf-8") as f:
                     report_data = json.load(f)
                     # Add basin_id from filename if not present in the JSON structure itself
                     if "basin_id" not in report_data:
@@ -290,9 +279,7 @@ def summarize_quality_reports_from_folder(
         failed = total - passed
 
         excluded = {
-            r["basin_id"]: r.get(
-                "failure_reason", "Unknown reason"
-            )  # Provide default reason
+            r["basin_id"]: r.get("failure_reason", "Unknown reason")  # Provide default reason
             for r in reports
             if not r.get("passed_quality_check", True)
         }
@@ -311,7 +298,5 @@ def summarize_quality_reports_from_folder(
         import traceback
 
         # Log the full traceback for better debugging
-        print(
-            f"ERROR in summarize_quality_reports_from_folder: {e}\n{traceback.format_exc()}"
-        )
+        print(f"ERROR in summarize_quality_reports_from_folder: {e}\n{traceback.format_exc()}")
         return Failure(f"summarize_quality_reports_from_folder failed: {e}")

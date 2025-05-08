@@ -63,9 +63,9 @@ dev = [
 pythonpath = ["src"]
 
 [tool.ruff]
-line-length = 88
+line-length = 120
 target-version = "py310" # Assuming Python 3.10+
-fix = false # Enable autofix for selected rules
+fix = false 
 
 [tool.ruff.lint]
 # E/F (Pyflakes), W (pycodestyle), N (pep8-naming), I (isort),

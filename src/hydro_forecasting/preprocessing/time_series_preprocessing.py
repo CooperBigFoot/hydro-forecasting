@@ -1,9 +1,11 @@
-import joblib
 from pathlib import Path
+
+import joblib
 import pandas as pd
+from returns.result import Failure, Result, Success
 from sklearn.base import clone
 from sklearn.pipeline import Pipeline
-from returns.result import Result, Success, Failure
+
 from ..preprocessing.grouped import GroupedPipeline
 
 

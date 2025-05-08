@@ -5,7 +5,7 @@ A simple baseline model that repeats the last observed value for the entire fore
 """
 
 from .config import RepeatLastValuesConfig
-from .model import RepeatLastValues
 from .lightning import LitRepeatLastValues
+from .model import RepeatLastValues
 
 __all__ = ["RepeatLastValuesConfig", "RepeatLastValues", "LitRepeatLastValues"]

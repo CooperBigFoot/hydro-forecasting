@@ -1,7 +1,8 @@
-import os
-import yaml
-from typing import Dict, Any, Set, Tuple
 import importlib
+import os
+from typing import Any
+
+import yaml
 
 
 def get_config_class(model_type: str):
@@ -20,9 +21,7 @@ def get_config_class(model_type: str):
     model_type = model_type.lower()
     try:
         # Use absolute import path instead of relative
-        module = importlib.import_module(
-            f"hydro_forecasting.models.{model_type}.config"
-        )
+        module = importlib.import_module(f"hydro_forecasting.models.{model_type}.config")
 
         # Handle different naming conventions for config classes:
         if model_type == "tft":
@@ -39,7 +38,7 @@ def get_config_class(model_type: str):
         raise ImportError(f"Failed to import config for model type '{model_type}': {e}")
 
 
-def get_expected_params(model_type: str) -> Tuple[Set[str], Set[str]]:
+def get_expected_params(model_type: str) -> tuple[set[str], set[str]]:
     """
     Get the expected parameters for a specified model type.
 
@@ -59,7 +58,7 @@ def get_expected_params(model_type: str) -> Tuple[Set[str], Set[str]]:
         return set(), set()
 
 
-def hp_from_yaml(model_type: str, yaml_path: str) -> Dict[str, Any]:
+def hp_from_yaml(model_type: str, yaml_path: str) -> dict[str, Any]:
     """
     Load hyperparameters from a YAML file for a specific model type.
 
@@ -82,9 +81,7 @@ def hp_from_yaml(model_type: str, yaml_path: str) -> Dict[str, Any]:
     model_type = model_type.lower()
     valid_models = {"tide", "tft", "ealstm", "tsmixer"}
     if model_type not in valid_models:
-        raise ValueError(
-            f"Unsupported model type: {model_type}. Must be one of: {', '.join(valid_models)}"
-        )
+        raise ValueError(f"Unsupported model type: {model_type}. Must be one of: {', '.join(valid_models)}")
 
     # Check file existence and accessibility
     if not os.path.exists(yaml_path):
@@ -98,7 +95,7 @@ def hp_from_yaml(model_type: str, yaml_path: str) -> Dict[str, Any]:
 
     # Load YAML file
     try:
-        with open(yaml_path, "r") as f:
+        with open(yaml_path) as f:
             yaml_params = yaml.safe_load(f)
     except yaml.YAMLError as e:
         raise yaml.YAMLError(f"Invalid YAML syntax in {yaml_path}: {e}")
@@ -106,9 +103,7 @@ def hp_from_yaml(model_type: str, yaml_path: str) -> Dict[str, Any]:
         raise RuntimeError(f"Error reading YAML file {yaml_path}: {e}")
 
     if not yaml_params or not isinstance(yaml_params, dict):
-        raise ValueError(
-            f"YAML file {yaml_path} does not contain a valid parameter dictionary"
-        )
+        raise ValueError(f"YAML file {yaml_path} does not contain a valid parameter dictionary")
 
     # Get expected parameters for the model
     standard_params, model_params = get_expected_params(model_type)
@@ -119,9 +114,7 @@ def hp_from_yaml(model_type: str, yaml_path: str) -> Dict[str, Any]:
     missing_params = all_expected_params - found_params
 
     if missing_params:
-        print(
-            "The following parameters were not found in the YAML file and will use defaults:"
-        )
+        print("The following parameters were not found in the YAML file and will use defaults:")
         for param in sorted(missing_params):
             # Indicate which category the parameter belongs to
             category = "standard" if param in standard_params else "model-specific"
@@ -130,18 +123,14 @@ def hp_from_yaml(model_type: str, yaml_path: str) -> Dict[str, Any]:
     # Check for unexpected parameters
     unexpected_params = found_params - all_expected_params
     if unexpected_params:
-        print(
-            f"The following parameters in the YAML file are not recognized for {model_type} model:"
-        )
+        print(f"The following parameters in the YAML file are not recognized for {model_type} model:")
         for param in sorted(unexpected_params):
             print(f"  - {param}")
 
     return yaml_params
 
 
-def load_model_config(
-    model_type: str, yaml_path: str, **override_params
-) -> Dict[str, Any]:
+def load_model_config(model_type: str, yaml_path: str, **override_params) -> dict[str, Any]:
     """
     Load model configuration with hyperparameters from YAML and allow parameter overrides.
 

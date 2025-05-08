@@ -1,18 +1,18 @@
 from pathlib import Path
-import pandas as pd
-import numpy as np
+
 import joblib
-from sklearn.base import clone
-from sklearn.pipeline import Pipeline
-from returns.result import Result, Success, Failure
+import numpy as np
+import pandas as pd
 from returns.pipeline import pipe
 from returns.pointfree import bind
-from typing import Union
+from returns.result import Failure, Result, Success
+from sklearn.base import clone
+from sklearn.pipeline import Pipeline
 
 
 def fit_static_pipeline(
     static_df: pd.DataFrame,
-    preprocessing_config: dict[str, dict[str, Union[Pipeline, str]]],
+    preprocessing_config: dict[str, dict[str, Pipeline | str]],
 ) -> Result[Pipeline, str]:
     """
     Fit and return the static features pipeline.
@@ -47,7 +47,7 @@ def fit_static_pipeline(
 
 def transform_static_data(
     static_df: pd.DataFrame,
-    preprocessing_config: dict[str, dict[str, Union[Pipeline, str]]],
+    preprocessing_config: dict[str, dict[str, Pipeline | str]],
     fitted_pipeline: Pipeline,
 ) -> Result[pd.DataFrame, str]:
     """
@@ -140,13 +140,9 @@ def read_static_data_from_disk(
         if region_type_dfs:
             merged_region_df = region_type_dfs[0]
             for i, df_to_merge in enumerate(region_type_dfs[1:], start=1):
-                overlap = set(merged_region_df.columns) & set(df_to_merge.columns) - {
-                    "gauge_id"
-                }
+                overlap = set(merged_region_df.columns) & set(df_to_merge.columns) - {"gauge_id"}
                 if overlap:
-                    print(
-                        f"INFO: Overlapping columns during merge: {', '.join(overlap)}"
-                    )
+                    print(f"INFO: Overlapping columns during merge: {', '.join(overlap)}")
                 merged_region_df = pd.merge(
                     merged_region_df,
                     df_to_merge,
@@ -188,14 +184,10 @@ def write_static_data_to_disk(
 
         # Verify group identifier is in the DataFrame
         if group_identifier not in df.columns:
-            return Failure(
-                f"Group identifier '{group_identifier}' not found in DataFrame"
-            )
+            return Failure(f"Group identifier '{group_identifier}' not found in DataFrame")
 
         # Create list of columns to keep
-        final_columns = [group_identifier] + [
-            col for col in columns_to_save if col != group_identifier
-        ]
+        final_columns = [group_identifier] + [col for col in columns_to_save if col != group_identifier]
 
         # Filter columns that exist in the DataFrame
         existing_columns = [col for col in final_columns if col in df.columns]
@@ -215,7 +207,7 @@ def write_static_data_to_disk(
 def process_static_data(
     region_static_attributes_base_dirs: dict[str, Path | str],
     list_of_gauge_ids: list[str],
-    preprocessing_config: dict[str, dict[str, Union[Pipeline, str]]],
+    preprocessing_config: dict[str, dict[str, Pipeline | str]],
     output_path: Path | str,
     group_identifier: str = "gauge_id",
 ) -> Result[tuple[Path, Pipeline], str]:
@@ -235,8 +227,7 @@ def process_static_data(
     """
     # Cast all paths to Path objects
     region_static_attributes_base_dirs = {
-        k: Path(v) if isinstance(v, str) else v
-        for k, v in region_static_attributes_base_dirs.items()
+        k: Path(v) if isinstance(v, str) else v for k, v in region_static_attributes_base_dirs.items()
     }
 
     if isinstance(output_path, str):
@@ -247,9 +238,7 @@ def process_static_data(
 
     # Helper functions for pipeline
     def _read(_: object) -> Result[pd.DataFrame, str]:
-        return read_static_data_from_disk(
-            region_static_attributes_base_dirs, list_of_gauge_ids
-        )
+        return read_static_data_from_disk(region_static_attributes_base_dirs, list_of_gauge_ids)
 
     def _fit(static_df: pd.DataFrame) -> Result[tuple[pd.DataFrame, Pipeline], str]:
         pipeline_result = fit_static_pipeline(static_df, preprocessing_config)
@@ -267,9 +256,7 @@ def process_static_data(
         static_df, pipeline = data_and_pipeline
 
         # Transform data using the fitted pipeline
-        transform_result = transform_static_data(
-            static_df, preprocessing_config, pipeline
-        )
+        transform_result = transform_static_data(static_df, preprocessing_config, pipeline)
         if isinstance(transform_result, Failure):
             return transform_result
 

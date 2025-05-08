@@ -11,18 +11,18 @@ This module provides implementations for:
 """
 
 from .config import TSMixerConfig
+from .lightning import LitTSMixer
 from .model import (
+    AlignmentStage,
+    ConditionalFeatureMixing,
+    FeatureMixing,
+    MixerLayer,
+    MixingStage,
+    TemporalProjection,
+    TimeMixing,
     TSMixer,
     TSMixerHead,
-    MixingStage,
-    AlignmentStage,
-    TimeMixing,
-    FeatureMixing,
-    ConditionalFeatureMixing,
-    MixerLayer,
-    TemporalProjection,
 )
-from .lightning import LitTSMixer
 
 __all__ = [
     "TSMixerConfig",

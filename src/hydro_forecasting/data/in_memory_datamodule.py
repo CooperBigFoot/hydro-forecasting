@@ -1,42 +1,37 @@
-from pytorch_lightning import LightningDataModule
-from pathlib import Path
-from typing import Union, Optional, Any
-from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
+import gc
+import logging
 
 # import torch.multiprocessing as mp # No longer forcing "spawn"
 import random
-import gc
-
-import torch
-import polars as pl
-import numpy as np
-from returns.result import Success, Failure
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
+import numpy as np
+import polars as pl
+import torch
+from pytorch_lightning import LightningDataModule
+from returns.result import Failure, Success
 from sklearn.pipeline import Pipeline
-
-from .in_memory_dataset import InMemoryChunkDataset, find_valid_sequences
-from .preprocessing import (
-    run_hydro_processor,
-    ProcessingOutput,
-)
+from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
 
 from ..preprocessing.grouped import GroupedPipeline
-
+from ..preprocessing.static_preprocessing import (
+    load_static_pipeline,
+)
+from ..preprocessing.time_series_preprocessing import load_time_series_pipelines
+from .clean_data import SummaryQualityReport
 from .config_utils import (
     extract_relevant_config,
     generate_run_uuid,
     load_config,
 )
-from .clean_data import SummaryQualityReport
-from ..preprocessing.static_preprocessing import (
-    load_static_pipeline,
-)
-from ..preprocessing.time_series_preprocessing import load_time_series_pipelines
-import logging
-
 from .datamodule_validators import validate_hydro_inmemory_datamodule_config
-
+from .in_memory_dataset import InMemoryChunkDataset, find_valid_sequences
+from .preprocessing import (
+    ProcessingOutput,
+    run_hydro_processor,
+)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -48,9 +43,9 @@ class LoadedData:
     """Data structure for loaded preprocessing artifacts."""
 
     summary_quality_report: SummaryQualityReport
-    fitted_pipelines: dict[str, Union[Pipeline, GroupedPipeline]]
+    fitted_pipelines: dict[str, Pipeline | GroupedPipeline]
     processed_ts_dir: Path
-    processed_static_path: Optional[Path]
+    processed_static_path: Path | None
 
 
 class HydroInMemoryDataModule(LightningDataModule):
@@ -63,9 +58,9 @@ class HydroInMemoryDataModule(LightningDataModule):
 
     def __init__(
         self,
-        region_time_series_base_dirs: dict[str, Union[str, Path]],
-        region_static_attributes_base_dirs: dict[str, Union[str, Path]],
-        path_to_preprocessing_output_directory: Union[str, Path],
+        region_time_series_base_dirs: dict[str, str | Path],
+        region_static_attributes_base_dirs: dict[str, str | Path],
+        path_to_preprocessing_output_directory: str | Path,
         group_identifier: str,
         batch_size: int,
         input_length: int,
@@ -81,7 +76,7 @@ class HydroInMemoryDataModule(LightningDataModule):
         test_prop: float,
         max_imputation_gap_size: int,
         chunk_size: int,
-        list_of_gauge_ids_to_process: Optional[list[str]] = None,
+        list_of_gauge_ids_to_process: list[str] | None = None,
         domain_id: str = "source",
         domain_type: str = "source",
         is_autoregressive: bool = False,
@@ -151,19 +146,19 @@ class HydroInMemoryDataModule(LightningDataModule):
         self.is_autoregressive = self.hparams.is_autoregressive
 
         self._prepare_data_has_run: bool = False
-        self.run_uuid: Optional[str] = None
-        self.summary_quality_report: Optional[SummaryQualityReport] = None
-        self.fitted_pipelines: dict[str, Union[Pipeline, GroupedPipeline]] = {}
-        self.processed_time_series_dir: Optional[Path] = None
-        self.processed_static_attributes_path: Optional[Path] = None
+        self.run_uuid: str | None = None
+        self.summary_quality_report: SummaryQualityReport | None = None
+        self.fitted_pipelines: dict[str, Pipeline | GroupedPipeline] = {}
+        self.processed_time_series_dir: Path | None = None
+        self.processed_static_attributes_path: Path | None = None
         self.static_data_cache: dict[str, np.ndarray] = {}
 
         self._prepare_data_has_run: bool = False
-        self.run_uuid: Optional[str] = None
-        self.summary_quality_report: Optional[SummaryQualityReport] = None
-        self.fitted_pipelines: dict[str, Union[Pipeline, GroupedPipeline]] = {}
-        self.processed_time_series_dir: Optional[Path] = None
-        self.processed_static_attributes_path: Optional[Path] = None
+        self.run_uuid: str | None = None
+        self.summary_quality_report: SummaryQualityReport | None = None
+        self.fitted_pipelines: dict[str, Pipeline | GroupedPipeline] = {}
+        self.processed_time_series_dir: Path | None = None
+        self.processed_static_attributes_path: Path | None = None
         self.static_data_cache: dict[str, torch.Tensor] = {}  # Now stores Tensors
 
         self.chunkable_basin_ids: list[str] = []
@@ -283,7 +278,7 @@ class HydroInMemoryDataModule(LightningDataModule):
         if not self.chunkable_basin_ids:
             logger.warning("No basins available for chunkable train/val. Training/validation might be empty.")
 
-    def setup(self, stage: Optional[str] = None) -> None:
+    def setup(self, stage: str | None = None) -> None:
         if not self._prepare_data_has_run or not self.processed_time_series_dir:
             raise RuntimeError("prepare_data() must be called before setup()")
 
@@ -330,9 +325,7 @@ class HydroInMemoryDataModule(LightningDataModule):
 
     def _load_and_tensorize_chunk(
         self, basin_ids_for_chunk: list[str], stage: str
-    ) -> tuple[
-        Optional[dict[str, torch.Tensor]], Optional[list[tuple[str, int, int]]], Optional[dict[str, tuple[int, int]]]
-    ]:
+    ) -> tuple[dict[str, torch.Tensor] | None, list[tuple[str, int, int]] | None, dict[str, tuple[int, int]] | None]:
         """
         Loads data for a list of basin IDs, computes valid sequences, and converts to tensors.
         This is a core helper for train/val/test_dataloader methods.
@@ -675,9 +668,7 @@ class HydroInMemoryDataModule(LightningDataModule):
             logger.warning("Processed static attributes file not found. Static cache empty.")
             self.static_data_cache = {}
 
-    def _check_and_reuse_existing_processed_data(
-        self, run_uuid: str
-    ) -> tuple[bool, Optional[LoadedData], Optional[str]]:
+    def _check_and_reuse_existing_processed_data(self, run_uuid: str) -> tuple[bool, LoadedData | None, str | None]:
         """
         Check if processed data exists for the given run_uuid and load it if valid.
         """
@@ -788,7 +779,7 @@ class HydroInMemoryDataModule(LightningDataModule):
                     )
 
             summary_path = run_dir / "quality_summary.json"
-            with open(summary_path, "r") as f:
+            with open(summary_path) as f:
                 import json
 
                 summary_quality_report_dict = json.load(f)
@@ -856,7 +847,6 @@ class HydroInMemoryDataModule(LightningDataModule):
         else:
             logger.info("No fitted static pipeline found or specified in processing output.")
         logger.info(f"Successfully loaded {len(self.fitted_pipelines)} categories of fitted pipelines.")
-
 
     # TODO: Verify that these types are correct
     def inverse_transform_predictions(

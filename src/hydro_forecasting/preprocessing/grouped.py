@@ -1,21 +1,22 @@
-from typing import Dict, List, Optional, Union, Any
-import pandas as pd
-import numpy as np
-from sklearn.base import BaseEstimator, TransformerMixin
-from sklearn.pipeline import Pipeline
 import copy
 import multiprocessing as mp
 from functools import partial
+from typing import Any
+
+import numpy as np
+import pandas as pd
+from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.pipeline import Pipeline
 
 
 def _process_groups_fit(
     pipeline_template: Pipeline,
-    columns: List[str],
+    columns: list[str],
     df: pd.DataFrame,
-    group_ids: List[str],
+    group_ids: list[str],
     group_identifier: str,
-    y: Optional[pd.Series] = None,
-) -> Dict[str, Any]:
+    y: pd.Series | None = None,
+) -> dict[str, Any]:
     """Process a chunk of groups in fit mode.
 
     Args:
@@ -57,12 +58,12 @@ def _process_groups_fit(
 
 
 def _process_groups_transform(
-    fitted_pipelines: Dict[str, Pipeline],
-    columns: List[str],
+    fitted_pipelines: dict[str, Pipeline],
+    columns: list[str],
     df: pd.DataFrame,
-    group_ids: List[str],
+    group_ids: list[str],
     group_identifier: str,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Process a chunk of groups in transform mode.
 
     Args:
@@ -97,12 +98,12 @@ def _process_groups_transform(
 
 
 def _process_groups_inverse_transform(
-    fitted_pipelines: Dict[str, Pipeline],
-    columns: List[str],
+    fitted_pipelines: dict[str, Pipeline],
+    columns: list[str],
     df: pd.DataFrame,
-    group_ids: List[str],
+    group_ids: list[str],
     group_identifier: str,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Process a chunk of groups in inverse_transform mode.
 
     Args:
@@ -156,10 +157,10 @@ class GroupedPipeline(BaseEstimator, TransformerMixin):
     def __init__(
         self,
         pipeline: Pipeline,
-        columns: List[str],
+        columns: list[str],
         group_identifier: str,
         n_jobs: int = 1,
-        chunk_size: Optional[int] = None,
+        chunk_size: int | None = None,
     ):
         """Initialize GroupedPipeline.
 
@@ -175,10 +176,10 @@ class GroupedPipeline(BaseEstimator, TransformerMixin):
         self.group_identifier = group_identifier
         self.n_jobs = n_jobs
         self.chunk_size = chunk_size
-        self.fitted_pipelines: Dict[Union[str, int], Pipeline] = {}
+        self.fitted_pipelines: dict[str | int, Pipeline] = {}
         self.all_groups = []  # Store all unique groups seen during fit
 
-    def _split_groups_into_chunks(self, groups: List[str]) -> List[List[str]]:
+    def _split_groups_into_chunks(self, groups: list[str]) -> list[list[str]]:
         """Split groups into roughly equal-sized chunks for parallel processing."""
         # If not using multiprocessing, return all groups as a single chunk
         if self.n_jobs == 1:
@@ -192,20 +193,13 @@ class GroupedPipeline(BaseEstimator, TransformerMixin):
 
         if self.chunk_size:
             # Split based on specified chunk size
-            return [
-                groups[i : i + self.chunk_size]
-                for i in range(0, len(groups), self.chunk_size)
-            ]
+            return [groups[i : i + self.chunk_size] for i in range(0, len(groups), self.chunk_size)]
         else:
             # Split based on number of jobs
             chunk_size = (len(groups) + n_jobs - 1) // n_jobs  # Ceiling division
-            return [
-                groups[i : i + chunk_size] for i in range(0, len(groups), chunk_size)
-            ]
+            return [groups[i : i + chunk_size] for i in range(0, len(groups), chunk_size)]
 
-    def fit(
-        self, X: pd.DataFrame, y: Optional[pd.Series] = None
-    ) -> "GroupedPipeline":
+    def fit(self, X: pd.DataFrame, y: pd.Series | None = None) -> "GroupedPipeline":
         """Fit a separate pipeline for each group.
 
         Args:
@@ -223,9 +217,7 @@ class GroupedPipeline(BaseEstimator, TransformerMixin):
         if missing_cols:
             raise ValueError(f"Columns not found in data: {missing_cols}")
         if self.group_identifier not in X.columns:
-            raise ValueError(
-                f"Group identifier {self.group_identifier} not found in data"
-            )
+            raise ValueError(f"Group identifier {self.group_identifier} not found in data")
 
         # Store all unique groups to ensure we can handle new/unseen groups
         self.all_groups = X[self.group_identifier].unique().tolist()
@@ -283,9 +275,7 @@ class GroupedPipeline(BaseEstimator, TransformerMixin):
             Groups not seen during fit will be passed through unchanged
         """
         if self.group_identifier not in X.columns:
-            raise ValueError(
-                f"Group identifier {self.group_identifier} not found in data"
-            )
+            raise ValueError(f"Group identifier {self.group_identifier} not found in data")
 
         X_transformed = X.copy()
 
@@ -298,9 +288,7 @@ class GroupedPipeline(BaseEstimator, TransformerMixin):
         # Warn about groups not seen during fit
         unseen_groups = [g for g in data_groups if g not in self.fitted_pipelines]
         if unseen_groups:
-            print(
-                f"Warning: Groups {unseen_groups} not seen during fit, passing through unchanged"
-            )
+            print(f"Warning: Groups {unseen_groups} not seen during fit, passing through unchanged")
 
         # If not using multiprocessing, fall back to original implementation
         if self.n_jobs == 1:
@@ -363,9 +351,7 @@ class GroupedPipeline(BaseEstimator, TransformerMixin):
             Groups not seen during fit will be passed through unchanged
         """
         if self.group_identifier not in X.columns:
-            raise ValueError(
-                f"Group identifier {self.group_identifier} not found in data"
-            )
+            raise ValueError(f"Group identifier {self.group_identifier} not found in data")
 
         X_inverse = X.copy()
 
@@ -378,9 +364,7 @@ class GroupedPipeline(BaseEstimator, TransformerMixin):
         # Warn about groups not seen during fit
         unseen_groups = [g for g in data_groups if g not in self.fitted_pipelines]
         if unseen_groups:
-            print(
-                f"Warning: Groups {unseen_groups} not seen during fit, passing through unchanged"
-            )
+            print(f"Warning: Groups {unseen_groups} not seen during fit, passing through unchanged")
 
         if self.n_jobs == 1:
             # Process each group separately
@@ -393,15 +377,11 @@ class GroupedPipeline(BaseEstimator, TransformerMixin):
 
                 # Check if pipeline has inverse_transform method
                 if not hasattr(self.fitted_pipelines[group], "inverse_transform"):
-                    print(
-                        f"Warning: Pipeline for group {group} does not support inverse_transform"
-                    )
+                    print(f"Warning: Pipeline for group {group} does not support inverse_transform")
                     continue
 
                 # Inverse transform this group's data
-                inverse_data = self.fitted_pipelines[group].inverse_transform(
-                    group_data
-                )
+                inverse_data = self.fitted_pipelines[group].inverse_transform(group_data)
 
                 # Handle the case where pipeline returns ndarray instead of DataFrame
                 if isinstance(inverse_data, np.ndarray):
@@ -438,7 +418,7 @@ class GroupedPipeline(BaseEstimator, TransformerMixin):
 
         return X_inverse
 
-    def get_feature_names_out(self) -> List[str]:
+    def get_feature_names_out(self) -> list[str]:
         """Return feature names after transformation.
 
         Returns:
@@ -451,12 +431,12 @@ class GroupedPipeline(BaseEstimator, TransformerMixin):
         # doesn't change the feature names
         return self.columns.copy()
 
-    def add_fitted_group(self, group_id: Union[str, int], fitted_pipeline: Pipeline) -> None:
+    def add_fitted_group(self, group_id: str | int, fitted_pipeline: Pipeline) -> None:
         """Add a pre-fitted pipeline for a specific group.
-        
+
         This method allows direct addition of a fitted pipeline for a group,
         enabling batch-wise or incremental population of the GroupedPipeline.
-        
+
         Args:
             group_id: Identifier for the group
             fitted_pipeline: A fitted sklearn Pipeline instance for this group

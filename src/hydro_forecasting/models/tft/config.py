@@ -1,4 +1,5 @@
-from typing import ClassVar, List, Optional
+from typing import ClassVar
+
 from ..base.base_config import BaseConfig
 
 
@@ -13,7 +14,7 @@ class TFTConfig(BaseConfig):
     """
 
     # Define model-specific parameters
-    MODEL_PARAMS: ClassVar[List[str]] = [
+    MODEL_PARAMS: ClassVar[list[str]] = [
         "hidden_size",
         "lstm_layers",
         "num_attention_heads",
@@ -34,19 +35,19 @@ class TFTConfig(BaseConfig):
         output_len: int,
         input_size: int,
         static_size: int = 0,
-        future_input_size: Optional[int] = None,
+        future_input_size: int | None = None,
         hidden_size: int = 64,
         lstm_layers: int = 1,
         num_attention_heads: int = 4,
         dropout: float = 0.1,
-        hidden_continuous_size: Optional[int] = None,
+        hidden_continuous_size: int | None = None,
         attn_dropout: float = 0.0,
         add_relative_index: bool = True,
         learning_rate: float = 1e-3,
         group_identifier: str = "gauge_id",
         scheduler_patience: int = 5,
         scheduler_factor: float = 0.5,
-        quantiles: List[float] = [0.5],
+        quantiles: list[float] = [0.5],
         context_length_ratio: float = 1.0,
         encoder_layers: int = 1,
         **kwargs,

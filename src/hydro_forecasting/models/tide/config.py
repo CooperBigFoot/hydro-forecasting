@@ -1,4 +1,5 @@
-from typing import ClassVar, List, Optional
+from typing import ClassVar
+
 from ..base.base_config import BaseConfig
 
 
@@ -14,7 +15,7 @@ class TiDEConfig(BaseConfig):
     """
 
     # Define model-specific parameters - removed hidden_size and dropout as they should be standard
-    MODEL_PARAMS: ClassVar[List[str]] = [
+    MODEL_PARAMS: ClassVar[list[str]] = [
         "num_encoder_layers",
         "num_decoder_layers",
         "decoder_output_size",
@@ -34,7 +35,7 @@ class TiDEConfig(BaseConfig):
         output_len: int,
         input_size: int,
         static_size: int = 0,
-        future_input_size: Optional[int] = None,
+        future_input_size: int | None = None,
         hidden_size: int = 128,
         dropout: float = 0.1,
         num_encoder_layers: int = 1,

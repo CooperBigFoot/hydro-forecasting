@@ -1,11 +1,11 @@
 # in_memory_dataset.py
-import torch
-from torch.utils.data import Dataset
-import polars as pl
-import numpy as np
-from typing import Optional, Union
-from returns.result import Result, Success, Failure, safe
 import logging
+
+import numpy as np
+import polars as pl
+import torch
+from returns.result import Failure, Result, Success, safe
+from torch.utils.data import Dataset
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -196,7 +196,7 @@ class InMemoryChunkDataset(Dataset):
     def __len__(self) -> int:
         return len(self.index_entries)
 
-    def __getitem__(self, idx: int) -> dict[str, Union[torch.Tensor, str, Optional[int]]]:
+    def __getitem__(self, idx: int) -> dict[str, torch.Tensor | str | int | None]:
         if not (0 <= idx < len(self.index_entries)):
             raise IndexError(f"Index {idx} out of range for {len(self.index_entries)} samples.")
 
@@ -275,7 +275,7 @@ class InMemoryChunkDataset(Dataset):
             )
             static_tensor = torch.zeros(len(self.static_features_names), dtype=X_model.dtype)
 
-        input_end_date_ms: Optional[int] = None
+        input_end_date_ms: int | None = None
         if self.include_input_end_date:
             try:
                 date_tensor_window = self.chunk_column_tensors["date"][sequence_start_abs:sequence_end_abs]

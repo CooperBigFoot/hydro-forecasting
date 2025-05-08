@@ -5,9 +5,9 @@ This is a simple baseline model that repeats the last observed value
 for the entire forecast horizon.
 """
 
-from typing import Optional
 import torch
 import torch.nn as nn
+
 from .config import RepeatLastValuesConfig
 
 
@@ -39,8 +39,8 @@ class RepeatLastValues(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        static: Optional[torch.Tensor] = None,
-        future: Optional[torch.Tensor] = None,
+        static: torch.Tensor | None = None,
+        future: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Forward pass: repeat the last observed value for the entire forecast horizon.
 

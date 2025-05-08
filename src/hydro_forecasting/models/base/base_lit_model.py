@@ -1,9 +1,11 @@
+from typing import Any
+
 import pytorch_lightning as pl
 import torch
-from typing import Dict, Optional, Any
 from torch.nn import MSELoss
 from torch.optim import Adam
 from torch.optim.lr_scheduler import ReduceLROnPlateau
+
 from .base_config import BaseConfig
 
 
@@ -23,15 +25,13 @@ class BaseLitModel(pl.LightningModule):
     def forward(
         self,
         x: torch.Tensor,
-        static: Optional[torch.Tensor] = None,
-        future: Optional[torch.Tensor] = None,
+        static: torch.Tensor | None = None,
+        future: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Forward pass to be implemented by subclasses."""
         raise NotImplementedError("Subclasses must implement forward method")
 
-    def training_step(
-        self, batch: Dict[str, torch.Tensor], batch_idx: int
-    ) -> torch.Tensor:
+    def training_step(self, batch: dict[str, torch.Tensor], batch_idx: int) -> torch.Tensor:
         """Execute training step."""
         # Extract inputs
         x, y = batch["X"], batch["y"].unsqueeze(-1)
@@ -49,15 +49,11 @@ class BaseLitModel(pl.LightningModule):
 
         return loss
 
-    def _compute_loss(
-        self, predictions: torch.Tensor, targets: torch.Tensor
-    ) -> torch.Tensor:
+    def _compute_loss(self, predictions: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         """Compute loss between predictions and targets."""
         return self.mse_criterion(predictions, targets)
 
-    def validation_step(
-        self, batch: Dict[str, torch.Tensor], batch_idx: int
-    ) -> Dict[str, torch.Tensor]:
+    def validation_step(self, batch: dict[str, torch.Tensor], batch_idx: int) -> dict[str, torch.Tensor]:
         """Execute validation step."""
         # Extract inputs
         x, y = batch["X"], batch["y"].unsqueeze(-1)
@@ -75,9 +71,7 @@ class BaseLitModel(pl.LightningModule):
 
         return {"val_loss": loss, "preds": y_hat, "targets": y}
 
-    def test_step(
-        self, batch: Dict[str, torch.Tensor], batch_idx: int
-    ) -> Dict[str, torch.Tensor]:
+    def test_step(self, batch: dict[str, torch.Tensor], batch_idx: int) -> dict[str, torch.Tensor]:
         """Execute test step."""
         # Extract inputs
         x, y = batch["X"], batch["y"].unsqueeze(-1)
@@ -130,14 +124,12 @@ class BaseLitModel(pl.LightningModule):
         # Add optional fields if present
         for field in ["input_end_date", "slice_idx"]:
             if field in self.test_outputs[0]:
-                self.test_results[field] = [
-                    item for o in self.test_outputs for item in o[field]
-                ]
+                self.test_results[field] = [item for o in self.test_outputs for item in o[field]]
 
         # Clean up temporary storage
         self.test_outputs = []
 
-    def configure_optimizers(self) -> Dict[str, Any]:
+    def configure_optimizers(self) -> dict[str, Any]:
         """Configure optimizer and learning rate scheduler."""
         optimizer = Adam(self.parameters(), lr=self.config.learning_rate)
 

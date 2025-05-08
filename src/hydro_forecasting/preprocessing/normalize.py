@@ -1,5 +1,6 @@
 import pandas as pd
 from sklearn.preprocessing import PowerTransformer
+
 from .base import HydroTransformer
 
 
@@ -63,10 +64,7 @@ class NormalizeTransformer(HydroTransformer):
         # Handle numpy array
         else:
             # Extract columns to transform
-            cols_idx = [
-                col if isinstance(col, int) else list(X.columns).index(col)
-                for col in feature_cols
-            ]
+            cols_idx = [col if isinstance(col, int) else list(X.columns).index(col) for col in feature_cols]
             X_subset = X[:, cols_idx].copy()
             self._transformer.fit(X_subset)
 
@@ -106,10 +104,7 @@ class NormalizeTransformer(HydroTransformer):
             X_transformed = X.copy() if self.copy else X
 
             # Extract columns to transform
-            cols_idx = [
-                col if isinstance(col, int) else list(X.columns).index(col)
-                for col in feature_cols
-            ]
+            cols_idx = [col if isinstance(col, int) else list(X.columns).index(col) for col in feature_cols]
             X_subset = X[:, cols_idx].copy()
 
             # Apply transformation
@@ -151,10 +146,7 @@ class NormalizeTransformer(HydroTransformer):
             X_inverse = X.copy() if self.copy else X
 
             # Extract columns to transform
-            cols_idx = [
-                col if isinstance(col, int) else list(X.columns).index(col)
-                for col in feature_cols
-            ]
+            cols_idx = [col if isinstance(col, int) else list(X.columns).index(col) for col in feature_cols]
             X_subset = X[:, cols_idx].copy()
 
             # Apply inverse transformation

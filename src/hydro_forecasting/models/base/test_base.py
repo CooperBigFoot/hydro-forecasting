@@ -1,8 +1,8 @@
 # test_base_classes.py
-from base_config import BaseConfig
-from base_lit_model import BaseLitModel
 import torch
 import torch.nn as nn
+from base_config import BaseConfig
+from base_lit_model import BaseLitModel
 
 
 # Create a test config class

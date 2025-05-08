@@ -1,13 +1,15 @@
-import json
 import hashlib
+import json
 import uuid
 from pathlib import Path
-from typing import Any, TYPE_CHECKING, Union
-from returns.result import Result, Success, Failure  # ROP import
+from typing import TYPE_CHECKING, Any, Union
+
+from returns.result import Failure, Result, Success  # ROP import
 
 if TYPE_CHECKING:
-    from ..data_deprecated.lazy_datamodule import HydroLazyDataModule
     from sklearn.pipeline import Pipeline
+
+    from ..data_deprecated.lazy_datamodule import HydroLazyDataModule
     from ..preprocessing.grouped import GroupedPipeline
 
 # Fixed namespace for hydro-forecasting processing runs
@@ -140,7 +142,7 @@ def load_config(filepath: Path) -> Result[dict[str, Any], str]:
     try:
         if not filepath.is_file():
             return Failure(f"Configuration file not found: {filepath}")
-        with open(filepath, "r", encoding="utf-8") as f:
+        with open(filepath, encoding="utf-8") as f:
             loaded_config = json.load(f)
         if not isinstance(loaded_config, dict):
             return Failure(f"Loaded object is not a dict, got {type(loaded_config)}")
@@ -222,12 +224,8 @@ def extract_relevant_config(datamodule: "HydroLazyDataModule") -> dict[str, Any]
         if datamodule.list_of_gauge_ids_to_process
         else None,
         # Resource paths
-        "region_time_series_dirs": {
-            k: str(v) for k, v in datamodule.region_time_series_base_dirs.items()
-        },
-        "region_static_attributes_dirs": {
-            k: str(v) for k, v in datamodule.region_static_attributes_base_dirs.items()
-        },
+        "region_time_series_dirs": {k: str(v) for k, v in datamodule.region_time_series_base_dirs.items()},
+        "region_static_attributes_dirs": {k: str(v) for k, v in datamodule.region_static_attributes_base_dirs.items()},
         "output_directory": str(datamodule.path_to_preprocessing_output_directory),
         # Preprocessing pipeline configuration keys
         # We don't include actual pipeline objects as they can't be JSON serialized

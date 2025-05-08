@@ -1,11 +1,11 @@
-from typing import Dict, Any, List, Optional, ClassVar
+from typing import Any, ClassVar
 
 
 class BaseConfig:
     """Base configuration class for all hydrological forecasting models."""
 
     # Standard parameters all models should support
-    STANDARD_PARAMS: ClassVar[List[str]] = [
+    STANDARD_PARAMS: ClassVar[list[str]] = [
         "input_len",
         "output_len",
         "input_size",
@@ -16,7 +16,7 @@ class BaseConfig:
     ]
 
     # Model-specific parameters to be defined in subclasses
-    MODEL_PARAMS: ClassVar[List[str]] = []
+    MODEL_PARAMS: ClassVar[list[str]] = []
 
     def __init__(
         self,
@@ -24,7 +24,7 @@ class BaseConfig:
         output_len: int,
         input_size: int,
         static_size: int = 0,
-        future_input_size: Optional[int] = None,
+        future_input_size: int | None = None,
         learning_rate: float = 1e-5,
         group_identifier: str = "gauge_id",
         **kwargs,
@@ -48,16 +48,14 @@ class BaseConfig:
             if param in self.MODEL_PARAMS:
                 setattr(self, param, value)
             else:
-                raise ValueError(
-                    f"Unknown parameter '{param}' for {self.__class__.__name__}"
-                )
+                raise ValueError(f"Unknown parameter '{param}' for {self.__class__.__name__}")
 
     @classmethod
-    def from_dict(cls, config_dict: Dict[str, Any]) -> "BaseConfig":
+    def from_dict(cls, config_dict: dict[str, Any]) -> "BaseConfig":
         """Create a config object from a dictionary."""
         return cls(**config_dict)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert config to dictionary."""
         return {k: v for k, v in self.__dict__.items() if not k.startswith("_")}
 
@@ -67,7 +65,5 @@ class BaseConfig:
             if key in self.STANDARD_PARAMS or key in self.MODEL_PARAMS:
                 setattr(self, key, value)
             else:
-                raise ValueError(
-                    f"Unknown parameter '{key}' for {self.__class__.__name__}"
-                )
+                raise ValueError(f"Unknown parameter '{key}' for {self.__class__.__name__}")
         return self

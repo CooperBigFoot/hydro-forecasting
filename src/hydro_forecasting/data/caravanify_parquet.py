@@ -1,8 +1,8 @@
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Union, Optional
+
 import pandas as pd
-from concurrent.futures import ThreadPoolExecutor
 
 
 @dataclass
@@ -21,12 +21,12 @@ class CaravanifyParquetConfig:
         human_influence_path: Path to human influence classification parquet (with gauge_id and human_influence_category columns)
     """
 
-    attributes_dir: Union[str, Path]
-    timeseries_dir: Union[str, Path]
+    attributes_dir: str | Path
+    timeseries_dir: str | Path
     gauge_id_prefix: str
-    shapefile_dir: Optional[Union[str, Path]] = None
+    shapefile_dir: str | Path | None = None
 
-    human_influence_path: Optional[Union[str, Path]] = None
+    human_influence_path: str | Path | None = None
 
     use_caravan_attributes: bool = True
     use_hydroatlas_attributes: bool = False
@@ -83,9 +83,7 @@ class CaravanifyParquet:
         prefix = f"{self.config.gauge_id_prefix}_"
         invalid_ids = [gid for gid in gauge_ids if not gid.startswith(prefix)]
         if invalid_ids:
-            raise ValueError(
-                f"Found gauge IDs that don't match prefix {prefix}: {invalid_ids}"
-            )
+            raise ValueError(f"Found gauge IDs that don't match prefix {prefix}: {invalid_ids}")
 
         return sorted(gauge_ids)
 
@@ -129,9 +127,7 @@ class CaravanifyParquet:
 
         def read_single(fp: Path) -> pd.DataFrame:
             df = pd.read_parquet(fp, engine="pyarrow")
-            if "date" in df.columns and not pd.api.types.is_datetime64_any_dtype(
-                df["date"]
-            ):
+            if "date" in df.columns and not pd.api.types.is_datetime64_any_dtype(df["date"]):
                 df["date"] = pd.to_datetime(df["date"])
             df["gauge_id"] = fp.stem
             return df
@@ -156,7 +152,7 @@ class CaravanifyParquet:
         gauge_ids_set = set(gauge_ids)
         dfs = []
 
-        def load_attributes(file_name: str) -> Union[pd.DataFrame, None]:
+        def load_attributes(file_name: str) -> pd.DataFrame | None:
             """
             Load attribute data from a parquet file, filter by gauge IDs, and set 'gauge_id' as the index.
 
@@ -180,23 +176,17 @@ class CaravanifyParquet:
 
         # Load enabled attribute types based on configuration flags
         if self.config.use_other_attributes:
-            other_df = load_attributes(
-                f"attributes_other_{self.config.gauge_id_prefix}.parquet"
-            )
+            other_df = load_attributes(f"attributes_other_{self.config.gauge_id_prefix}.parquet")
             if other_df is not None:
                 dfs.append(other_df)
 
         if self.config.use_hydroatlas_attributes:
-            hydro_df = load_attributes(
-                f"attributes_hydroatlas_{self.config.gauge_id_prefix}.parquet"
-            )
+            hydro_df = load_attributes(f"attributes_hydroatlas_{self.config.gauge_id_prefix}.parquet")
             if hydro_df is not None:
                 dfs.append(hydro_df)
 
         if self.config.use_caravan_attributes:
-            caravan_df = load_attributes(
-                f"attributes_caravan_{self.config.gauge_id_prefix}.parquet"
-            )
+            caravan_df = load_attributes(f"attributes_caravan_{self.config.gauge_id_prefix}.parquet")
             if caravan_df is not None:
                 dfs.append(caravan_df)
 
@@ -231,10 +221,7 @@ class CaravanifyParquet:
         if not self.time_series:
             return pd.DataFrame()
         df = pd.concat(self.time_series.values(), ignore_index=True)
-        return df[
-            ["gauge_id", "date"]
-            + [c for c in df.columns if c not in ("gauge_id", "date")]
-        ]
+        return df[["gauge_id", "date"] + [c for c in df.columns if c not in ("gauge_id", "date")]]
 
     def get_static_attributes(self) -> pd.DataFrame:
         """
@@ -244,7 +231,7 @@ class CaravanifyParquet:
             A pandas DataFrame containing the static attributes.
         """
         return self.static_attributes.copy()
-        
+
     def filter_gauge_ids_by_human_influence(
         self,
         gauge_ids: list[str],
@@ -268,21 +255,15 @@ class CaravanifyParquet:
         """
         # Load human influence data
         try:
-            human_influence_df = pd.read_parquet(
-                self.config.human_influence_path, engine="pyarrow"
-            )
+            human_influence_df = pd.read_parquet(self.config.human_influence_path, engine="pyarrow")
         except Exception as e:
-            raise IOError(f"Failed to load human influence Parquet data: {e}")
+            raise OSError(f"Failed to load human influence Parquet data: {e}")
 
         # Verify human influence data has required columns
         required_cols = ["gauge_id", "human_influence_category"]
-        missing_cols = [
-            col for col in required_cols if col not in human_influence_df.columns
-        ]
+        missing_cols = [col for col in required_cols if col not in human_influence_df.columns]
         if missing_cols:
-            raise ValueError(
-                f"Human influence data missing required columns: {missing_cols}"
-            )
+            raise ValueError(f"Human influence data missing required columns: {missing_cols}")
 
         # Convert categories to list if a string was provided
         if isinstance(categories, str):
@@ -290,13 +271,10 @@ class CaravanifyParquet:
 
         # Check if specified categories exist in the data
         available_categories = human_influence_df["human_influence_category"].unique()
-        invalid_categories = [
-            cat for cat in categories if cat not in available_categories
-        ]
+        invalid_categories = [cat for cat in categories if cat not in available_categories]
         if invalid_categories:
             raise ValueError(
-                f"Invalid categories: {invalid_categories}. "
-                f"Available categories: {available_categories.tolist()}"
+                f"Invalid categories: {invalid_categories}. Available categories: {available_categories.tolist()}"
             )
 
         # Filter human influence data to include only specified categories and gauge IDs

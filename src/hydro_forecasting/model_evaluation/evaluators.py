@@ -1,9 +1,10 @@
-import numpy as np
-import polars as pl
-from typing import Dict, List, Tuple, Optional, Any
-import pytorch_lightning as pl_trainer
 import copy
 import datetime
+from typing import Any
+
+import numpy as np
+import polars as pl
+import pytorch_lightning as pl_trainer
 
 
 class TSForecastEvaluator:
@@ -11,21 +12,19 @@ class TSForecastEvaluator:
 
     def __init__(
         self,
-        horizons: List[int],
-        models_and_datamodules: Dict[
-            str, Tuple[pl_trainer.LightningModule, pl_trainer.LightningDataModule]
-        ] = None,
-        default_datamodule: Optional[pl_trainer.LightningDataModule] = None,
+        horizons: list[int],
+        models_and_datamodules: dict[str, tuple[pl_trainer.LightningModule, pl_trainer.LightningDataModule]] = None,
+        default_datamodule: pl_trainer.LightningDataModule | None = None,
         benchmark_model: str = None,
-        trainer_kwargs: Dict[str, Any] = None,
+        trainer_kwargs: dict[str, Any] = None,
     ):
         self.horizons = sorted(list(set(horizons)))
         self.default_datamodule = default_datamodule
         self.benchmark_model = benchmark_model
         self.trainer_kwargs = trainer_kwargs or {"accelerator": "cpu", "devices": 1}
-        self.results: Dict[str, Dict[str, Any]] = {}
-        self.models: Dict[str, pl_trainer.LightningModule] = {}
-        self.datamodules: Dict[str, pl_trainer.LightningDataModule] = {}
+        self.results: dict[str, dict[str, Any]] = {}
+        self.models: dict[str, pl_trainer.LightningModule] = {}
+        self.datamodules: dict[str, pl_trainer.LightningDataModule] = {}
 
         if models_and_datamodules:
             for name, (model, datamodule) in models_and_datamodules.items():
@@ -36,23 +35,17 @@ class TSForecastEvaluator:
         self,
         name: str,
         model: pl_trainer.LightningModule,
-        datamodule: Optional[pl_trainer.LightningDataModule] = None,
+        datamodule: pl_trainer.LightningDataModule | None = None,
     ):
         self.models[name] = copy.deepcopy(model)
         if datamodule:
             self.datamodules[name] = datamodule
         elif name not in self.datamodules and self.default_datamodule is None:
-            print(
-                f"Warning: No datamodule provided for model '{name}' and no default datamodule available"
-            )
+            print(f"Warning: No datamodule provided for model '{name}' and no default datamodule available")
 
-    def test_models(
-        self, datamodule: Optional[pl_trainer.LightningDataModule] = None
-    ) -> Dict[str, Dict[str, Any]]:
+    def test_models(self, datamodule: pl_trainer.LightningDataModule | None = None) -> dict[str, dict[str, Any]]:
         for name, model in self.models.items():
-            model_datamodule = self.datamodules.get(
-                name, datamodule or self.default_datamodule
-            )
+            model_datamodule = self.datamodules.get(name, datamodule or self.default_datamodule)
             if model_datamodule is None:
                 raise ValueError(f"No datamodule found for model '{name}'")
 
@@ -66,9 +59,7 @@ class TSForecastEvaluator:
                     "Ensure your LightningModule stores test outputs in self.test_results."
                 )
 
-            df, metrics, basin_metrics = self.evaluate(
-                model.test_results, model_datamodule
-            )
+            df, metrics, basin_metrics = self.evaluate(model.test_results, model_datamodule)
             self.results[name] = {
                 "df": df,
                 "metrics": metrics,
@@ -78,15 +69,13 @@ class TSForecastEvaluator:
         return self.results
 
     def test_specific_model(
-        self, name: str, datamodule: Optional[pl_trainer.LightningDataModule] = None
-    ) -> Dict[str, Any]:
+        self, name: str, datamodule: pl_trainer.LightningDataModule | None = None
+    ) -> dict[str, Any]:
         if name not in self.models:
             raise ValueError(f"Model '{name}' not found")
 
         model = self.models[name]
-        model_datamodule = datamodule or self.datamodules.get(
-            name, self.default_datamodule
-        )
+        model_datamodule = datamodule or self.datamodules.get(name, self.default_datamodule)
         if model_datamodule is None:
             raise ValueError(f"No datamodule found for model '{name}'")
 
@@ -107,12 +96,12 @@ class TSForecastEvaluator:
 
     def evaluate(
         self,
-        test_results: Dict[str, Any],
-        datamodule: Optional[pl_trainer.LightningDataModule] = None,
-    ) -> Tuple[
+        test_results: dict[str, Any],
+        datamodule: pl_trainer.LightningDataModule | None = None,
+    ) -> tuple[
         pl.DataFrame,
-        Dict[int, Dict[str, float]],
-        Dict[str, Dict[int, Dict[str, float]]],
+        dict[int, dict[str, float]],
+        dict[str, dict[int, dict[str, float]]],
     ]:
         df = self._prepare_evaluation_dataframe(test_results, datamodule)
         overall_metrics = self._calculate_overall_metrics(df)
@@ -121,8 +110,8 @@ class TSForecastEvaluator:
 
     def _prepare_evaluation_dataframe(
         self,
-        test_results: Dict[str, Any],
-        datamodule: Optional[pl_trainer.LightningDataModule] = None,
+        test_results: dict[str, Any],
+        datamodule: pl_trainer.LightningDataModule | None = None,
     ) -> pl.DataFrame:
         basin_ids_list = test_results.get("basin_ids")
         preds_tensor = test_results.get("predictions")
@@ -131,26 +120,14 @@ class TSForecastEvaluator:
         input_end_date_ms_list = test_results.get("input_end_date")
 
         if basin_ids_list is None or preds_tensor is None or obs_tensor is None:
-            raise ValueError(
-                "Missing required keys in test_results: 'basin_ids', 'predictions', 'observations'"
-            )
+            raise ValueError("Missing required keys in test_results: 'basin_ids', 'predictions', 'observations'")
 
-        preds_np = (
-            preds_tensor.cpu().numpy()
-            if hasattr(preds_tensor, "cpu")
-            else np.array(preds_tensor)
-        )
-        obs_np = (
-            obs_tensor.cpu().numpy()
-            if hasattr(obs_tensor, "cpu")
-            else np.array(obs_tensor)
-        )
+        preds_np = preds_tensor.cpu().numpy() if hasattr(preds_tensor, "cpu") else np.array(preds_tensor)
+        obs_np = obs_tensor.cpu().numpy() if hasattr(obs_tensor, "cpu") else np.array(obs_tensor)
         basin_ids_np = np.array(basin_ids_list)
 
         if preds_np.shape != obs_np.shape:
-            raise ValueError(
-                f"Prediction shape {preds_np.shape} doesn't match observation shape {obs_np.shape}"
-            )
+            raise ValueError(f"Prediction shape {preds_np.shape} doesn't match observation shape {obs_np.shape}")
         if preds_np.ndim != 2:
             raise ValueError(
                 f"Unexpected prediction shape {preds_np.shape}, expected 2D array [num_samples, num_horizons]"
@@ -168,9 +145,7 @@ class TSForecastEvaluator:
         preds_flat = preds_np.flatten()
         obs_flat = obs_np.flatten()
         if len(basin_ids_np) != num_samples:
-            raise ValueError(
-                f"Basin IDs length ({len(basin_ids_np)}) != num samples ({num_samples})"
-            )
+            raise ValueError(f"Basin IDs length ({len(basin_ids_np)}) != num samples ({num_samples})")
 
         basin_ids_expanded = np.repeat(basin_ids_np, horizons_per_sample)
         horizons_expanded = np.tile(np.array(current_horizons), num_samples)
@@ -182,36 +157,25 @@ class TSForecastEvaluator:
                     f"Warning: input_end_date_ms_list length ({len(input_end_date_ms_list)}) != num samples ({num_samples}). Aligning."
                 )
                 if not input_end_date_ms_list:
-                    input_end_date_ms_list = [
-                        None
-                    ] * num_samples  # Default to None if empty
+                    input_end_date_ms_list = [None] * num_samples  # Default to None if empty
                 elif len(input_end_date_ms_list) < num_samples:
                     input_end_date_ms_list.extend(
-                        [input_end_date_ms_list[-1]]
-                        * (num_samples - len(input_end_date_ms_list))
+                        [input_end_date_ms_list[-1]] * (num_samples - len(input_end_date_ms_list))
                     )
                 else:
                     input_end_date_ms_list = input_end_date_ms_list[:num_samples]
 
             base_python_datetimes = []
             for ms_timestamp in input_end_date_ms_list:
-                if ms_timestamp is None or np.isnan(
-                    ms_timestamp
-                ):  # np.isnan for safety if it could be float NaN
+                if ms_timestamp is None or np.isnan(ms_timestamp):  # np.isnan for safety if it could be float NaN
                     base_python_datetimes.append(None)
                 else:
                     try:
                         # Convert ms to seconds for fromtimestamp, ensure UTC
-                        dt_obj = datetime.datetime.fromtimestamp(
-                            int(ms_timestamp) / 1000.0, tz=datetime.timezone.utc
-                        )
-                        base_python_datetimes.append(
-                            dt_obj.replace(tzinfo=None)
-                        )  # Store as naive for Polars
+                        dt_obj = datetime.datetime.fromtimestamp(int(ms_timestamp) / 1000.0, tz=datetime.timezone.utc)
+                        base_python_datetimes.append(dt_obj.replace(tzinfo=None))  # Store as naive for Polars
                     except (ValueError, TypeError, OverflowError) as e:
-                        print(
-                            f"Warning: Could not convert timestamp {ms_timestamp} to datetime: {e}. Using None."
-                        )
+                        print(f"Warning: Could not convert timestamp {ms_timestamp} to datetime: {e}. Using None.")
                         base_python_datetimes.append(None)
 
             for base_dt_naive in base_python_datetimes:
@@ -219,13 +183,9 @@ class TSForecastEvaluator:
                     if base_dt_naive is None:
                         dates_expanded.append(None)
                     else:
-                        dates_expanded.append(
-                            base_dt_naive + datetime.timedelta(days=int(h_val))
-                        )
+                        dates_expanded.append(base_dt_naive + datetime.timedelta(days=int(h_val)))
         else:
-            print(
-                "Warning: No 'input_end_date' in test_results. Dates will be missing."
-            )
+            print("Warning: No 'input_end_date' in test_results. Dates will be missing.")
             dates_expanded = [None] * len(preds_flat)
 
         schema = {
@@ -247,18 +207,12 @@ class TSForecastEvaluator:
         )
 
         dm_for_transform = datamodule or self.default_datamodule
-        if dm_for_transform and hasattr(
-            dm_for_transform, "inverse_transform_predictions"
-        ):
+        if dm_for_transform and hasattr(dm_for_transform, "inverse_transform_predictions"):
             try:
                 pred_numpy = df.get_column("prediction").to_numpy()
                 obs_numpy = df.get_column("observed").to_numpy()
-                transformed_preds = dm_for_transform.inverse_transform_predictions(
-                    pred_numpy, basin_ids_expanded
-                )
-                transformed_obs = dm_for_transform.inverse_transform_predictions(
-                    obs_numpy, basin_ids_expanded
-                )
+                transformed_preds = dm_for_transform.inverse_transform_predictions(pred_numpy, basin_ids_expanded)
+                transformed_obs = dm_for_transform.inverse_transform_predictions(obs_numpy, basin_ids_expanded)
                 df = df.with_columns(
                     [
                         pl.Series("prediction", transformed_preds, dtype=pl.Float32),
@@ -270,10 +224,8 @@ class TSForecastEvaluator:
 
         return df
 
-    def _calculate_overall_metrics(
-        self, df: pl.DataFrame
-    ) -> Dict[int, Dict[str, float]]:
-        overall_metrics: Dict[int, Dict[str, float]] = {}
+    def _calculate_overall_metrics(self, df: pl.DataFrame) -> dict[int, dict[str, float]]:
+        overall_metrics: dict[int, dict[str, float]] = {}
         max_available_horizon = df.get_column("horizon").max() if df.height > 0 else 0
 
         for h in self.horizons:
@@ -283,15 +235,11 @@ class TSForecastEvaluator:
             if not horizon_data.is_empty():
                 overall_metrics[h] = self._calculate_metrics(horizon_data)
             else:
-                overall_metrics[h] = {
-                    metric: np.nan for metric in ["MSE", "MAE", "NSE", "RMSE"]
-                }
+                overall_metrics[h] = dict.fromkeys(["MSE", "MAE", "NSE", "RMSE"], np.nan)
         return overall_metrics
 
-    def _calculate_basin_metrics(
-        self, df: pl.DataFrame
-    ) -> Dict[str, Dict[int, Dict[str, float]]]:
-        basin_metrics: Dict[str, Dict[int, Dict[str, float]]] = {}
+    def _calculate_basin_metrics(self, df: pl.DataFrame) -> dict[str, dict[int, dict[str, float]]]:
+        basin_metrics: dict[str, dict[int, dict[str, float]]] = {}
         if df.is_empty():
             return basin_metrics
 
@@ -306,24 +254,18 @@ class TSForecastEvaluator:
                     continue
                 horizon_data = basin_data.filter(pl.col("horizon") == h)
                 if not horizon_data.is_empty():
-                    basin_metrics[basin_id_val][h] = self._calculate_metrics(
-                        horizon_data
-                    )
+                    basin_metrics[basin_id_val][h] = self._calculate_metrics(horizon_data)
                 else:
-                    basin_metrics[basin_id_val][h] = {
-                        metric: np.nan for metric in ["MSE", "MAE", "NSE", "RMSE"]
-                    }
+                    basin_metrics[basin_id_val][h] = dict.fromkeys(["MSE", "MAE", "NSE", "RMSE"], np.nan)
         return basin_metrics
 
-    def _calculate_metrics(self, data: pl.DataFrame) -> Dict[str, float]:
+    def _calculate_metrics(self, data: pl.DataFrame) -> dict[str, float]:
         if data.is_empty():
-            return {metric: np.nan for metric in ["MSE", "MAE", "NSE", "RMSE"]}
+            return dict.fromkeys(["MSE", "MAE", "NSE", "RMSE"], np.nan)
         if "prediction" not in data.columns or "observed" not in data.columns:
-            return {metric: np.nan for metric in ["MSE", "MAE", "NSE", "RMSE"]}
+            return dict.fromkeys(["MSE", "MAE", "NSE", "RMSE"], np.nan)
 
-        pred = (
-            data.get_column("prediction").drop_nulls().to_numpy()
-        )  # Drop nulls before to_numpy
+        pred = data.get_column("prediction").drop_nulls().to_numpy()  # Drop nulls before to_numpy
         obs = data.get_column("observed").drop_nulls().to_numpy()
 
         # Align arrays after dropping nulls independently if lengths differ
@@ -335,7 +277,7 @@ class TSForecastEvaluator:
         obs = obs[:min_len]
 
         if len(pred) == 0:
-            return {metric: np.nan for metric in ["MSE", "MAE", "NSE", "RMSE"]}
+            return dict.fromkeys(["MSE", "MAE", "NSE", "RMSE"], np.nan)
 
         return {
             "MSE": self.calculate_mse(pred, obs),
@@ -344,31 +286,23 @@ class TSForecastEvaluator:
             "RMSE": self.calculate_rmse(pred, obs),
         }
 
-    def summarize_metrics(
-        self, metrics_dict: Dict[Any, Any], per_basin: bool = False
-    ) -> pl.DataFrame:
+    def summarize_metrics(self, metrics_dict: dict[Any, Any], per_basin: bool = False) -> pl.DataFrame:
         rows = []
         if per_basin:
             for basin_id, basin_data in metrics_dict.items():
                 for horizon, horizon_metrics in basin_data.items():
-                    rows.append(
-                        {"basin_id": basin_id, "horizon": horizon, **horizon_metrics}
-                    )
+                    rows.append({"basin_id": basin_id, "horizon": horizon, **horizon_metrics})
         else:
             for horizon, horizon_metrics in metrics_dict.items():
                 rows.append({"horizon": horizon, **horizon_metrics})
 
         return pl.from_dicts(rows) if rows else pl.DataFrame()
 
-    def flatten_basin_metrics(
-        self, basin_metrics: Dict[str, Dict[int, Dict[str, float]]]
-    ) -> pl.DataFrame:
+    def flatten_basin_metrics(self, basin_metrics: dict[str, dict[int, dict[str, float]]]) -> pl.DataFrame:
         rows = []
         for basin_id, horizons_data in basin_metrics.items():
             for horizon, metrics_values in horizons_data.items():
-                rows.append(
-                    {"basin_id": basin_id, "horizon": horizon, **metrics_values}
-                )
+                rows.append({"basin_id": basin_id, "horizon": horizon, **metrics_values})
         return pl.from_dicts(rows) if rows else pl.DataFrame()
 
     @staticmethod
@@ -395,9 +329,7 @@ class TSForecastEvaluator:
             return np.nan
         mean_obs = np.mean(obs)
         if np.all(obs == mean_obs):  # Denominator would be zero
-            return (
-                1.0 if np.sum((pred - obs) ** 2) == 0 else -np.inf
-            )  # Or np.nan, or other convention
+            return 1.0 if np.sum((pred - obs) ** 2) == 0 else -np.inf  # Or np.nan, or other convention
         numerator = np.sum((pred - obs) ** 2)
         denominator = np.sum((obs - mean_obs) ** 2)
         if denominator == 0:  # Should be caught by above, but for safety

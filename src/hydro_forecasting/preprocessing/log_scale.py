@@ -1,6 +1,6 @@
-from typing import List, Optional, Union
 import numpy as np
 import pandas as pd
+
 from .base import HydroTransformer
 
 
@@ -16,7 +16,7 @@ class LogTransformer(HydroTransformer):
         _fitted_state: Dictionary storing offsets for each column
     """
 
-    def __init__(self, columns: Optional[List[str]] = None, epsilon: float = 1e-3):
+    def __init__(self, columns: list[str] | None = None, epsilon: float = 1e-3):
         """Initialize LogTransformer.
 
         Args:
@@ -27,9 +27,7 @@ class LogTransformer(HydroTransformer):
         self.epsilon = epsilon
         self._fitted_state["offsets"] = {}
 
-    def fit(
-        self, X: Union[pd.DataFrame, np.ndarray], y: Optional[pd.Series] = None
-    ) -> "LogTransformer":
+    def fit(self, X: pd.DataFrame | np.ndarray, y: pd.Series | None = None) -> "LogTransformer":
         """Fit transformer by computing offsets for negative values.
 
         Args:
@@ -47,21 +45,15 @@ class LogTransformer(HydroTransformer):
         if isinstance(X, pd.DataFrame):
             for col_idx, col in enumerate(feature_cols):
                 min_val = X[col].min()
-                self._fitted_state["offsets"][col] = (
-                    abs(min_val) + self.epsilon if min_val < 0 else 0
-                )
+                self._fitted_state["offsets"][col] = abs(min_val) + self.epsilon if min_val < 0 else 0
         else:
             for col_idx, col in enumerate(feature_cols):
                 min_val = X[:, col].min()
-                self._fitted_state["offsets"][col] = (
-                    abs(min_val) + self.epsilon if min_val < 0 else 0
-                )
+                self._fitted_state["offsets"][col] = abs(min_val) + self.epsilon if min_val < 0 else 0
 
         return self
 
-    def transform(
-        self, X: Union[pd.DataFrame, np.ndarray]
-    ) -> Union[pd.DataFrame, np.ndarray]:
+    def transform(self, X: pd.DataFrame | np.ndarray) -> pd.DataFrame | np.ndarray:
         """Apply log1p transformation to data.
 
         Args:
@@ -87,9 +79,7 @@ class LogTransformer(HydroTransformer):
                 X_transformed[:, col] = np.log1p(X[:, col] + offset)
             return X_transformed
 
-    def inverse_transform(
-        self, X: Union[pd.DataFrame, np.ndarray]
-    ) -> Union[pd.DataFrame, np.ndarray]:
+    def inverse_transform(self, X: pd.DataFrame | np.ndarray) -> pd.DataFrame | np.ndarray:
         """Apply inverse log1p transformation to data.
 
         Args:

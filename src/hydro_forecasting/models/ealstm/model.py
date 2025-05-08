@@ -6,10 +6,10 @@ local hydrological behaviors via machine learning applied to large-sample datase
 https://hess.copernicus.org/articles/23/5089/2019/
 """
 
-from typing import Optional, Tuple, Union
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
 from .config import EALSTMConfig
 
 
@@ -43,8 +43,8 @@ class EALSTMCell(nn.Module):
         self,
         dynamic_x: torch.Tensor,  # [batch_size, input_size]
         static_x: torch.Tensor,  # [batch_size, static_size]
-        hidden_state: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        hidden_state: tuple[torch.Tensor, torch.Tensor] | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Forward pass for EA-LSTM cell."""
         batch_size = dynamic_x.size(0)
 
@@ -109,12 +109,7 @@ class EALSTM(nn.Module):
 
         # Add projection layers between stacked LSTM layers to convert hidden states to input size
         self.hidden_to_input_projections = (
-            nn.ModuleList(
-                [
-                    nn.Linear(config.hidden_size, config.input_size)
-                    for _ in range(config.num_layers - 1)
-                ]
-            )
+            nn.ModuleList([nn.Linear(config.hidden_size, config.input_size) for _ in range(config.num_layers - 1)])
             if config.num_layers > 1
             else None
         )
@@ -132,9 +127,7 @@ class EALSTM(nn.Module):
         # Future forcing integration (if provided)
         if config.future_input_size > 0:
             self.future_forcing_layer = nn.Sequential(
-                nn.Linear(
-                    config.future_input_size * config.output_len, config.hidden_size
-                ),
+                nn.Linear(config.future_input_size * config.output_len, config.hidden_size),
                 nn.ReLU(),
                 nn.Linear(config.hidden_size, config.output_len),
             )
@@ -145,13 +138,9 @@ class EALSTM(nn.Module):
         self,
         x: torch.Tensor,  # [batch_size, input_len, input_size]
         static: torch.Tensor,  # [batch_size, static_size]
-        future: Optional[
-            torch.Tensor
-        ] = None,  # [batch_size, output_len, future_input_size]
+        future: torch.Tensor | None = None,  # [batch_size, output_len, future_input_size]
         return_hidden: bool = False,  # Flag to control output type
-    ) -> Union[
-        torch.Tensor, torch.Tensor
-    ]:  # [batch_size, output_len, 1] or [batch_size, hidden_size]
+    ) -> torch.Tensor | torch.Tensor:  # [batch_size, output_len, 1] or [batch_size, hidden_size]
         """
         Forward pass of the EA-LSTM model.
 
@@ -212,14 +201,10 @@ class EALSTM(nn.Module):
         # Integrate future forcing if available
         if future is not None and self.future_forcing_layer is not None:
             # Flatten future features
-            future_flat = future.reshape(
-                batch_size, -1
-            )  # [batch_size, output_len * future_input_size]
+            future_flat = future.reshape(batch_size, -1)  # [batch_size, output_len * future_input_size]
 
             # Project future features
-            future_effect = self.future_forcing_layer(
-                future_flat
-            )  # [batch_size, output_len]
+            future_effect = self.future_forcing_layer(future_flat)  # [batch_size, output_len]
 
             # Combine with LSTM output
             output = output + future_effect
@@ -279,9 +264,7 @@ class BiEALSTM(nn.Module):
             combined_size = config.hidden_size + future_hidden_size
         elif self.fusion_method in ["add", "average"]:
             # For add/average, dimensions must match
-            assert config.hidden_size == future_hidden_size, (
-                "Hidden sizes must match for add/average fusion"
-            )
+            assert config.hidden_size == future_hidden_size, "Hidden sizes must match for add/average fusion"
             combined_size = config.hidden_size
         else:
             # Default to concatenation
@@ -298,9 +281,7 @@ class BiEALSTM(nn.Module):
         self,
         x: torch.Tensor,  # [batch_size, input_len, input_size]
         static: torch.Tensor,  # [batch_size, static_size]
-        future: Optional[
-            torch.Tensor
-        ] = None,  # [batch_size, output_len, future_input_size]
+        future: torch.Tensor | None = None,  # [batch_size, output_len, future_input_size]
     ) -> torch.Tensor:  # [batch_size, output_len, 1]
         """
         Forward pass of the Bidirectional EA-LSTM model.
