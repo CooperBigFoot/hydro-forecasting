@@ -8,7 +8,7 @@ from sklearn.pipeline import Pipeline
 from ..preprocessing.grouped import GroupedPipeline
 
 if TYPE_CHECKING:
-    from .datamodule import HydroInMemoryDataModule
+    from .in_memory_datamodule import HydroInMemoryDataModule
 
 
 def validate_positive_integer(param_name: str, value: Any) -> Result[None, str]:

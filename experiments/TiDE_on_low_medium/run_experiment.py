@@ -16,7 +16,7 @@ def main():
     from pytorch_lightning.loggers import TensorBoardLogger
     from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 
-    from hydro_forecasting.data.datamodule import HydroInMemoryDataModule
+    from hydro_forecasting.data.in_memory_datamodule import HydroInMemoryDataModule
 
     from hydro_forecasting.preprocessing.grouped import GroupedPipeline
     from sklearn.pipeline import Pipeline
