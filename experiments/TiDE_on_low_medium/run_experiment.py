@@ -196,7 +196,6 @@ def main():
         domain_id="multi-region-low-medium",
         domain_type="source",
         is_autoregressive=True,
-        load_engine="polars",
     )
 
     print("=========TRAINING THE MODEL==========")

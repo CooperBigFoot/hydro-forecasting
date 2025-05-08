@@ -124,7 +124,7 @@ def validate_target_in_features(
     """
     if target in forcing_features:
         return Failure(
-            f"Target variable '{target}' should NOT be included in the 'forcing_features' list. \n" 
+            f"Target variable '{target}' should NOT be included in the 'forcing_features' list. \n"
             f"To use the past target as an input feature (autoregression), "
             f"set the 'is_autoregressive' flag to True in the DataModule configuration. \n"
             f"The DataModule/Dataset handles adding the target internally when this flag is set."
@@ -265,10 +265,4 @@ def validate_hydro_inmemory_datamodule_config(
         .bind(lambda _: validate_non_empty_string("domain_type", dm.hparams.domain_type))
         .bind(lambda _: validate_boolean("is_autoregressive", dm.hparams.is_autoregressive))
         .bind(lambda _: validate_target_in_features(dm.hparams.target, dm.hparams.forcing_features))
-        .bind(lambda _: validate_non_empty_string("load_engine", dm.hparams.load_engine))
-        .bind(
-            lambda _: Success(None)
-            if dm.hparams.load_engine in ["polars", "pyarrow"]
-            else Failure(f"load_engine must be 'polars' or 'pyarrow', got {dm.hparams.load_engine}")
-        )
     )
