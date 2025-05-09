@@ -1,11 +1,9 @@
 import gc
 import logging
-
-# import torch.multiprocessing as mp # No longer forcing "spawn"
 import random
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import polars as pl
@@ -51,9 +49,10 @@ class LoadedData:
 class HydroInMemoryDataModule(LightningDataModule):
     """
     A PyTorch Lightning DataModule that loads data in chunks into memory.
-    Implements synchronized, memory-efficient chunking for train and val data.
-    Chunks are recomputed (reshuffled and re-partitioned) every time the
-    current set of chunks is exhausted.
+    Implements synchronized, memory-efficient chunking for train data.
+    Validation data is loaded once into a fixed, cached pool.
+    Training chunks are recomputed (reshuffled and re-partitioned) every time the
+    current set of training chunks is exhausted.
     """
 
     def __init__(
@@ -76,11 +75,12 @@ class HydroInMemoryDataModule(LightningDataModule):
         test_prop: float,
         max_imputation_gap_size: int,
         chunk_size: int,
+        validation_chunk_size: int | None = None,
         list_of_gauge_ids_to_process: list[str] | None = None,
         domain_id: str = "source",
         domain_type: str = "source",
         is_autoregressive: bool = False,
-        include_input_end_date_in_batch: bool = True,  # New parameter
+        include_input_end_date_in_batch: bool = True,
     ):
         """
         Initializes the HydroInMemoryDataModule.
@@ -103,18 +103,27 @@ class HydroInMemoryDataModule(LightningDataModule):
             val_prop: Proportion of data for validation split.
             test_prop: Proportion of data for test split.
             max_imputation_gap_size: Maximum gap size for imputation during preprocessing.
-            chunk_size: Number of basins to load into memory per shared chunk.
+            chunk_size: Number of basins to load into memory per shared training chunk.
+            validation_chunk_size: Number of unique basins for the validation set.
+                                   Defaults to 2 * chunk_size if None.
             list_of_gauge_ids_to_process: Optional list to explicitly define which basins to process/use.
             domain_id: Identifier for the data domain.
             domain_type: Type of domain ('source' or 'target').
             is_autoregressive: Whether the model uses past target values as input features.
             include_input_end_date_in_batch: If True, 'input_end_date' (ms timestamp or None)
                                               will be included in the batch dictionary.
-                                              Requires 'date' column in processed Parquet files.
         """
         super().__init__()
         self.preprocessing_configs = preprocessing_configs
+
+        effective_validation_chunk_size = validation_chunk_size if validation_chunk_size is not None else chunk_size * 2
+
+        self.validation_chunk_size_for_validation_only = effective_validation_chunk_size
+
         self.save_hyperparameters(ignore=["preprocessing_configs"])
+
+        if self.hparams.validation_chunk_size is None:
+            self.hparams.validation_chunk_size = effective_validation_chunk_size
 
         validation_result = validate_hydro_inmemory_datamodule_config(self)
         if isinstance(validation_result, Failure):
@@ -144,6 +153,7 @@ class HydroInMemoryDataModule(LightningDataModule):
         self.domain_id = self.hparams.domain_id
         self.domain_type = self.hparams.domain_type
         self.is_autoregressive = self.hparams.is_autoregressive
+        self.include_input_end_date_in_batch = self.hparams.include_input_end_date_in_batch
 
         self._prepare_data_has_run: bool = False
         self.run_uuid: str | None = None
@@ -151,22 +161,20 @@ class HydroInMemoryDataModule(LightningDataModule):
         self.fitted_pipelines: dict[str, Pipeline | GroupedPipeline] = {}
         self.processed_time_series_dir: Path | None = None
         self.processed_static_attributes_path: Path | None = None
-        self.static_data_cache: dict[str, np.ndarray] = {}
-
-        self._prepare_data_has_run: bool = False
-        self.run_uuid: str | None = None
-        self.summary_quality_report: SummaryQualityReport | None = None
-        self.fitted_pipelines: dict[str, Pipeline | GroupedPipeline] = {}
-        self.processed_time_series_dir: Path | None = None
-        self.processed_static_attributes_path: Path | None = None
-        self.static_data_cache: dict[str, torch.Tensor] = {}  # Now stores Tensors
+        self.static_data_cache: dict[str, torch.Tensor] = {}
 
         self.chunkable_basin_ids: list[str] = []
-        self._shared_chunks: list[list[str]] = []
-        self._current_shared_chunk_index: int = -1
+        self._shared_chunks: list[list[str]] = []  # For training
+        self._current_shared_chunk_index: int = -1  # For training
+
+        # Validation specific attributes
+        self._validation_gauge_id_pool: list[str] | None = None
+        self._cached_validation_column_tensors: dict[str, torch.Tensor] | None = None
+        self._cached_validation_index_entries: list[tuple[str, int, int]] | None = None
+        self._cached_validation_basin_row_map: dict[str, tuple[int, int]] | None = None
+
         self._test_basin_ids: list[str] = []
 
-        _input_features = self.hparams.forcing_features
         if self.hparams.is_autoregressive:
             self.input_features_ordered_for_X = [self.hparams.target] + [
                 f for f in self.hparams.forcing_features if f != self.hparams.target
@@ -174,9 +182,12 @@ class HydroInMemoryDataModule(LightningDataModule):
         else:
             self.input_features_ordered_for_X = self.hparams.forcing_features
 
-        self.input_features_ordered_for_X = sorted(list(set(self.input_features_ordered_for_X)))
+        self.input_features_ordered_for_X = sorted(set(self.input_features_ordered_for_X))
+        self.future_features_ordered = sorted(set(self.hparams.forcing_features))
 
-        self.future_features_ordered = sorted(list(set(self.hparams.forcing_features)))
+        # remove temp attribute used for validation
+        if hasattr(self, "validation_chunk_size_for_validation_only"):
+            delattr(self, "validation_chunk_size_for_validation_only")
 
     def prepare_data(self) -> None:
         if self._prepare_data_has_run:
@@ -218,18 +229,18 @@ class HydroInMemoryDataModule(LightningDataModule):
                 region_time_series_base_dirs=self.region_time_series_base_dirs,
                 region_static_attributes_base_dirs=self.region_static_attributes_base_dirs,
                 path_to_preprocessing_output_directory=self.path_to_preprocessing_output_directory,
-                required_columns=self.hparams.forcing_features + [self.hparams.target],
+                required_columns=list(set(self.forcing_features + [self.target])),
                 run_uuid=self.run_uuid,
                 datamodule_config=current_config_dict,
                 preprocessing_config=self.preprocessing_configs,
-                min_train_years=self.hparams.min_train_years,
-                max_imputation_gap_size=self.hparams.max_imputation_gap_size,
-                group_identifier=self.hparams.group_identifier,
-                train_prop=self.hparams.train_prop,
-                val_prop=self.hparams.val_prop,
-                test_prop=self.hparams.test_prop,
-                list_of_gauge_ids_to_process=self.hparams.list_of_gauge_ids_to_process,
-                basin_batch_size=50,
+                min_train_years=self.min_train_years,
+                max_imputation_gap_size=self.max_imputation_gap_size,
+                group_identifier=self.group_identifier,
+                train_prop=self.train_prop,
+                val_prop=self.val_prop,
+                test_prop=self.test_prop,
+                list_of_gauge_ids_to_process=self.list_of_gauge_ids_to_process,
+                basin_batch_size=50,  # Consider making this configurable
             )
 
             if isinstance(processing_result, Failure):
@@ -265,125 +276,162 @@ class HydroInMemoryDataModule(LightningDataModule):
 
         for basin_id in processed_basins_from_report:
             train_file = train_dir / f"{basin_id}.parquet"
-            val_file = val_dir / f"{basin_id}.parquet"
-            test_file = test_dir / f"{basin_id}.parquet"
+            if train_file.exists():  # Check train file for chunkable_basin_ids
+                val_file = val_dir / f"{basin_id}.parquet"  # Also ensure val file exists for it
+                if val_file.exists():
+                    self.chunkable_basin_ids.append(basin_id)
 
-            if train_file.exists() and val_file.exists():
-                self.chunkable_basin_ids.append(basin_id)
+            test_file = test_dir / f"{basin_id}.parquet"
             if test_file.exists():
                 self._test_basin_ids.append(basin_id)
 
-        logger.info(f"Found {len(self.chunkable_basin_ids)} basins for synchronized train/val chunking.")
+        random.shuffle(self.chunkable_basin_ids)
+
+        logger.info(
+            f"Found {len(self.chunkable_basin_ids)} basins for synchronized train/val chunking and validation pool selection."
+        )
         logger.info(f"Found {len(self._test_basin_ids)} basins for test split.")
+
         if not self.chunkable_basin_ids:
-            logger.warning("No basins available for chunkable train/val. Training/validation might be empty.")
+            logger.warning(
+                "No basins available for training chunks or validation pool. Training/validation might be empty."
+            )
 
     def setup(self, stage: str | None = None) -> None:
         if not self._prepare_data_has_run or not self.processed_time_series_dir:
             raise RuntimeError("prepare_data() must be called before setup()")
 
-        if not self.static_data_cache:
+        if not self.static_data_cache:  # Load static data if not already loaded
             self._load_static_data()
 
         if stage == "fit" or stage is None:
+            # 1. Setup Validation Pool and Cache (once)
+            if self._validation_gauge_id_pool is None and self.chunkable_basin_ids:
+                num_val_basins = min(cast(int, self.hparams.validation_chunk_size), len(self.chunkable_basin_ids))
+                self._validation_gauge_id_pool = random.sample(self.chunkable_basin_ids, num_val_basins)
+                logger.info(
+                    f"Created fixed validation pool with {len(self._validation_gauge_id_pool)} basins: {self._validation_gauge_id_pool[:5]}..."
+                )  # Log first 5
+
+            if self._cached_validation_column_tensors is None and self._validation_gauge_id_pool:
+                logger.info(f"Loading and caching data for {len(self._validation_gauge_id_pool)} validation basins...")
+                (
+                    tensors,
+                    indices,
+                    row_map,
+                ) = self._load_and_tensorize_chunk(self._validation_gauge_id_pool, "val")
+
+                if tensors and indices and row_map:
+                    self._cached_validation_column_tensors = tensors
+                    self._cached_validation_index_entries = indices
+                    self._cached_validation_basin_row_map = row_map
+                    logger.info(
+                        f"Successfully cached validation data. Index entries: {len(self._cached_validation_index_entries)}."
+                    )
+                else:
+                    logger.error(f"Failed to load and cache validation data for pool: {self._validation_gauge_id_pool}")
+
+            # 2. Setup Training Chunks (can be re-initialized per full pass)
             if not self.chunkable_basin_ids:
-                logger.warning("No chunkable_basin_ids. Shared chunks will be empty.")
+                logger.warning("No chunkable_basin_ids for training. Shared training chunks will be empty.")
                 self._shared_chunks = []
-            elif not self._shared_chunks:
+            elif not self._shared_chunks:  # Only initialize if empty (first time or after recompute)
                 self._initialize_and_partition_shared_chunks()
                 logger.info(
-                    f"Initial shared chunks: {len(self._shared_chunks)} chunks of approx size {self.hparams.chunk_size} from {len(self.chunkable_basin_ids)} basins."
+                    f"Initial training shared chunks: {len(self._shared_chunks)} chunks of approx size {self.hparams.chunk_size} from {len(self.chunkable_basin_ids)} basins."
                 )
 
     def _initialize_and_partition_shared_chunks(self) -> None:
+        """Initializes or re-initializes training chunks."""
         if not self.chunkable_basin_ids:
-            logger.error("Cannot initialize shared chunks: chunkable_basin_ids is empty.")
+            logger.error("Cannot initialize training chunks: chunkable_basin_ids is empty.")
             self._shared_chunks = []
             return
 
-        logger.info(f"Initializing and partitioning shared chunks from {len(self.chunkable_basin_ids)} basins.")
-        shuffled_basin_ids = random.sample(self.chunkable_basin_ids, len(self.chunkable_basin_ids))
+        logger.info(f"Initializing/Re-initializing training shared chunks from {len(self.chunkable_basin_ids)} basins.")
+        # It's important to shuffle the basin IDs each time we re-partition
+        # to ensure different chunk compositions over full passes.
+        shuffled_training_basin_ids = random.sample(self.chunkable_basin_ids, len(self.chunkable_basin_ids))
+
         self._shared_chunks = [
-            shuffled_basin_ids[i : i + self.hparams.chunk_size]
-            for i in range(0, len(shuffled_basin_ids), self.hparams.chunk_size)
+            shuffled_training_basin_ids[i : i + self.hparams.chunk_size]
+            for i in range(0, len(shuffled_training_basin_ids), self.hparams.chunk_size)
         ]
-        self._shared_chunks = [chunk for chunk in self._shared_chunks if chunk]
-        self._current_shared_chunk_index = -1
-        logger.info(f"Created {len(self._shared_chunks)} shared chunks.")
+        self._shared_chunks = [chunk for chunk in self._shared_chunks if chunk]  # Remove empty chunks if any
+        self._current_shared_chunk_index = -1  # Reset index for the new set of chunks
+        logger.info(f"Created {len(self._shared_chunks)} training shared chunks.")
 
     def _advance_and_recompute_shared_chunks_if_needed(self) -> None:
-        if not self._shared_chunks:
+        """Advances training chunk index and recomputes chunks if exhausted."""
+        if not self._shared_chunks:  # No training chunks to advance
             return
+
         self._current_shared_chunk_index += 1
         if self._current_shared_chunk_index >= len(self._shared_chunks):
-            logger.info("Completed full pass through shared chunks. Recomputing.")
-            self._initialize_and_partition_shared_chunks()
-            self._current_shared_chunk_index = 0
+            logger.info("Completed full pass through training shared chunks. Recomputing.")
+            self._initialize_and_partition_shared_chunks()  # This will shuffle and re-partition
+            self._current_shared_chunk_index = 0  # Start from the first of the new chunks
             if not self._shared_chunks:
-                logger.warning("Re-initialization of shared chunks resulted in an empty list.")
+                logger.warning("Re-initialization of training shared chunks resulted in an empty list.")
                 return
 
     def _load_and_tensorize_chunk(
         self, basin_ids_for_chunk: list[str], stage: str
     ) -> tuple[dict[str, torch.Tensor] | None, list[tuple[str, int, int]] | None, dict[str, tuple[int, int]] | None]:
-        """
-        Loads data for a list of basin IDs, computes valid sequences, and converts to tensors.
-        This is a core helper for train/val/test_dataloader methods.
-
-        Args:
-            basin_ids_for_chunk: List of basin IDs for the current chunk.
-            stage: 'train', 'val', or 'test'.
-
-        Returns:
-            A tuple containing:
-                - chunk_column_tensors: Dict of column names to PyTorch tensors.
-                - index_entries: List of valid sequence definitions.
-                - basin_row_map: Mapping from basin_id to its start row and length in the chunk tensors.
-            Returns (None, None, None) if loading fails or no valid data.
-        """
         if not self.processed_time_series_dir or not basin_ids_for_chunk:
+            logger.warning(
+                f"Cannot load chunk for stage '{stage}': No processed time series dir or no basin IDs provided."
+            )
             return None, None, None
 
         stage_dir = self.processed_time_series_dir / stage
+        if not stage_dir.exists():
+            logger.error(f"Stage directory not found: {stage_dir}")
+            return None, None, None
 
-        # Define all columns that might be needed for X, y, future, and date
-        columns_to_select = [self.hparams.target] + self.hparams.forcing_features
-        if self.hparams.include_input_end_date_in_batch:
+        columns_to_select = [self.target] + self.forcing_features
+        if self.include_input_end_date_in_batch:
             columns_to_select.append("date")
-        columns_to_select = sorted(list(set(columns_to_select)))
+        columns_to_select = sorted(set(columns_to_select))
 
         dfs_to_concat: list[pl.DataFrame] = []
         for basin_id in basin_ids_for_chunk:
             file_path = stage_dir / f"{basin_id}.parquet"
             if file_path.exists():
                 try:
-                    # Ensure 'date' is handled as pl.Datetime for to_torch conversion
-                    df = (
-                        pl.scan_parquet(str(file_path))
-                        .select(columns_to_select)  # Select only necessary columns
-                        .with_columns(pl.col("date").cast(pl.Datetime("us")))  # Cast to datetime if not already
-                        .sort("date")
-                        .collect()
-                    )
+                    df_scan = pl.scan_parquet(str(file_path))
 
-                    # Add group identifier after collection, before concat
-                    dfs_to_concat.append(df.with_columns(pl.lit(basin_id).alias(self.hparams.group_identifier)))
+                    # Ensure all selected columns exist, select them, and cast date
+                    available_cols_in_scan = df_scan.collect_schema().names()
+                    final_cols_to_select_for_file = [col for col in columns_to_select if col in available_cols_in_scan]
+
+                    if not final_cols_to_select_for_file:
+                        logger.warning(f"No columns from {columns_to_select} found in {file_path}. Skipping this file.")
+                        continue
+
+                    df_select = df_scan.select(final_cols_to_select_for_file)
+
+                    if "date" in final_cols_to_select_for_file:  # Ensure date is datetime if present
+                        df_select = df_select.with_columns(pl.col("date").cast(pl.Datetime("us")))
+
+                    df = df_select.sort(
+                        "date" if "date" in final_cols_to_select_for_file else final_cols_to_select_for_file[0]
+                    ).collect()
+
+                    dfs_to_concat.append(df.with_columns(pl.lit(basin_id).alias(self.group_identifier)))
                 except Exception as e:
                     logger.warning(f"Could not load or process file {file_path} for stage {stage}: {e}")
             else:
                 logger.warning(f"File not found for stage {stage}, skipping: {file_path}")
 
         if not dfs_to_concat:
-            logger.error(f"No valid data loaded for chunk in stage '{stage}'.")
+            logger.error(f"No valid data loaded for chunk in stage '{stage}' with basin IDs: {basin_ids_for_chunk}.")
             return None, None, None
 
         try:
-            # Concatenate all basin data for the chunk
-            # `how="vertical_relaxed"` might be safer if schemas aren't perfectly aligned
-            # but preprocessing should ensure alignment of `columns_to_select`.
-            chunk_df_with_ids = pl.concat(dfs_to_concat, how="vertical")
+            chunk_df_with_ids = pl.concat(dfs_to_concat, how="vertical_relaxed")  # Use relaxed for safety
             logger.info(
-                f"Stage '{stage}' chunk data loaded. Shape: {chunk_df_with_ids.shape}. Est. Mem: {chunk_df_with_ids.estimated_size('mb'):.2f} MB"
+                f"Stage '{stage}' chunk data loaded for {len(basin_ids_for_chunk)} basins. Shape: {chunk_df_with_ids.shape}. Est. Mem: {chunk_df_with_ids.estimated_size('mb'):.2f} MB"
             )
         except Exception as e:
             logger.error(f"Failed to concatenate dataframes for chunk in stage '{stage}': {e}")
@@ -393,34 +441,28 @@ class HydroInMemoryDataModule(LightningDataModule):
         gc.collect()
 
         index_entries: list[tuple[str, int, int]] = []
-        basin_row_map: dict[str, tuple[int, int]] = {}  # basin_id -> (abs_start_row_in_chunk, num_rows_for_basin)
+        basin_row_map: dict[str, tuple[int, int]] = {}
         current_absolute_start_row = 0
 
-        for basin_id in basin_ids_for_chunk:  # Iterate in the order they were added to chunk_df_with_ids potentially
-            # It's safer to filter the concatenated df to get per-basin data for find_valid_sequences
-            # This ensures that find_valid_sequences operates on data exactly as it is in the chunk_df_with_ids order
-            basin_specific_df = chunk_df_with_ids.filter(pl.col(self.hparams.group_identifier) == basin_id)
+        for basin_id_in_order in chunk_df_with_ids[self.group_identifier].unique().to_list():
+            basin_specific_df_from_concat = chunk_df_with_ids.filter(pl.col(self.group_identifier) == basin_id_in_order)
 
-            if basin_specific_df.height == 0:
-                logger.warning(
-                    f"No data for basin {basin_id} in concatenated chunk for stage '{stage}'. Skipping indexing."
-                )
+            if basin_specific_df_from_concat.height == 0:
                 continue
 
-            # Map basin_id to its absolute start row and length in the concatenated chunk_df_with_ids
-            basin_row_map[basin_id] = (current_absolute_start_row, basin_specific_df.height)
+            basin_row_map[basin_id_in_order] = (current_absolute_start_row, basin_specific_df_from_concat.height)
 
-            # For find_valid_sequences, use the df without the group_identifier
-            # It expects only date + value columns.
-            # Columns to check for NaNs are target and all forcings.
-            basin_df_for_indexing = basin_specific_df.drop(self.hparams.group_identifier)
+            cols_for_valid_seq = [self.target] + self.forcing_features
+            basin_df_for_indexing = basin_specific_df_from_concat.select(
+                [col for col in ["date"] + cols_for_valid_seq if col in basin_specific_df_from_concat.columns]
+            )
 
             find_result = find_valid_sequences(
                 basin_df_for_indexing,
-                self.hparams.input_length,
-                self.hparams.output_length,
-                self.hparams.target,
-                self.hparams.forcing_features,
+                self.input_length,
+                self.output_length,
+                self.target,
+                self.forcing_features,
             )
 
             if isinstance(find_result, Success):
@@ -428,204 +470,206 @@ class HydroInMemoryDataModule(LightningDataModule):
                 for start_idx_relative_to_basin in positions:
                     index_entries.append(
                         (
-                            basin_id,
+                            basin_id_in_order,  # Use basin_id from the ordered unique list
                             int(start_idx_relative_to_basin),
-                            int(start_idx_relative_to_basin + self.hparams.input_length + self.hparams.output_length),
+                            int(start_idx_relative_to_basin + self.input_length + self.output_length),
                         )
                     )
             else:
                 logger.warning(
-                    f"Could not find valid sequences for basin {basin_id} in stage '{stage}': {find_result.failure()}"
+                    f"Could not find valid sequences for basin {basin_id_in_order} in stage '{stage}': {find_result.failure()}"
                 )
-
-            current_absolute_start_row += basin_specific_df.height
+            current_absolute_start_row += basin_specific_df_from_concat.height
 
         if not index_entries:
             logger.warning(f"No valid sequences found for any basin in the current chunk for stage '{stage}'.")
             return None, None, None
 
-        columns_to_tensorize = [col for col in columns_to_select if col != self.hparams.group_identifier]
+        # Tensorize only columns that were actually loaded and are needed.
+        # `columns_to_select` is the superset of what might be needed.
+        # `chunk_df_with_ids.columns` tells us what was actually loaded.
+        columns_present_in_chunk = chunk_df_with_ids.columns
+        columns_to_tensorize = [
+            col for col in columns_to_select if col in columns_present_in_chunk and col != self.group_identifier
+        ]
 
         df_for_tensor_conversion = chunk_df_with_ids.select(columns_to_tensorize)
-
-        # Create the dictionary of tensors
         chunk_column_tensors: dict[str, torch.Tensor] = {}
 
-        if "date" in df_for_tensor_conversion.columns and self.hparams.include_input_end_date_in_batch:
-            date_timestamps_ms = df_for_tensor_conversion.get_column("date").dt.timestamp(time_unit="ms").cast(pl.Int64)
-            chunk_column_tensors["date"] = torch.from_numpy(date_timestamps_ms.to_numpy())
+        if "date" in df_for_tensor_conversion.columns and self.include_input_end_date_in_batch:
+            date_col_for_tensor = df_for_tensor_conversion.get_column("date")
+            if date_col_for_tensor.dtype == pl.Datetime:
+                date_timestamps_ms = date_col_for_tensor.dt.timestamp(time_unit="ms").cast(pl.Int64)
+                chunk_column_tensors["date"] = torch.from_numpy(date_timestamps_ms.to_numpy())
+            else:
+                logger.warning("'date' column is not of Datetime type, cannot convert to timestamp for tensor.")
             df_for_tensor_conversion = df_for_tensor_conversion.drop("date")
 
+        # Tensorize remaining numeric columns
         if df_for_tensor_conversion.width > 0:
-            other_tensors_dict = df_for_tensor_conversion.to_torch(return_type="dict")
-            chunk_column_tensors.update(other_tensors_dict)
+            try:
+                # Ensure all columns for to_torch are numeric before conversion
+                numeric_df_for_tensor = df_for_tensor_conversion.select(
+                    [pl.col(c).cast(pl.Float32, strict=False) for c in df_for_tensor_conversion.columns]
+                )
+                other_tensors_dict = numeric_df_for_tensor.to_torch(return_type="dict")
+                chunk_column_tensors.update(other_tensors_dict)
+            except Exception as e:
+                logger.error(
+                    f"Error during Polars to_torch conversion for stage '{stage}': {e}. Columns: {df_for_tensor_conversion.columns}, Dtypes: {df_for_tensor_conversion.dtypes}"
+                )
+                return None, None, None
 
         return chunk_column_tensors, index_entries, basin_row_map
 
     def train_dataloader(self) -> DataLoader:
-        self._advance_and_recompute_shared_chunks_if_needed()
+        self._advance_and_recompute_shared_chunks_if_needed()  # Handles training chunk advancement/recompute
+
         if (
             not self._shared_chunks
             or self._current_shared_chunk_index < 0
             or self._current_shared_chunk_index >= len(self._shared_chunks)
         ):
+            current_epoch = getattr(self.trainer, "current_epoch", "N/A")
             logger.error(
-                f"Epoch {self.trainer.current_epoch if self.trainer else 'N/A'}: No shared chunks. Cannot create train_dataloader."
-            )  # type: ignore
-            return DataLoader([], batch_size=self.hparams.batch_size)  # type: ignore
+                f"Epoch {current_epoch}: No valid training shared chunk available. Cannot create train_dataloader."
+            )
+            return DataLoader([], batch_size=self.batch_size)
 
-        current_basins_for_epoch = self._shared_chunks[self._current_shared_chunk_index]
-        epoch_num = self.trainer.current_epoch if self.trainer else 0  # type: ignore
+        current_basins_for_train_chunk = self._shared_chunks[self._current_shared_chunk_index]
+        current_epoch = getattr(self.trainer, "current_epoch", 0)
         logger.info(
-            f"Epoch {epoch_num}: Train Dataloader using chunk {self._current_shared_chunk_index + 1}/{len(self._shared_chunks)} with {len(current_basins_for_epoch)} basins."
+            f"Epoch {current_epoch}: Train Dataloader using chunk {self._current_shared_chunk_index + 1}/{len(self._shared_chunks)} with {len(current_basins_for_train_chunk)} basins."
         )
 
         chunk_column_tensors, index_entries, basin_row_map = self._load_and_tensorize_chunk(
-            current_basins_for_epoch, "train"
+            current_basins_for_train_chunk, "train"
         )
 
         if not chunk_column_tensors or not index_entries or not basin_row_map:
             logger.warning(
-                f"Train Dataloader: Failed to load or process chunk {self._current_shared_chunk_index + 1}. Returning empty DataLoader."
+                f"Train Dataloader: Failed to load or process training chunk {self._current_shared_chunk_index + 1}. Returning empty DataLoader."
             )
-            return DataLoader([], batch_size=self.hparams.batch_size)  # type: ignore
+            return DataLoader([], batch_size=self.batch_size)
 
-        # Shuffle index_entries for training
-        random.shuffle(index_entries)
+        random.shuffle(index_entries)  # Shuffle index_entries for training
 
         train_dataset = InMemoryChunkDataset(
             chunk_column_tensors=chunk_column_tensors,
-            static_data_cache=self.static_data_cache,  # Already tensors
+            static_data_cache=self.static_data_cache,
             index_entries=index_entries,
             basin_row_map=basin_row_map,
-            input_length=self.hparams.input_length,  # type: ignore
-            output_length=self.hparams.output_length,  # type: ignore
-            target_name=self.hparams.target,  # type: ignore
-            forcing_features_names=self.hparams.forcing_features,  # type: ignore
-            static_features_names=self.hparams.static_features,  # type: ignore
-            group_identifier_name=self.hparams.group_identifier,  # type: ignore
-            is_autoregressive=self.hparams.is_autoregressive,  # type: ignore
+            input_length=self.input_length,
+            output_length=self.output_length,
+            target_name=self.target,
+            forcing_features_names=self.forcing_features,
+            static_features_names=self.static_features,
+            group_identifier_name=self.group_identifier,
+            is_autoregressive=self.is_autoregressive,
             input_features_ordered=self.input_features_ordered_for_X,
             future_features_ordered=self.future_features_ordered,
-            include_input_end_date=self.hparams.include_input_end_date_in_batch,  # type: ignore
+            include_input_end_date=self.include_input_end_date_in_batch,
         )
 
         if len(train_dataset) == 0:
             logger.warning(f"Training dataset for chunk {self._current_shared_chunk_index + 1} is empty.")
-            return DataLoader(train_dataset, batch_size=self.hparams.batch_size)  # type: ignore
 
         return DataLoader(
             train_dataset,
-            batch_size=self.hparams.batch_size,  # type: ignore
-            # Sampler removed as shuffling is done on index_entries, can use default shuffle=True if needed
-            # but RandomSampler also works if dataset is not pre-shuffled
-            sampler=RandomSampler(train_dataset),
-            num_workers=self.hparams.num_workers,  # type: ignore
-            pin_memory=True,  # Enable pin_memory
-            persistent_workers=True if self.hparams.num_workers > 0 else False,  # type: ignore
-            # multiprocessing_context removed to use default "fork"
+            batch_size=self.batch_size,
+            sampler=RandomSampler(train_dataset),  # Use RandomSampler as index_entries are already shuffled per chunk
+            num_workers=self.num_workers,
+            pin_memory=True,
+            persistent_workers=self.num_workers > 0,
         )
 
     def val_dataloader(self) -> DataLoader:
+        current_epoch = getattr(self.trainer, "current_epoch", "N/A")
         if (
-            not self._shared_chunks
-            or self._current_shared_chunk_index < 0
-            or self._current_shared_chunk_index >= len(self._shared_chunks)
+            not self._cached_validation_column_tensors
+            or not self._cached_validation_index_entries
+            or not self._cached_validation_basin_row_map
         ):
             logger.error(
-                f"Epoch {self.trainer.current_epoch if self.trainer else 'N/A'}: No shared chunks for validation."
-            )  # type: ignore
-            return DataLoader([], batch_size=self.hparams.batch_size)  # type: ignore
-
-        current_basins_for_epoch = self._shared_chunks[self._current_shared_chunk_index]
-        epoch_num = self.trainer.current_epoch if self.trainer else 0  # type: ignore
-        logger.info(
-            f"Epoch {epoch_num}: Val Dataloader using chunk {self._current_shared_chunk_index + 1}/{len(self._shared_chunks)} with {len(current_basins_for_epoch)} basins."
-        )
-
-        chunk_column_tensors, index_entries, basin_row_map = self._load_and_tensorize_chunk(
-            current_basins_for_epoch, "val"
-        )
-
-        if not chunk_column_tensors or not index_entries or not basin_row_map:
-            logger.warning(
-                f"Val Dataloader: Failed to load or process chunk {self._current_shared_chunk_index + 1}. Returning empty DataLoader."
+                f"Epoch {current_epoch}: Validation data not cached. Cannot create val_dataloader. "
+                "Ensure setup() was called correctly and data was loaded."
             )
-            return DataLoader([], batch_size=self.hparams.batch_size)  # type: ignore
+            return DataLoader([], batch_size=self.batch_size)
+
+        logger.info(
+            f"Epoch {current_epoch}: Val Dataloader using cached validation data with {len(self._cached_validation_index_entries)} samples from {len(self._validation_gauge_id_pool or [])} basins."
+        )
 
         val_dataset = InMemoryChunkDataset(
-            chunk_column_tensors=chunk_column_tensors,
+            chunk_column_tensors=self._cached_validation_column_tensors,
             static_data_cache=self.static_data_cache,
-            index_entries=index_entries,  # Not shuffled for validation
-            basin_row_map=basin_row_map,
-            input_length=self.hparams.input_length,  # type: ignore
-            output_length=self.hparams.output_length,  # type: ignore
-            target_name=self.hparams.target,  # type: ignore
-            forcing_features_names=self.hparams.forcing_features,  # type: ignore
-            static_features_names=self.hparams.static_features,  # type: ignore
-            group_identifier_name=self.hparams.group_identifier,  # type: ignore
-            is_autoregressive=self.hparams.is_autoregressive,  # type: ignore
+            index_entries=self._cached_validation_index_entries,  # Not shuffled for validation
+            basin_row_map=self._cached_validation_basin_row_map,
+            input_length=self.input_length,
+            output_length=self.output_length,
+            target_name=self.target,
+            forcing_features_names=self.forcing_features,
+            static_features_names=self.static_features,
+            group_identifier_name=self.group_identifier,
+            is_autoregressive=self.is_autoregressive,
             input_features_ordered=self.input_features_ordered_for_X,
             future_features_ordered=self.future_features_ordered,
-            include_input_end_date=self.hparams.include_input_end_date_in_batch,  # type: ignore
+            include_input_end_date=self.include_input_end_date_in_batch,
         )
 
         if len(val_dataset) == 0:
-            logger.warning(f"Validation dataset for chunk {self._current_shared_chunk_index + 1} is empty.")
-            return DataLoader(val_dataset, batch_size=self.hparams.batch_size)  # type: ignore
+            logger.warning(f"Validation dataset (from cache) is empty for epoch {current_epoch}.")
 
         return DataLoader(
             val_dataset,
-            batch_size=self.hparams.batch_size,  # type: ignore
+            batch_size=self.batch_size,
             sampler=SequentialSampler(val_dataset),
-            num_workers=self.hparams.num_workers,  # type: ignore
-            pin_memory=True,  # Enable pin_memory
-            persistent_workers=True if self.hparams.num_workers > 0 else False,  # type: ignore
+            num_workers=self.num_workers,
+            pin_memory=True,
+            persistent_workers=self.num_workers > 0,
         )
 
     def test_dataloader(self) -> DataLoader:
         if not self._test_basin_ids:
-            logger.warning("No test basin IDs available. Returning empty dataloader.")
-            return DataLoader([], batch_size=self.hparams.batch_size)  # type: ignore
+            logger.warning("No test basin IDs available. Returning empty test dataloader.")
+            return DataLoader([], batch_size=self.batch_size)
 
         logger.info(f"Loading test data for {len(self._test_basin_ids)} basins...")
-        # For test, we can load all test basins into one "chunk"
         chunk_column_tensors, index_entries, basin_row_map = self._load_and_tensorize_chunk(
             self._test_basin_ids, "test"
         )
 
         if not chunk_column_tensors or not index_entries or not basin_row_map:
             logger.warning("Test Dataloader: Failed to load or process test data. Returning empty DataLoader.")
-            return DataLoader([], batch_size=self.hparams.batch_size)  # type: ignore
+            return DataLoader([], batch_size=self.batch_size)
 
         test_dataset = InMemoryChunkDataset(
             chunk_column_tensors=chunk_column_tensors,
             static_data_cache=self.static_data_cache,
-            index_entries=index_entries,  # Not shuffled for test
+            index_entries=index_entries,
             basin_row_map=basin_row_map,
-            input_length=self.hparams.input_length,  # type: ignore
-            output_length=self.hparams.output_length,  # type: ignore
-            target_name=self.hparams.target,  # type: ignore
-            forcing_features_names=self.hparams.forcing_features,  # type: ignore
-            static_features_names=self.hparams.static_features,  # type: ignore
-            group_identifier_name=self.hparams.group_identifier,  # type: ignore
-            is_autoregressive=self.hparams.is_autoregressive,  # type: ignore
+            input_length=self.input_length,
+            output_length=self.output_length,
+            target_name=self.target,
+            forcing_features_names=self.forcing_features,
+            static_features_names=self.static_features,
+            group_identifier_name=self.group_identifier,
+            is_autoregressive=self.is_autoregressive,
             input_features_ordered=self.input_features_ordered_for_X,
             future_features_ordered=self.future_features_ordered,
-            include_input_end_date=self.hparams.include_input_end_date_in_batch,  # type: ignore
+            include_input_end_date=self.include_input_end_date_in_batch,
         )
 
         if len(test_dataset) == 0:
             logger.warning("Test dataset is empty after loading.")
-            return DataLoader(test_dataset, batch_size=self.hparams.batch_size)  # type: ignore
 
         return DataLoader(
             test_dataset,
-            batch_size=self.hparams.batch_size,  # type: ignore
+            batch_size=self.batch_size,
             sampler=SequentialSampler(test_dataset),
-            num_workers=self.hparams.num_workers,  # type: ignore
-            pin_memory=True,  # Enable pin_memory
-            persistent_workers=True if self.hparams.num_workers > 0 else False,  # type: ignore
+            num_workers=self.num_workers,
+            pin_memory=True,
+            persistent_workers=self.num_workers > 0,
         )
 
     def _load_static_data(self) -> None:
@@ -634,29 +678,29 @@ class HydroInMemoryDataModule(LightningDataModule):
         if self.processed_static_attributes_path and self.processed_static_attributes_path.exists():
             try:
                 static_df = pl.read_parquet(self.processed_static_attributes_path)
-                required_static_cols = [self.hparams.group_identifier] + self.hparams.static_features  # type: ignore
+                required_static_cols = [self.hparams.group_identifier] + self.hparams.static_features
                 missing_cols = [col for col in required_static_cols if col not in static_df.columns]
                 if missing_cols:
                     logger.error(f"Static data file missing required columns: {missing_cols}.")
 
                 # Ensure static_features are sorted for consistent tensor creation
-                sorted_static_features = sorted(list(set(self.hparams.static_features)))  # type: ignore
+                sorted_static_features = sorted(set(self.hparams.static_features))
 
                 temp_cache: dict[str, np.ndarray] = {}
                 for row in static_df.select(
-                    [self.hparams.group_identifier] + [sf for sf in sorted_static_features if sf in static_df.columns]  # type: ignore
+                    [self.hparams.group_identifier] + [sf for sf in sorted_static_features if sf in static_df.columns]
                 ).iter_rows(named=True):
-                    basin_id = row[self.hparams.group_identifier]  # type: ignore
+                    basin_id = row[self.hparams.group_identifier]
                     if basin_id:
                         # Create array with NaNs where features are missing, then fill with 0.0
                         feature_values = np.full(len(sorted_static_features), np.nan, dtype=np.float32)
                         for i, feature_name in enumerate(sorted_static_features):
                             if feature_name in row:
-                                feature_values[i] = row.get(feature_name, np.nan)  # type: ignore
+                                feature_values[i] = row.get(feature_name, np.nan)
 
                         # Convert NaNs to 0.0 after collecting all values for the row
                         feature_values = np.nan_to_num(feature_values, nan=0.0)
-                        temp_cache[basin_id] = feature_values  # type: ignore
+                        temp_cache[basin_id] = feature_values
 
                 # Convert numpy arrays to tensors
                 self.static_data_cache = {bid: torch.from_numpy(arr) for bid, arr in temp_cache.items()}
@@ -728,8 +772,7 @@ class HydroInMemoryDataModule(LightningDataModule):
                 current_config_dict["preprocessing_configs"] = None
 
             mismatched_keys = []
-            # Normalize Path objects and dicts of Paths for comparison
-            for key in current_config_dict.keys():  # Use current_config_dict keys as source of truth for comparison
+            for key in current_config_dict:
                 loaded_val = loaded_config_dict.get(key)
                 current_val = current_config_dict.get(key)
 
@@ -751,10 +794,7 @@ class HydroInMemoryDataModule(LightningDataModule):
                         for k_path, v_path in loaded_val.items()
                     }
 
-                # Special handling for preprocessing_configs if it's a dict of dicts
                 if key == "preprocessing_configs" and isinstance(current_val, dict) and isinstance(loaded_val, dict):
-                    # This ensures that the order of keys within inner dicts doesn't matter
-                    # And that class names are compared correctly
                     current_pc_norm = (
                         {k_pc: tuple(sorted(v_pc.items())) for k_pc, v_pc in current_val.items()}
                         if current_val
@@ -769,14 +809,14 @@ class HydroInMemoryDataModule(LightningDataModule):
                 elif loaded_val != current_val:
                     mismatched_keys.append(f"{key} (loaded: {loaded_val}, current: {current_val})")
 
-            if mismatched_keys:
-                # Check if the only mismatch is 'preprocessing_configs' which might have been handled specifically
-                if not (len(mismatched_keys) == 1 and mismatched_keys[0].startswith("preprocessing_configs")):
-                    return (
-                        False,
-                        None,
-                        f"Configuration mismatch: {'; '.join(mismatched_keys)}",
-                    )
+            if mismatched_keys and not (
+                len(mismatched_keys) == 1 and mismatched_keys[0].startswith("preprocessing_configs")
+            ):
+                return (
+                    False,
+                    None,
+                    f"Configuration mismatch: {'; '.join(mismatched_keys)}",
+                )
 
             summary_path = run_dir / "quality_summary.json"
             with open(summary_path) as f:

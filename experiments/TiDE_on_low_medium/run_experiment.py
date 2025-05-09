@@ -37,7 +37,8 @@ def main():
     MAX_EPOCHS = 300
     BATCH_SIZE = 2048
     NUM_WORKERS = 10
-    CHUNK_SIZE = 700
+    CHUNK_SIZE = 1500
+    VAL_CHUNK_SIZE = 3000
     EARLY_STOPPING_PATIENCE = 10
     SAVE_TOP_K = 1
     RELOAD_EPOCHS = 1
@@ -193,6 +194,7 @@ def main():
         domain_id="multi-region-low-medium",
         domain_type="source",
         is_autoregressive=True,
+        validation_chunk_size=VAL_CHUNK_SIZE,
     )
 
     print("=========TRAINING THE MODEL==========")
