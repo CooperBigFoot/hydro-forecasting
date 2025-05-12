@@ -200,36 +200,22 @@ def extract_relevant_config(datamodule: "HydroLazyDataModule") -> dict[str, Any]
     """
     # Extract relevant attributes that define the processing configuration
     relevant_config = {
-        # Input/output parameters
-        "input_length": datamodule.input_length,
-        "output_length": datamodule.output_length,
-        # Features and target
         "forcing_features": datamodule.forcing_features,
         "static_features": datamodule.static_features,
         "target": datamodule.target,
-        # Dataset properties
         "group_identifier": datamodule.group_identifier,
         "is_autoregressive": datamodule.is_autoregressive,
-        "domain_id": datamodule.domain_id,
-        "domain_type": datamodule.domain_type,
-        # Data splitting parameters
         "train_prop": datamodule.train_prop,
         "val_prop": datamodule.val_prop,
         "test_prop": datamodule.test_prop,
         "min_train_years": datamodule.min_train_years,
-        # Processing parameters
         "max_imputation_gap_size": datamodule.max_imputation_gap_size,
-        # Only include gauge IDs if they were explicitly provided
         "gauge_ids_subset": datamodule.list_of_gauge_ids_to_process
         if datamodule.list_of_gauge_ids_to_process
         else None,
-        # Resource paths
         "region_time_series_dirs": {k: str(v) for k, v in datamodule.region_time_series_base_dirs.items()},
         "region_static_attributes_dirs": {k: str(v) for k, v in datamodule.region_static_attributes_base_dirs.items()},
         "output_directory": str(datamodule.path_to_preprocessing_output_directory),
-        # Preprocessing pipeline configuration keys
-        # We don't include actual pipeline objects as they can't be JSON serialized
-        # Instead, we store the keys which identify the pipeline configurations
         "preprocessing_pipeline_keys": list(datamodule.preprocessing_configs.keys()),
     }
 

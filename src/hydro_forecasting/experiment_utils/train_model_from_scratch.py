@@ -65,6 +65,7 @@ def train_model_from_scratch(
             - train_prop, val_prop, test_prop: Data split proportions
             - max_imputation_gap_size: Maximum gap size for imputation
             - chunk_size: Number of basins per chunk
+            - validation_chunk_size: Number of unique basins for the validation set.
             - is_autoregressive: Whether to use autoregressive modeling
             - preprocessing_configs: Dictionary with pipeline objects for preprocessing
               (must include instantiated Pipeline or GroupedPipeline objects)
