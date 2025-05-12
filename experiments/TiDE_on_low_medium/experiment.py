@@ -168,43 +168,13 @@ def main():
 
             model_instance: pl.LightningModule | None = None
             final_model_hp = base_model_hp.copy()
-            if args.learning_rate_override is not None:
-                final_model_hp["learning_rate"] = args.learning_rate_override
 
-            if args.load_checkpoint_from_dir:
-                previous_experiment_checkpoints_dir = Path(args.load_checkpoint_from_dir) / CHECKPOINTS_DIR_NAME
-                checkpoint_to_load_result: Result[Path, str] = checkpoint_manager.get_checkpoint_path_to_load(
-                    base_checkpoint_load_dir=previous_experiment_checkpoints_dir,
-                    model_type=model_type,
-                    select_overall_best=args.select_overall_best_checkpoint,
-                    specific_run_index=args.choose_run_checkpoint_idx,
-                    specific_attempt_index=args.use_attempt_checkpoint_idx,
-                )
-                if not isinstance(checkpoint_to_load_result, Result):
-                    logger.error(
-                        f"Failed to get checkpoint path to load: {checkpoint_to_load_result.failure()}. Skip run."
-                    )
-                    continue
-                checkpoint_file_to_load = checkpoint_to_load_result.unwrap()
-                try:
-                    lr_reduction_factor = final_model_hp.get("lr_reduction_factor", 10.0)
-                    model_instance, loaded_hps = model_factory.load_pretrained_model(
-                        model_type=model_type,
-                        yaml_path=str(model_yaml_path),
-                        checkpoint_path=str(checkpoint_file_to_load),
-                        lr_factor=lr_reduction_factor,
-                    )
-                    final_model_hp.update(loaded_hps)
-                except Exception as e:
-                    logger.error(f"Error loading pretrained model: {e}", exc_info=True)
-                    continue
-            else:
-                try:
-                    model_instance, created_hps = model_factory.create_model(model_type, str(model_yaml_path))
-                    final_model_hp.update(created_hps)
-                except Exception as e:
-                    logger.error(f"Error creating new model: {e}", exc_info=True)
-                    continue
+            try:
+                model_instance, created_hps = model_factory.create_model(model_type, str(model_yaml_path))
+                final_model_hp.update(created_hps)
+            except Exception as e:
+                logger.error(f"Error creating new model: {e}", exc_info=True)
+                continue
 
             if model_instance is None:
                 logger.error("Model instance is None. Skip run.")

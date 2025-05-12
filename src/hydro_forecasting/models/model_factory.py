@@ -51,7 +51,7 @@ def load_pretrained_model(
     model_type: str,
     yaml_path: str,
     checkpoint_path: str,
-    lr_factor: float = 10.0,
+    lr_factor: float = 1.0,
 ) -> tuple[Any, dict[str, Any]]:
     """
     Load a pretrained model from a checkpoint.
