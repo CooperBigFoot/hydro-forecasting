@@ -72,6 +72,9 @@ def clean_data(
 
     Only forward fill is used for imputation to avoid potential data leakage.
 
+    Enhanced to ensure that basins marked as passed_quality_check=True will have
+    non-empty train, validation, AND test segments when processed by split_data.
+
     Args:
         lf: Input LazyFrame containing hydrological data.
         config: Configuration object with required_columns, max_imputation_gap_size,
@@ -86,19 +89,31 @@ def clean_data(
         gid = config.group_identifier
         min_train_years = config.min_train_years
         train_prop = config.train_prop
+        val_prop = config.val_prop
+        test_prop = config.test_prop
         min_required_train_days = int(min_train_years * 365.25)
 
-        # 1. Check required columns
+        # Determine target column name - same logic as split_data
+        target_col_name = "streamflow"  # Default fallback
+        if (
+            hasattr(config, "preprocessing_config")
+            and config.preprocessing_config
+            and "target" in config.preprocessing_config
+        ):
+            target_cfg = config.preprocessing_config.get("target", {})
+            target_col_name = target_cfg.get("column", "streamflow")
+
+        # Step 1: Check required columns
         schema_names = lf.collect_schema().names()
         required = set(cols + [gid, "date"])
         missing = required - set(schema_names)
         if missing:
             return Failure(f"Missing columns: {sorted(missing)}")
 
-        # 2. Sort by gauge and date
+        # Step 2: Sort by gauge and date
         lf = lf.sort([gid, "date"])
 
-        # 3. Trim leading/trailing nulls per basin
+        # Step 3: Trim leading/trailing nulls per basin
         fwd = [pl.col(c).is_not_null().cum_sum().over(gid).alias(f"_fwd_{c}") for c in cols]
         bwd = [pl.col(c).is_not_null().reverse().cum_sum().over(gid).alias(f"_bwd_{c}") for c in cols]
         lf = lf.with_columns(fwd + bwd)
@@ -106,18 +121,18 @@ def clean_data(
         bwd_mask = pl.all_horizontal([pl.col(f"_bwd_{c}") > 0 for c in cols])
         lf = lf.filter(fwd_mask & bwd_mask).drop([f"_fwd_{c}" for c in cols] + [f"_bwd_{c}" for c in cols])
 
-        # 4. Mark original nulls per column
+        # Step 4: Mark original nulls per column
         for c in cols:
             lf = lf.with_columns(pl.col(c).is_null().alias(f"_before_null_{c}"))
 
-        # 5. Impute short gaps via ffill only (removed bfill to avoid data leakage)
+        # Step 5: Impute short gaps via ffill only (removed bfill to avoid data leakage)
         for c in cols:
             lf = lf.with_columns(pl.col(c).forward_fill(limit=max_gap).over(gid).alias(c))
 
-        # 6. Collect to eager DataFrame
+        # Step 6: Collect to eager DataFrame
         df = lf.collect()
 
-        # 7. Build reports per basin and check data sufficiency
+        # Step 7: Build reports per basin and check data sufficiency
         reports: dict[str, BasinQualityReport] = {}
         valid_basin_ids: list[str] = []
 
@@ -168,7 +183,7 @@ def clean_data(
                 imputation_info=info,
             )
 
-            # Data sufficiency check
+            # ORIGINAL DATA SUFFICIENCY CHECK (BASELINE)
             if valid_starts and valid_ends:
                 overall_start = max(valid_starts)
                 overall_end = min(valid_ends)
@@ -179,22 +194,76 @@ def clean_data(
                     available_years = train_days / 365.25
                     report.failure_reason = f"Insufficient training data ({available_years:.2f} years available). \
                          Minimum required training years: {min_train_years}"
+                    reports[basin_id] = report
+                    continue  # Skip additional checks if baseline fails
                 else:
+                    # Original check passes, proceed to the new target-specific checks
                     report.processing_steps.append("data_sufficiency_check_passed")
-                    valid_basin_ids.append(basin_id)
             else:
                 report.passed_quality_check = False
                 report.failure_reason = "No valid data period found"
+                reports[basin_id] = report
+                continue  # Skip additional checks if no valid period
+
+            # NEW CHECK 1: TARGET-SPECIFIC DATA AVAILABILITY
+            # This simulates the filtering that happens in split_data
+            if target_col_name in group.columns:
+                target_valid_df = group.filter(pl.col(target_col_name).is_not_null())
+                n_valid_target = target_valid_df.height
+
+                if n_valid_target == 0:
+                    report.passed_quality_check = False
+                    report.failure_reason = (
+                        "Initial checks passed, but no non-null target data available for splitting."
+                    )
+                    reports[basin_id] = report
+                    continue  # Skip to next basin if no valid target data
+
+                # NEW CHECK 2: SIMULATE SPLIT CALCULATION & VERIFY NON-EMPTY SEGMENTS
+                # This directly mirrors how split_data calculates segment lengths
+                min_points_per_segment = 1  # Minimum required points per segment (train/val/test)
+
+                # Calculate expected segment lengths using integer truncation (as in split_data)
+                calc_train_end = int(n_valid_target * train_prop)
+                calc_val_end = calc_train_end + int(n_valid_target * val_prop)
+
+                # Calculate segment lengths
+                calc_train_len = calc_train_end
+                calc_val_len = calc_val_end - calc_train_end
+                calc_test_len = n_valid_target - calc_val_end
+
+                # Check if all segments meet minimum size requirement
+                if calc_train_len < min_points_per_segment:
+                    report.passed_quality_check = False
+                    report.failure_reason = f"Train segment would be empty or too small ({calc_train_len} points)"
+                    reports[basin_id] = report
+                    continue
+
+                if calc_val_len < min_points_per_segment:
+                    report.passed_quality_check = False
+                    report.failure_reason = f"Validation segment would be empty or too small ({calc_val_len} points)"
+                    reports[basin_id] = report
+                    continue
+
+                if calc_test_len < min_points_per_segment:
+                    report.passed_quality_check = False
+                    report.failure_reason = f"Test segment would be empty or too small ({calc_test_len} points)"
+                    reports[basin_id] = report
+                    continue
+
+                # If we reach here, all checks have passed including the stricter target-based checks
+                report.processing_steps.append("data_sufficiency_check_passed_strict_target_splits")
+                valid_basin_ids.append(basin_id)
+            else:
+                report.passed_quality_check = False
+                report.failure_reason = f"Target column '{target_col_name}' not found in basin data"
 
             reports[basin_id] = report
 
-        # 8. Filter DataFrame to only valid basins
-        if valid_basin_ids:
-            filtered_df = df.filter(pl.col(gid).is_in(valid_basin_ids))
-        else:
-            filtered_df = pl.DataFrame()
+        # Step 8: Filter DataFrame to only valid basins
+        filtered_df = df.filter(pl.col(gid).is_in(valid_basin_ids)) if valid_basin_ids else pl.DataFrame()
 
-        # 9. Drop helper columns
+        # Step 9: Drop helper columns
         helper_cols = [f"_before_null_{c}" for c in cols]
         existing_helpers = [h for h in helper_cols if h in filtered_df.columns]
         if existing_helpers:
