@@ -264,5 +264,3 @@ def validate_hydro_inmemory_datamodule_config(
         .bind(lambda _: validate_boolean("is_autoregressive", dm.hparams.is_autoregressive))
         .bind(lambda _: validate_target_in_features(dm.hparams.target, dm.hparams.forcing_features))
     )
-
-

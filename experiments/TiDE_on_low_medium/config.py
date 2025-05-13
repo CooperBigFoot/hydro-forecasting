@@ -88,7 +88,9 @@ class ExperimentConfig:
     domain_id: str = "multi-region-default"
     domain_type: str = "source"
 
-    human_influence_index_path: str | Path | None = "/Users/cooper/Desktop/hydro-forecasting/scripts/human_influence_index/results/human_influence_classification.parquet"
+    human_influence_index_path: str | Path | None = (
+        "/Users/cooper/Desktop/hydro-forecasting/scripts/human_influence_index/results/human_influence_classification.parquet"
+    )
     human_influence_filter_categories: list[str] = field(default_factory=lambda: ["Low", "Medium"])
     caravan_gauge_id_prefix_map: dict[str, str] = field(default_factory=dict)
     caravan_regions_to_load: list[str] = field(
