@@ -1,5 +1,5 @@
 batch_size: 2048
-chunk_size: 2000
+chunk_size: 1500
 decoder_output_size: 22
 domain_id: source
 domain_type: source
@@ -11979,7 +11979,7 @@ max_imputation_gap_size: 5
 min_train_years: 10
 num_decoder_layers: 2
 num_encoder_layers: 3
-num_workers: 12
+num_workers: 10
 output_len: 10
 output_length: 10
 past_feature_projection_size: 0
