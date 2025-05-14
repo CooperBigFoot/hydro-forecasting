@@ -42,7 +42,7 @@ list_of_gauge_ids_to_process:
 - CA_17344
 - CA_17453
 max_imputation_gap_size: 5
-min_train_years: 10
+min_train_years: 5
 num_decoder_layers: 2
 num_encoder_layers: 3
 num_workers: 4
