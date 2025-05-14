@@ -27,3 +27,5 @@ experiments/TiDE_on_low_medium/output/preprocessing_cache
 experiments/TiDE_on_low_medium/output/logs
 
 experiments/low-medium-hii/data_cache
+
+experiments/*/data_cache
