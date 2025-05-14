@@ -3,16 +3,16 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parents[2] / "src"))
 
-
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
-from data.caravanify_parquet import (
+from sklearn.preprocessing import MinMaxScaler
+
+from hydro_forecasting.data.caravanify_parquet import (
     CaravanifyParquet,
     CaravanifyParquetConfig,
 )
-from sklearn.preprocessing import MinMaxScaler
 
 
 def main():

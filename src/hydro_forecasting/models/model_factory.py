@@ -1,6 +1,92 @@
-from typing import Any
+import importlib
+from collections.abc import Callable
+from typing import Any, cast
 
 from ..model_evaluation.hp_from_yaml import hp_from_yaml
+
+
+def _get_tide_config() -> type[Any]:
+    return cast(type[Any], importlib.import_module("..models.tide", package=__package__).TiDEConfig)
+
+
+def _get_tide_model() -> type[Any]:
+    return cast(type[Any], importlib.import_module("..models.tide", package=__package__).LitTiDE)
+
+
+def _get_tsmixer_config() -> type[Any]:
+    return cast(type[Any], importlib.import_module("..models.tsmixer", package=__package__).TSMixerConfig)
+
+
+def _get_tsmixer_model() -> type[Any]:
+    return cast(type[Any], importlib.import_module("..models.tsmixer", package=__package__).LitTSMixer)
+
+
+def _get_ealstm_config() -> type[Any]:
+    return cast(type[Any], importlib.import_module("..models.ealstm", package=__package__).EALSTMConfig)
+
+
+def _get_ealstm_model() -> type[Any]:
+    return cast(type[Any], importlib.import_module("..models.ealstm", package=__package__).LitEALSTM)
+
+
+def _get_tft_config() -> type[Any]:
+    return cast(type[Any], importlib.import_module("..models.tft", package=__package__).TFTConfig)
+
+
+def _get_tft_model() -> type[Any]:
+    return cast(type[Any], importlib.import_module("..models.tft", package=__package__).LitTFT)
+
+
+# Model Registry
+# Maps model_type strings to functions that return the model and config classes.
+MODEL_REGISTRY: dict[str, dict[str, Callable[[], type[Any]]]] = {
+    "tide": {
+        "config_class_getter": _get_tide_config,
+        "model_class_getter": _get_tide_model,
+    },
+    "tsmixer": {
+        "config_class_getter": _get_tsmixer_config,
+        "model_class_getter": _get_tsmixer_model,
+    },
+    "ealstm": {
+        "config_class_getter": _get_ealstm_config,
+        "model_class_getter": _get_ealstm_model,
+    },
+    "tft": {
+        "config_class_getter": _get_tft_config,
+        "model_class_getter": _get_tft_model,
+    },
+}
+
+
+def get_model_config_class(model_type: str) -> type[Any]:
+    """
+    Get the model configuration class based on the model type.
+
+    Args:
+        model_type: Type of model ('tide', 'tsmixer', etc.)
+
+    Returns:
+        Model configuration class.
+    """
+    if model_type not in MODEL_REGISTRY:
+        raise ValueError(f"Unsupported model type: {model_type}")
+    return MODEL_REGISTRY[model_type]["config_class_getter"]()
+
+
+def get_model_class(model_type: str) -> type[Any]:
+    """
+    Get the model class based on the model type.
+
+    Args:
+        model_type: Type of model ('tide', 'tsmixer', etc.)
+
+    Returns:
+        Model class.
+    """
+    if model_type not in MODEL_REGISTRY:
+        raise ValueError(f"Unsupported model type: {model_type}")
+    return MODEL_REGISTRY[model_type]["model_class_getter"]()
 
 
 def create_model(model_type: str, yaml_path: str) -> tuple[Any, dict[str, Any]]:
@@ -16,32 +102,13 @@ def create_model(model_type: str, yaml_path: str) -> tuple[Any, dict[str, Any]]:
         - Model instance
         - Dictionary of model hyperparameters
     """
-    # Load hyperparameters from YAML
     model_hp = hp_from_yaml(model_type, yaml_path)
 
-    # Create appropriate model configuration
-    if model_type == "tide":
-        from ..models.tide import LitTiDE, TiDEConfig
+    ModelConfigClass = get_model_config_class(model_type)
+    ModelClass = get_model_class(model_type)
 
-        model_config = TiDEConfig(**model_hp)
-        model = LitTiDE(config=model_config)
-    elif model_type == "tsmixer":
-        from ..models.tsmixer import LitTSMixer, TSMixerConfig
-
-        model_config = TSMixerConfig(**model_hp)
-        model = LitTSMixer(config=model_config)
-    elif model_type == "ealstm":
-        from ..models.ealstm import EALSTMConfig, LitEALSTM
-
-        model_config = EALSTMConfig(**model_hp)
-        model = LitEALSTM(config=model_config)
-    elif model_type == "tft":
-        from ..models.tft import LitTFT, TFTConfig
-
-        model_config = TFTConfig(**model_hp)
-        model = LitTFT(config=model_config)
-    else:
-        raise ValueError(f"Unsupported model type: {model_type}")
+    model_config = ModelConfigClass(**model_hp)
+    model = ModelClass(config=model_config)
 
     return model, model_hp
 
@@ -66,40 +133,52 @@ def load_pretrained_model(
         - Loaded model instance
         - Dictionary of model hyperparameters
     """
-    # Create model config
     model_hp = hp_from_yaml(model_type, yaml_path)
 
-    if model_type == "tide":
-        from ..models.tide import LitTiDE, TiDEConfig
+    ModelConfigClass = get_model_config_class(model_type)
+    ModelClass = get_model_class(model_type)
 
-        model_config = TiDEConfig(**model_hp)
-        model = LitTiDE.load_from_checkpoint(checkpoint_path, config=model_config)
-    elif model_type == "tsmixer":
-        from ..models.tsmixer import LitTSMixer, TSMixerConfig
+    model_config = ModelConfigClass(**model_hp)
+    model = ModelClass.load_from_checkpoint(checkpoint_path, config=model_config)
 
-        model_config = TSMixerConfig(**model_hp)
-        model = LitTSMixer.load_from_checkpoint(checkpoint_path, config=model_config)
-    elif model_type == "ealstm":
-        from ..models.ealstm import EALSTMConfig, LitEALSTM
+    # Ensure hparams exists and has learning_rate, common in PyTorch Lightning
+    if hasattr(model, "hparams") and "learning_rate" in model.hparams:
+        original_lr = model.hparams.learning_rate
+        new_lr = original_lr / lr_factor
+        model.hparams.learning_rate = new_lr
 
-        model_config = EALSTMConfig(**model_hp)
-        model = LitEALSTM.load_from_checkpoint(checkpoint_path, config=model_config)
-    elif model_type == "tft":
-        from ..models.tft import LitTFT, TFTConfig
+        model.original_lr = original_lr
+        model.fine_tuned_lr = new_lr
 
-        model_config = TFTConfig(**model_hp)
-        model = LitTFT.load_from_checkpoint(checkpoint_path, config=model_config)
+        model_hp["learning_rate"] = new_lr
+        model_hp["original_lr"] = original_lr
     else:
-        raise ValueError(f"Unsupported model type: {model_type}")
-
-    original_lr = model.hparams.learning_rate
-    model.hparams.learning_rate = original_lr / lr_factor
-
-    # Store original learning rate for reference
-    model.original_lr = original_lr
-    model.fine_tuned_lr = original_lr / lr_factor
-
-    model_hp["learning_rate"] = model.hparams.learning_rate
-    model_hp["original_lr"] = original_lr
+        print(
+            f"Warning: Could not adjust learning rate for model_type {model_type}. "
+            "Model may not have 'hparams' with 'learning_rate'."
+        )
 
     return model, model_hp
+
+
+def create_model_from_config_dict(
+    model_type: str,
+    config_dict: dict[str, Any],
+) -> tuple[Any, dict[str, Any]]:
+    """
+    Create a model instance from a configuration dictionary.
+
+    Args:
+        model_type: Type of model to create
+        config_dict: Dictionary of model hyperparameters
+
+    Returns:
+        Tuple containing:
+        - Model instance
+        - Dictionary of model hyperparameters
+    """
+    ModelConfigClass = get_model_config_class(model_type)
+    ModelClass = get_model_class(model_type)
+    model_config = ModelConfigClass(**config_dict)
+    model = ModelClass(config=model_config)
+    return model, config_dict
