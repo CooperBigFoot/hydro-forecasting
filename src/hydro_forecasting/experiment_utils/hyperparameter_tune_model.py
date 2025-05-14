@@ -9,7 +9,6 @@ import optuna
 import pytorch_lightning as pl
 import torch
 from pytorch_lightning.callbacks import EarlyStopping
-from pytorch_lightning.callbacks.pruning import PyTorchLightningPruningCallback
 from returns.result import Failure, Result, Success, safe
 
 from hydro_forecasting.data.in_memory_datamodule import HydroInMemoryDataModule
@@ -356,12 +355,6 @@ def hyperparameter_tune_model(
                 logger.info(
                     f"Trial {trial.number}: EarlyStopping enabled (monitor='{monitor}', "
                     f"patience={patience}, mode='{es_mode}')."
-                )
-
-            if optuna_pruner:
-                callbacks.append(PyTorchLightningPruningCallback(trial, monitor=metric_to_optimize))
-                logger.info(
-                    f"Trial {trial.number}: PyTorchLightningPruningCallback enabled (monitor='{metric_to_optimize}')."
                 )
 
             trainer_params = {
