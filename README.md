@@ -1,5 +1,6 @@
 ## TODOs
 
+- [ ] Merge refactor branc into main
 - [ ] Implement Observer Pattern to manage logs
 - [ ] Tune HP for all models for Tajikistan and Kyrgyzstan
 - [ ] Use new set of HP to retrain the challenger models (low and medium hii)
