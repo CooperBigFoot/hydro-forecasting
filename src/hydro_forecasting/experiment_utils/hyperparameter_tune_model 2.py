@@ -10,7 +10,6 @@ import torch
 from returns.result import Failure, Result, Success
 
 from hydro_forecasting.data.in_memory_datamodule import HydroInMemoryDataModule
-from hydro_forecasting.experiment_utils import checkpoint_manager
 from hydro_forecasting.models import model_factory
 
 from .training_runner import _configure_trainer_core, _finalize_model_hyperparameters, _setup_datamodule_core
@@ -81,7 +80,7 @@ def hyperparameter_tune_model(
     optuna_storage_url: str | None = None,
     optuna_direction: str = "minimize",
     optuna_sampler: optuna.samplers.BaseSampler | None = None,
-    # Removed optuna_pruner parameter
+    optuna_pruner: optuna.pruners.BasePruner | None = None,
     metric_to_optimize: str = "val_loss",
     seed: int = 42,
 ) -> optuna.Study:
@@ -89,12 +88,6 @@ def hyperparameter_tune_model(
     output_dir_study_path = Path(output_dir_study)
     study_dir = output_dir_study_path / experiment_name
     study_dir.mkdir(parents=True, exist_ok=True)
-
-    # Create checkpoint and log directories for this study
-    study_checkpoint_dir = study_dir / checkpoint_manager.CHECKPOINTS_DIR_NAME / model_type
-    study_log_dir = study_dir / checkpoint_manager.LOGS_DIR_NAME / model_type
-    study_checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    study_log_dir.mkdir(parents=True, exist_ok=True)
 
     if optuna_storage_url is None:
         optuna_storage_url = f"sqlite:///{study_dir}/{experiment_name}_study.db"
@@ -114,38 +107,6 @@ def hyperparameter_tune_model(
         trainer_pl: pl.Trainer | None = None
 
         try:
-            # Create directories for this trial using the checkpoint_manager
-            checkpoint_trial_attempt_path_result = checkpoint_manager.determine_output_run_attempt_path(
-                base_model_output_dir=study_checkpoint_dir,
-                run_index=trial.number,  # Use trial number as run index
-                override_previous_attempts=False,
-            )
-
-            if not isinstance(checkpoint_trial_attempt_path_result, Success):
-                return _handle_trial_error(
-                    f"Failed to create checkpoint directory for trial: {checkpoint_trial_attempt_path_result.failure()}",
-                    trial,
-                )
-
-            checkpoint_dir_for_trial = checkpoint_trial_attempt_path_result.unwrap()
-
-            log_trial_attempt_path_result = checkpoint_manager.determine_log_run_attempt_path(
-                base_model_log_dir=study_log_dir,
-                run_index=trial.number,  # Use trial number as run index
-                override_previous_attempts=False,
-            )
-
-            if not isinstance(log_trial_attempt_path_result, Success):
-                return _handle_trial_error(
-                    f"Failed to create log directory for trial: {log_trial_attempt_path_result.failure()}", trial
-                )
-
-            log_dir_for_trial = log_trial_attempt_path_result.unwrap()
-
-            # Store path information in trial attributes
-            trial.set_user_attr("checkpoint_dir", str(checkpoint_dir_for_trial))
-            trial.set_user_attr("log_dir", str(log_dir_for_trial))
-
             # 1. Suggest hyperparameters for this trial
             trial_hparams = _suggest_trial_hparams(trial, search_space)
             trial.set_user_attr("hparams", trial_hparams)
@@ -155,7 +116,7 @@ def hyperparameter_tune_model(
             # trial_hparams will provide overrides for input_length, batch_size etc.
             datamodule_result = _setup_datamodule_core(
                 base_datamodule_config=datamodule_config,
-                hps_for_datamodule=trial_hparams,
+                hps_for_datamodule=trial_hparams,  # Pass all trial HPs
                 gauge_ids=gauge_ids,
                 model_type=model_type,
             )
@@ -170,7 +131,6 @@ def hyperparameter_tune_model(
             trial.set_user_attr("model_config", finalized_model_hps)
             logger.info(f"Trial {trial.number} finalized model config: {finalized_model_hps}")
 
-            # 4. Instantiate model with the finalized configuration
             try:
                 model_pl, _ = model_factory.create_model_from_config_dict(
                     model_type=model_type, config_dict=finalized_model_hps
@@ -178,26 +138,22 @@ def hyperparameter_tune_model(
             except Exception as e:
                 return _handle_trial_error(f"Model instantiation error: {e}", trial)
 
-            # 5. Configure callbacks consistently with other training functions
+            # 5. Configure trainer using core helper
             callbacks_config_hpt = {
                 "with_early_stopping": True,
-                "with_model_checkpoint": False,  # Explicitly disable checkpointing for HPT
-                "with_lr_monitor": True,
-                "with_tensorboard_logger": True,
+                "with_model_checkpoint": False,
+                "with_lr_monitor": False,
+                "with_tensorboard_logger": False,
+                "with_optuna_pruning": True,
             }
-
             trainer_result = _configure_trainer_core(
-                training_config=training_config,
+                training_config=training_config,  # Base training_config
                 callbacks_config=callbacks_config_hpt,
                 is_hpt_trial=True,
                 hpt_metric_to_monitor=metric_to_optimize,
-                optuna_trial_for_pruning=None,
-                checkpoint_dir_for_run=checkpoint_dir_for_trial,
-                log_dir_for_run=log_dir_for_trial,
-                model_type_for_paths=model_type,
-                run_idx_for_paths=trial.number,
+                optuna_trial_for_pruning=trial,
+                # Path arguments are not needed for HPT trials
             )
-
             if not isinstance(trainer_result, Success):
                 return _handle_trial_error(f"Trainer config error: {trainer_result.failure()}", trial)
             trainer_pl = trainer_result.unwrap()
@@ -222,12 +178,6 @@ def hyperparameter_tune_model(
             logger.error(f"Trial {trial.number}: Unhandled error: {e}", exc_info=True)
             return _handle_trial_error(f"Unhandled error: {e}", trial)
         finally:
-            if trainer_pl and hasattr(trainer_pl, "logger") and trainer_pl.logger:
-                try:
-                    trainer_pl.logger.finalize("completed")  # type: ignore
-                except Exception as e:
-                    logger.warning(f"Error finalizing logger for trial {trial.number}: {e}")
-
             del model_pl, datamodule, trainer_pl
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
@@ -238,6 +188,7 @@ def hyperparameter_tune_model(
         storage=optuna_storage_url,
         direction=optuna_direction,
         sampler=optuna_sampler,
+        pruner=optuna_pruner,
         load_if_exists=True,
     )
     study.set_user_attr("model_type", model_type)

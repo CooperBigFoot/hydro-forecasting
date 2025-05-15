@@ -104,7 +104,7 @@ def _configure_trainer_core(
     callbacks_config: dict[str, bool],
     is_hpt_trial: bool = False,
     hpt_metric_to_monitor: str | None = "val_loss",
-    optuna_trial_for_pruning: optuna.Trial | None = None,
+    optuna_trial_for_pruning: optuna.Trial | None = None,  # Keep parameter for compatibility
     checkpoint_dir_for_run: Path | None = None,
     log_dir_for_run: Path | None = None,
     model_type_for_paths: str | None = None,
@@ -130,84 +130,69 @@ def _configure_trainer_core(
         )
         callbacks_list.append(early_stopping_callback)
 
-    # 2. Optuna Pruning (only for HPT)
-    if is_hpt_trial and callbacks_config.get("with_optuna_pruning", False) and optuna_trial_for_pruning:
-        from optuna.integration import PyTorchLightningPruningCallback  # Local import
+    # 2. Learning Rate Monitor - Add for both regular and HPT runs
+    if callbacks_config.get("with_lr_monitor", True):
+        lr_monitor_callback = LearningRateMonitor(logging_interval="step")
+        callbacks_list.append(lr_monitor_callback)
 
-        pruning_callback = PyTorchLightningPruningCallback(optuna_trial_for_pruning, monitor=hpt_metric_to_monitor)
-        callbacks_list.append(pruning_callback)
+    # Check paths for both regular training and HPT trials
+    if not checkpoint_dir_for_run or not log_dir_for_run or model_type_for_paths is None or run_idx_for_paths is None:
+        return Failure("Missing path information for trainer configuration.")
 
-    # For non-HPT runs (full training/fine-tuning)
-    if not is_hpt_trial:
-        if (
-            not checkpoint_dir_for_run
-            or not log_dir_for_run
-            or model_type_for_paths is None
-            or run_idx_for_paths is None
-        ):
-            return Failure("Missing path information for non-HPT trainer configuration.")
+    attempt_name = log_dir_for_run.name  # Assumes log_dir_for_run is the specific attempt path
 
-        attempt_name = log_dir_for_run.name  # Assumes log_dir_for_run is the specific attempt path
+    # 3. Model Checkpoint - Only for non-HPT runs
+    if not is_hpt_trial and callbacks_config.get("with_model_checkpoint", True):
+        enable_model_checkpointing = True
+        checkpoint_filename = (
+            f"{model_type_for_paths}-run{run_idx_for_paths}-{attempt_name}-{{epoch:02d}}-{{val_loss:.4f}}"
+        )
+        mc_monitor = training_config.get("checkpoint_monitor", "val_loss")
+        mc_mode = "min" if "loss" in mc_monitor or "mse" in mc_monitor else "max"
+        model_checkpoint_callback = ModelCheckpoint(
+            monitor=mc_monitor,
+            dirpath=str(checkpoint_dir_for_run),
+            filename=checkpoint_filename,
+            save_top_k=1,
+            mode=mc_mode,
+            save_last=True,
+        )
+        callbacks_list.append(model_checkpoint_callback)
 
-        # 3. Model Checkpoint
-        if callbacks_config.get("with_model_checkpoint", True):
-            enable_model_checkpointing = True
-            checkpoint_filename = (
-                f"{model_type_for_paths}-run{run_idx_for_paths}-{attempt_name}-{{epoch:02d}}-{{val_loss:.4f}}"
+    # 4. TensorBoard Logger - For both regular and HPT runs
+    if callbacks_config.get("with_tensorboard_logger", True):
+        try:
+            tb_save_dir = log_dir_for_run.parent.parent.parent  # Up to .../logs/
+            tb_name = f"{log_dir_for_run.parent.parent.name}/{log_dir_for_run.parent.name}"  # <model_type>/run_X
+            tb_version = attempt_name
+
+            tb_logger = TensorBoardLogger(
+                save_dir=str(tb_save_dir),
+                name=tb_name,
+                version=tb_version,
+                default_hp_metric=False,
             )
-            mc_monitor = training_config.get("checkpoint_monitor", "val_loss")
-            mc_mode = "min" if "loss" in mc_monitor or "mse" in mc_monitor else "max"
-            model_checkpoint_callback = ModelCheckpoint(
-                monitor=mc_monitor,
-                dirpath=str(checkpoint_dir_for_run),
-                filename=checkpoint_filename,
-                save_top_k=1,
-                mode=mc_mode,
-                save_last=True,
-            )
-            callbacks_list.append(model_checkpoint_callback)
+        except Exception as e:
+            return Failure(f"Error setting up TensorBoardLogger paths: {e}")
 
-        # 4. Learning Rate Monitor
-        if callbacks_config.get("with_lr_monitor", True):
-            lr_monitor_callback = LearningRateMonitor(logging_interval="step")
-            callbacks_list.append(lr_monitor_callback)
-
-        # 5. TensorBoard Logger
-        if callbacks_config.get("with_tensorboard_logger", True):
-            try:
-                tb_save_dir = log_dir_for_run.parent.parent.parent  # Up to .../logs/
-                tb_name = f"{log_dir_for_run.parent.parent.name}/{log_dir_for_run.parent.name}"  # <model_type>/run_X
-                tb_version = attempt_name
-
-                tb_logger = TensorBoardLogger(
-                    save_dir=str(tb_save_dir),
-                    name=tb_name,
-                    version=tb_version,
-                    default_hp_metric=False,
-                )
-            except Exception as e:
-                return Failure(f"Error setting up TensorBoardLogger paths: {e}")
     try:
         # Configure trainer arguments
         trainer_kwargs: dict[str, Any] = {
             "accelerator": training_config.get("accelerator", "auto"),
-            "devices": training_config.get("devices", "auto"),  # Changed to auto for HPT safety
+            "devices": training_config.get("devices", "auto"),
             "enable_progress_bar": training_config.get("enable_progress_bar", True),
             "callbacks": callbacks_list,
             "num_sanity_val_steps": training_config.get("num_sanity_val_steps", 2),
+            "logger": tb_logger,  # Use logger for both regular and HPT
+            "enable_checkpointing": enable_model_checkpointing,  # Only true for non-HPT
         }
 
         if is_hpt_trial:
             trainer_kwargs["max_epochs"] = training_config.get("max_epochs_per_trial", 10)
-            trainer_kwargs["logger"] = False  # No PL logger for HPT trials by default
-            trainer_kwargs["enable_checkpointing"] = False  # No PL checkpointing for HPT
             trainer_kwargs["enable_progress_bar"] = training_config.get("enable_progress_bar_in_trial", False)
             trainer_kwargs["num_sanity_val_steps"] = training_config.get("num_sanity_val_steps_hpt", 0)
-
         else:  # Full run
             trainer_kwargs["max_epochs"] = training_config.get("max_epochs", 100)
-            trainer_kwargs["logger"] = tb_logger  # PL logger for full runs
-            trainer_kwargs["enable_checkpointing"] = enable_model_checkpointing  # PL checkpointing for full runs
             trainer_kwargs["reload_dataloaders_every_n_epochs"] = training_config.get(
                 "reload_dataloaders_every_n_epochs", 1
             )
