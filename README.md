@@ -1,3 +1,13 @@
-## Useful when designing experiments
+## TODOs
 
-Helper Function for Checkpoint Filename: While _find_checkpoint_in_attempt_dir assumes one .ckpt file, if Pytorch Lightning sometimes leaves other files (e.g., last.ckpt even with save_top_k=1 for the best), the logic might need to be more specific in selecting the "best" one if multiple are present, or rely strictly on the guidleine that ModelCheckpoint is configured to only leave one. Usually, trainer.checkpoint_callback.best_model_path is the source of truth for the best checkpoint from a training run.
+- [ ] Implement Observer Pattern to manage logs
+- [ ] Tune HP for all models for Tajikistan and Kyrgyzstan
+- [ ] Use new set of HP to retrain the challenger models (low and medium hii)
+- [ ] Retrain benchmark models. Important to use the same preprocessing as used during HPT!
+- [ ] Rerun script to find similar catchments. I have already prepared the scripts for that
+- [ ] Train challenger on similar basins
+- [ ] Fine tune and prepare plots
+  - [ ] fix boxplot legend
+  - [ ] add figure to show delta NSE as a function of the forecasting horizon -> TL paper by google
+- [ ] Make scaling laws plot. Reflect on what makes sense: one plot where Y axis the the aggregated metric over the 10 days?
+- [ ] Choose a journal for Publication
