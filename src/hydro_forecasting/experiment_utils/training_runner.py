@@ -1,8 +1,10 @@
+import copy
 import logging
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, TypeVar
 
+import optuna
 import pytorch_lightning as pl
 import torch
 from pytorch_lightning.callbacks import EarlyStopping, LearningRateMonitor, ModelCheckpoint
@@ -16,15 +18,230 @@ from ..model_evaluation.hp_from_yaml import hp_from_yaml
 logger = logging.getLogger(__name__)
 
 ModelType = TypeVar("ModelType", bound=pl.LightningModule)
-ModelProviderFn = Callable[[str, str], ModelType]
+
+ModelProviderFn = Callable[[str, dict[str, Any]], ModelType]
+
+
+def _setup_datamodule_core(
+    base_datamodule_config: dict[str, Any],
+    hps_for_datamodule: dict[str, Any],
+    gauge_ids: list[str],
+    model_type: str,  # Added for clarity in case of missing HPs
+) -> Result[HydroInMemoryDataModule, str]:
+    """
+    Core helper to configure and set up HydroInMemoryDataModule.
+    """
+    current_datamodule_config = copy.deepcopy(base_datamodule_config)
+
+    if "input_length" in hps_for_datamodule:
+        current_datamodule_config["input_length"] = hps_for_datamodule["input_length"]
+    elif "input_len" in hps_for_datamodule:
+        current_datamodule_config["input_length"] = hps_for_datamodule["input_len"]
+    else:
+        if "input_len" not in hps_for_datamodule and "input_length" not in hps_for_datamodule:
+            logger.warning(
+                f"Neither 'input_length' nor 'input_len' found in hps_for_datamodule for {model_type}. "
+                f"Using value from base_datamodule_config: {current_datamodule_config.get('input_length')}"
+            )
+
+    if "output_length" in hps_for_datamodule:
+        current_datamodule_config["output_length"] = hps_for_datamodule["output_length"]
+    elif "output_len" in hps_for_datamodule:
+        current_datamodule_config["output_length"] = hps_for_datamodule["output_len"]
+    else:
+        if "output_len" not in hps_for_datamodule and "output_length" not in hps_for_datamodule:
+            logger.warning(
+                f"Neither 'output_length' nor 'output_len' found in hps_for_datamodule for {model_type}. "
+                f"Using value from base_datamodule_config: {current_datamodule_config.get('output_length')}"
+            )
+
+    if "batch_size" in hps_for_datamodule:
+        current_datamodule_config["batch_size"] = hps_for_datamodule["batch_size"]
+
+    try:
+        datamodule = HydroInMemoryDataModule(list_of_gauge_ids_to_process=gauge_ids, **current_datamodule_config)
+        datamodule.prepare_data()
+        datamodule.setup()
+        return Success(datamodule)
+    except Exception as e:
+        logger.error(f"Failed to setup datamodule for {model_type}: {e}", exc_info=True)
+        return Failure(f"Datamodule setup failed for {model_type}: {e}")
+
+
+def _finalize_model_hyperparameters(
+    model_hps: dict[str, Any],
+    datamodule: HydroInMemoryDataModule,
+    model_type: str,  # Added for logging context
+) -> dict[str, Any]:
+    """
+    Enriches model HPs with datamodule-derived dimensions and other common mappings.
+    """
+    final_hps = copy.deepcopy(model_hps)
+
+    # Map common aliases if present
+    if "input_length" in final_hps and "input_len" not in final_hps:
+        final_hps["input_len"] = final_hps.pop("input_length")
+    if "output_length" in final_hps and "output_len" not in final_hps:
+        final_hps["output_len"] = final_hps.pop("output_length")
+
+    # Add/overwrite with datamodule-derived properties
+    try:
+        final_hps["input_size"] = len(datamodule.input_features_ordered_for_X)
+        final_hps["static_size"] = len(datamodule.static_features) if datamodule.static_features else 0
+        final_hps["future_input_size"] = len(datamodule.future_features_ordered)
+        final_hps["group_identifier"] = datamodule.group_identifier
+        # Ensure output_len in HPs matches datamodule's output_length after setup
+        final_hps["output_len"] = datamodule.output_length
+    except Exception as e:
+        logger.error(f"Error finalizing HPs for {model_type} using datamodule properties: {e}", exc_info=True)
+        # Depending on strictness, could raise an error or proceed with potentially incomplete HPs
+        # For now, log and proceed.
+    return final_hps
+
+
+def _configure_trainer_core(
+    training_config: dict[str, Any],
+    callbacks_config: dict[str, bool],
+    is_hpt_trial: bool = False,
+    hpt_metric_to_monitor: str | None = "val_loss",
+    optuna_trial_for_pruning: optuna.Trial | None = None,
+    checkpoint_dir_for_run: Path | None = None,
+    log_dir_for_run: Path | None = None,
+    model_type_for_paths: str | None = None,
+    run_idx_for_paths: int | None = None,
+) -> Result[pl.Trainer, str]:
+    """
+    Core helper to configure and create a PyTorch Lightning Trainer.
+    """
+    callbacks_list = []
+    tb_logger = None  # type: ignore
+    enable_model_checkpointing = False
+
+    # 1. Early Stopping
+    if callbacks_config.get("with_early_stopping", True):
+        early_stopping_patience = training_config.get("early_stopping_patience", 10)
+        monitor_metric = (
+            hpt_metric_to_monitor if is_hpt_trial else training_config.get("early_stopping_monitor", "val_loss")
+        )
+        es_mode = "min" if "loss" in monitor_metric or "mse" in monitor_metric else "max"
+
+        early_stopping_callback = EarlyStopping(
+            monitor=monitor_metric, patience=early_stopping_patience, verbose=True, mode=es_mode
+        )
+        callbacks_list.append(early_stopping_callback)
+
+    # 2. Optuna Pruning (only for HPT)
+    if is_hpt_trial and callbacks_config.get("with_optuna_pruning", False) and optuna_trial_for_pruning:
+        from optuna.integration import PyTorchLightningPruningCallback  # Local import
+
+        pruning_callback = PyTorchLightningPruningCallback(optuna_trial_for_pruning, monitor=hpt_metric_to_monitor)
+        callbacks_list.append(pruning_callback)
+
+    # For non-HPT runs (full training/fine-tuning)
+    if not is_hpt_trial:
+        if (
+            not checkpoint_dir_for_run
+            or not log_dir_for_run
+            or model_type_for_paths is None
+            or run_idx_for_paths is None
+        ):
+            return Failure("Missing path information for non-HPT trainer configuration.")
+
+        attempt_name = log_dir_for_run.name  # Assumes log_dir_for_run is the specific attempt path
+
+        # 3. Model Checkpoint
+        if callbacks_config.get("with_model_checkpoint", True):
+            enable_model_checkpointing = True
+            checkpoint_filename = (
+                f"{model_type_for_paths}-run{run_idx_for_paths}-{attempt_name}-{{epoch:02d}}-{{val_loss:.4f}}"
+            )
+            mc_monitor = training_config.get("checkpoint_monitor", "val_loss")
+            mc_mode = "min" if "loss" in mc_monitor or "mse" in mc_monitor else "max"
+            model_checkpoint_callback = ModelCheckpoint(
+                monitor=mc_monitor,
+                dirpath=str(checkpoint_dir_for_run),
+                filename=checkpoint_filename,
+                save_top_k=1,
+                mode=mc_mode,
+                save_last=True,
+            )
+            callbacks_list.append(model_checkpoint_callback)
+
+        # 4. Learning Rate Monitor
+        if callbacks_config.get("with_lr_monitor", True):
+            lr_monitor_callback = LearningRateMonitor(logging_interval="step")
+            callbacks_list.append(lr_monitor_callback)
+
+        # 5. TensorBoard Logger
+        if callbacks_config.get("with_tensorboard_logger", True):
+            try:
+                tb_save_dir = log_dir_for_run.parent.parent.parent  # Up to .../logs/
+                tb_name = f"{log_dir_for_run.parent.parent.name}/{log_dir_for_run.parent.name}"  # <model_type>/run_X
+                tb_version = attempt_name
+
+                tb_logger = TensorBoardLogger(
+                    save_dir=str(tb_save_dir),
+                    name=tb_name,
+                    version=tb_version,
+                    default_hp_metric=False,
+                )
+            except Exception as e:
+                return Failure(f"Error setting up TensorBoardLogger paths: {e}")
+    try:
+        # Configure trainer arguments
+        trainer_kwargs: dict[str, Any] = {
+            "accelerator": training_config.get("accelerator", "auto"),
+            "devices": training_config.get("devices", "auto"),  # Changed to auto for HPT safety
+            "enable_progress_bar": training_config.get("enable_progress_bar", True),
+            "callbacks": callbacks_list,
+            "num_sanity_val_steps": training_config.get("num_sanity_val_steps", 2),
+        }
+
+        if is_hpt_trial:
+            trainer_kwargs["max_epochs"] = training_config.get("max_epochs_per_trial", 10)
+            trainer_kwargs["logger"] = False  # No PL logger for HPT trials by default
+            trainer_kwargs["enable_checkpointing"] = False  # No PL checkpointing for HPT
+            trainer_kwargs["enable_progress_bar"] = training_config.get("enable_progress_bar_in_trial", False)
+            trainer_kwargs["num_sanity_val_steps"] = training_config.get("num_sanity_val_steps_hpt", 0)
+
+        else:  # Full run
+            trainer_kwargs["max_epochs"] = training_config.get("max_epochs", 100)
+            trainer_kwargs["logger"] = tb_logger  # PL logger for full runs
+            trainer_kwargs["enable_checkpointing"] = enable_model_checkpointing  # PL checkpointing for full runs
+            trainer_kwargs["reload_dataloaders_every_n_epochs"] = training_config.get(
+                "reload_dataloaders_every_n_epochs", 1
+            )
+
+        # Configure precision if specified
+        precision = training_config.get("precision")
+        if precision is not None:
+            valid_precision_values = ["32-true", "32", "16-mixed", "bf16-mixed"]
+            if str(precision) in valid_precision_values:
+                trainer_kwargs["precision"] = precision
+            else:
+                logger.warning(f"Invalid precision value: {precision}. Using default.")
+
+        # Configure matmul precision if specified
+        matmul_precision = training_config.get("torch_float32_matmul_precision")
+        if matmul_precision is not None:
+            valid_matmul_values = ["highest", "high", "medium"]
+            if matmul_precision in valid_matmul_values:
+                torch.set_float32_matmul_precision(matmul_precision)
+            else:
+                logger.warning(f"Invalid torch_float32_matmul_precision value: {matmul_precision}. Not setting.")
+
+        # Create trainer
+        trainer = pl.Trainer(**trainer_kwargs)
+        return Success(trainer)
+    except Exception as e:
+        logger.error(f"Failed to create pl.Trainer: {e}", exc_info=True)
+        return Failure(f"Trainer creation failed: {e}")
 
 
 class ExperimentRunner:
     """
     Central runner class for hydrological model training experiments.
-
-    This class abstracts common functionality between training from scratch and fine-tuning,
-    while allowing flexibility in how models are provided (created or loaded).
+    Refactored to use centralized helper functions.
     """
 
     def __init__(
@@ -37,18 +254,6 @@ class ExperimentRunner:
         base_seed: int = 42,
         override_previous_attempts: bool = False,
     ):
-        """
-        Initialize the experiment runner.
-
-        Args:
-            output_dir: Base directory for storing outputs (checkpoints, logs)
-            experiment_name: Name of the experiment for directory organization
-            datamodule_config: Configuration for HydroInMemoryDataModule
-            training_config: Configuration for PyTorch Lightning Trainer
-            num_runs: Number of independent training runs for each model type
-            base_seed: Base random seed (will be incremented for each run)
-            override_previous_attempts: Whether to override existing outputs
-        """
         self.output_dir = Path(output_dir)
         self.experiment_name = experiment_name
         self.datamodule_config = datamodule_config
@@ -57,7 +262,6 @@ class ExperimentRunner:
         self.base_seed = base_seed
         self.override_previous_attempts = override_previous_attempts
 
-        # Create main experiment directory
         self.main_experiment_dir = self.output_dir / self.experiment_name
         try:
             self.main_experiment_dir.mkdir(parents=True, exist_ok=True)
@@ -66,198 +270,24 @@ class ExperimentRunner:
             raise
 
     def _setup_model_directories(self, model_type: str) -> tuple[Path, Path]:
-        """
-        Set up directories for a specific model type.
-
-        Args:
-            model_type: Type of model ('tide', 'tft', 'ealstm', etc.)
-
-        Returns:
-            Tuple of paths (checkpoints_dir, logs_dir)
-        """
         model_checkpoints_base_dir = self.main_experiment_dir / checkpoint_manager.CHECKPOINTS_DIR_NAME / model_type
         model_logs_base_dir = self.main_experiment_dir / checkpoint_manager.LOGS_DIR_NAME / model_type
-
         try:
             model_checkpoints_base_dir.mkdir(parents=True, exist_ok=True)
             model_logs_base_dir.mkdir(parents=True, exist_ok=True)
         except Exception as e:
             logger.error(f"Failed to create output directories for {model_type}: {e}")
             raise
-
         return model_checkpoints_base_dir, model_logs_base_dir
 
-    def _setup_datamodule(
-        self, model_type: str, yaml_path: str, gauge_ids: list[str]
-    ) -> tuple[HydroInMemoryDataModule, dict[str, Any]]:
-        """
-        Set up data module based on model hyperparameters.
-
-        Args:
-            model_type: Type of model ('tide', 'tft', 'ealstm', etc.)
-            yaml_path: Path to the YAML file with model hyperparameters
-            gauge_ids: List of basin/gauge IDs to use for training
-
-        Returns:
-            Tuple of (datamodule, model_hp)
-        """
-        # Load model hyperparameters
-        model_hp = hp_from_yaml(model_type, yaml_path)
-        input_length = model_hp.get("input_len")
-        output_length = model_hp.get("output_len")
-
-        if input_length is None or output_length is None:
-            raise ValueError(f"Missing input_len or output_len in hyperparameters for {model_type}")
-
-        # Create a copy of datamodule_config with the correct input/output lengths
-        current_datamodule_config = self.datamodule_config.copy()
-        current_datamodule_config["input_length"] = input_length
-        current_datamodule_config["output_length"] = output_length
-
-        # Set up the data module
-        datamodule = HydroInMemoryDataModule(list_of_gauge_ids_to_process=gauge_ids, **current_datamodule_config)
-
-        # Verify setup
-        datamodule.prepare_data()
-        datamodule.setup()
-
-        return datamodule, model_hp
-
-    def _configure_trainer_and_callbacks(
-        self,
-        model_type: str,
-        run_idx: int,
-        specific_checkpoint_dir: Path,
-        specific_log_dir: Path,
-    ) -> tuple[pl.Trainer, ModelCheckpoint, str]:
-        """
-        Configure PyTorch Lightning Trainer and callbacks.
-
-        Args:
-            model_type: Type of model ('tide', 'tft', 'ealstm', etc.)
-            run_idx: Index of the current run
-            specific_checkpoint_dir: Directory to save checkpoints for this run/attempt
-            specific_log_dir: Directory to save logs for this run/attempt
-
-        Returns:
-            Tuple of (trainer, checkpoint_callback, attempt_name)
-        """
-        attempt_name = specific_log_dir.name
-
-        # Set up checkpoint callback
-        checkpoint_filename = f"{model_type}-run{run_idx}-{attempt_name}-{{epoch:02d}}-{{val_loss:.4f}}"
-        checkpoint_callback = ModelCheckpoint(
-            monitor="val_loss",
-            dirpath=str(specific_checkpoint_dir),
-            filename=checkpoint_filename,
-            save_top_k=1,
-            mode="min",
-            save_last=True,
-        )
-
-        # Set up early stopping callback
-        early_stopping_patience = self.training_config.get("early_stopping_patience", 10)
-        early_stopping_callback = EarlyStopping(
-            monitor="val_loss",
-            patience=early_stopping_patience,
-            verbose=True,
-            mode="min",
-        )
-
-        # Set up learning rate monitor
-        lr_monitor_callback = LearningRateMonitor(logging_interval="step")
-
-        # Set up TensorBoard logger
-        tb_logger = TensorBoardLogger(
-            save_dir=str(specific_log_dir.parent.parent),  # Navigate up to the logs base dir
-            name=f"run_{run_idx}",
-            version=attempt_name,
-            default_hp_metric=False,
-        )
-
-        callbacks_list = [early_stopping_callback, checkpoint_callback, lr_monitor_callback]
-
-        # Configure trainer arguments 
-        trainer_kwargs = { 
-            "max_epochs": self.training_config.get("max_epochs", 100),
-            "accelerator": self.training_config.get("accelerator", "auto"),
-            "devices": self.training_config.get("devices", 1),
-            "enable_progress_bar": self.training_config.get("enable_progress_bar", True),
-            "logger": tb_logger,
-            "callbacks": callbacks_list,
-            "num_sanity_val_steps": self.training_config.get("num_sanity_val_steps", 2),
-            "reload_dataloaders_every_n_epochs": self.training_config.get("reload_dataloaders_every_n_epochs", False),
-        }
-
-        # Configure precision if specified
-        precision = self.training_config.get("precision")
-        if precision is not None:
-            valid_precision_values = ["32-true", "32", "16-mixed", "bf16-mixed"]
-            if str(precision) in valid_precision_values:
-                trainer_kwargs["precision"] = precision
-            else:
-                logger.warning(f"Invalid precision value: {precision}. Using default.")
-
-        # Configure matmul precision if specified
-        matmul_precision = self.training_config.get("torch_float32_matmul_precision")
-        if matmul_precision is not None:
-            valid_matmul_values = ["highest", "high", "medium"]
-            if matmul_precision in valid_matmul_values:
-                torch.set_float32_matmul_precision(matmul_precision)
-            else:
-                logger.warning(f"Invalid torch_float32_matmul_precision value: {matmul_precision}. Not setting.")
-
-        # Create trainer
-        trainer = pl.Trainer(**trainer_kwargs)
-
-        return trainer, checkpoint_callback, attempt_name
-
-    def _process_results(
-        self,
-        model_type: str,
-        model_run_results: list[tuple[str, dict[str, Any]]],
-        model_checkpoints_base_dir: Path,
-    ) -> tuple[str | None, dict[str, Any]]:
-        """
-        Process results from multiple runs of a single model type.
-
-        Args:
-            model_type: Type of model ('tide', 'tft', 'ealstm', etc.)
-            model_run_results: List of tuples (checkpoint_path, metrics_dict) for all runs
-            model_checkpoints_base_dir: Base directory for checkpoints for this model type
-
-        Returns:
-            Tuple of (best_checkpoint_path, best_metrics_dict)
-        """
-        if not model_run_results:
-            logger.warning(f"No successful runs for {model_type}")
-            return None, {"error": "No successful runs"}
-
-        # Sort by validation loss (ascending)
-        sorted_results = sorted(model_run_results, key=lambda x: x[1]["val_loss"])
-        overall_best_model_path, overall_best_metrics = sorted_results[0]
-
+    def _get_hps_from_yaml(self, model_type: str, yaml_path: str) -> Result[dict[str, Any], str]:
+        """Loads HPs from YAML, returns as Result."""
         try:
-            # Get relative path for overall best model
-            relative_best_path = Path(overall_best_model_path).relative_to(model_checkpoints_base_dir)
-
-            # Update overall best model info file
-            update_result = checkpoint_manager.update_overall_best_model_info_file(
-                model_checkpoints_output_dir=model_checkpoints_base_dir,
-                best_checkpoint_relative_path=str(relative_best_path),
-            )
-
-            if not isinstance(update_result, Success):
-                logger.error(f"Failed to update best model info for {model_type}: {update_result.failure()}")
-
-            logger.info(f"Overall best model for {model_type}: {relative_best_path}")
-            logger.info(f"Best metrics: {overall_best_metrics}")
-
-            return overall_best_model_path, overall_best_metrics
-
+            model_hp = hp_from_yaml(model_type, yaml_path)
+            return Success(model_hp)
         except Exception as e:
-            logger.error(f"Error recording overall best model for {model_type}: {e}")
-            return None, {"error": f"Error recording best model: {str(e)}"}
+            logger.error(f"Failed to load hyperparameters from {yaml_path} for {model_type}: {e}")
+            return Failure(f"HP loading failed for {model_type} from {yaml_path}: {e}")
 
     def set_seed(self, seed: int) -> None:
         """Set random seed for reproducibility across all libraries."""
@@ -270,52 +300,51 @@ class ExperimentRunner:
         model_provider_fn: ModelProviderFn,
         gauge_ids: list[str],
     ) -> tuple[str | None, dict[str, Any]]:
-        """
-        Run training for a specific model type using the provided model provisioning function.
-
-        Args:
-            model_type: Type of model ('tide', 'tft', 'ealstm', etc.)
-            yaml_path: Path to the YAML file with model hyperparameters
-            model_provider_fn: Function that takes (model_type, yaml_path) and returns a model
-            gauge_ids: List of basin/gauge IDs to use for training
-
-        Returns:
-            Tuple of (best_checkpoint_path, best_metrics_dict)
-        """
-        logger.info(f"Processing model: {model_type}")
+        logger.info(f"Processing model: {model_type} using HPs from {yaml_path}")
 
         try:
-            # 1. Setup directories
             model_checkpoints_base_dir, model_logs_base_dir = self._setup_model_directories(model_type)
 
-            # 2. Setup datamodule
-            datamodule, _ = self._setup_datamodule(model_type, yaml_path, gauge_ids)
+            # Load initial HPs from YAML
+            initial_hps_result = self._get_hps_from_yaml(model_type, yaml_path)
+            if isinstance(initial_hps_result, Failure):
+                logger.error(initial_hps_result.failure())
+                return None, {"error": initial_hps_result.failure()}
+            initial_model_hps = initial_hps_result.unwrap()
 
-            # 3. Collection for run results
+            # Setup datamodule using core helper (HPs for datamodule come from initial_model_hps)
+            datamodule_result = _setup_datamodule_core(
+                base_datamodule_config=self.datamodule_config,
+                hps_for_datamodule=initial_model_hps,  # YAML HPs guide DM config
+                gauge_ids=gauge_ids,
+                model_type=model_type,
+            )
+            if isinstance(datamodule_result, Failure):
+                logger.error(datamodule_result.failure())
+                return None, {"error": datamodule_result.failure()}
+            datamodule = datamodule_result.unwrap()
+
+            # Finalize model HPs using the now-configured datamodule
+            finalized_model_hps = _finalize_model_hyperparameters(
+                model_hps=initial_model_hps, datamodule=datamodule, model_type=model_type
+            )
+            logger.info(f"Finalized HPs for {model_type}: {finalized_model_hps}")
+
             current_model_run_results = []
-
-            # 4. Execute multiple runs
             for run_idx in range(self.num_runs):
                 logger.info(f"Starting run {run_idx + 1}/{self.num_runs} for {model_type}")
-
-                # 4a. Set seed for reproducibility
                 current_run_seed = self.base_seed + run_idx
                 self.set_seed(current_run_seed)
                 logger.info(f"Using seed: {current_run_seed}")
 
-                # 4b. Determine paths for this run/attempt
                 checkpoint_run_attempt_path_result = checkpoint_manager.determine_output_run_attempt_path(
                     base_model_output_dir=model_checkpoints_base_dir,
                     run_index=run_idx,
                     override_previous_attempts=self.override_previous_attempts,
                 )
-
                 if not isinstance(checkpoint_run_attempt_path_result, Success):
-                    logger.error(
-                        f"Failed to determine checkpoint path for run {run_idx}: {checkpoint_run_attempt_path_result.failure()}"
-                    )
+                    logger.error(f"Failed to determine checkpoint path: {checkpoint_run_attempt_path_result.failure()}")
                     continue
-
                 specific_checkpoint_dir = checkpoint_run_attempt_path_result.unwrap()
 
                 log_run_attempt_path_result = checkpoint_manager.determine_log_run_attempt_path(
@@ -323,48 +352,56 @@ class ExperimentRunner:
                     run_index=run_idx,
                     override_previous_attempts=self.override_previous_attempts,
                 )
-
                 if not isinstance(log_run_attempt_path_result, Success):
-                    logger.error(
-                        f"Failed to determine log path for run {run_idx}: {log_run_attempt_path_result.failure()}"
-                    )
+                    logger.error(f"Failed to determine log path: {log_run_attempt_path_result.failure()}")
                     continue
-
                 specific_log_dir = log_run_attempt_path_result.unwrap()
 
-                # 4c. Configure trainer and callbacks
+                # Configure trainer using core helper
+                callbacks_config_full_run = {
+                    "with_early_stopping": True,
+                    "with_model_checkpoint": True,
+                    "with_lr_monitor": True,
+                    "with_tensorboard_logger": True,
+                    "with_optuna_pruning": False,  # Not an HPT trial
+                }
+                trainer_result = _configure_trainer_core(
+                    training_config=self.training_config,
+                    callbacks_config=callbacks_config_full_run,
+                    is_hpt_trial=False,
+                    checkpoint_dir_for_run=specific_checkpoint_dir,
+                    log_dir_for_run=specific_log_dir,
+                    model_type_for_paths=model_type,
+                    run_idx_for_paths=run_idx,
+                )
+                if isinstance(trainer_result, Failure):
+                    logger.error(f"Trainer config error for {model_type}, run {run_idx}: {trainer_result.failure()}")
+                    continue
+                trainer = trainer_result.unwrap()
+
                 try:
-                    trainer, checkpoint_callback, attempt_name = self._configure_trainer_and_callbacks(
-                        model_type=model_type,
-                        run_idx=run_idx,
-                        specific_checkpoint_dir=specific_checkpoint_dir,
-                        specific_log_dir=specific_log_dir,
-                    )
+                    # Model provider function now receives the finalized HPs
+                    model = model_provider_fn(model_type, finalized_model_hps)
                 except Exception as e:
-                    logger.error(f"Failed to configure trainer for {model_type}, run {run_idx}: {e}")
+                    logger.error(f"Failed to provide model for {model_type}, run {run_idx}: {e}", exc_info=True)
                     continue
 
-                # 4d. Get model from provider function
-                try:
-                    model = model_provider_fn(model_type, yaml_path)
-                except Exception as e:
-                    logger.error(f"Failed to provide model for {model_type}, run {run_idx}: {e}")
-                    continue
-
-                # 4e. Execute training
                 status = "failed"
                 try:
                     trainer.fit(model, datamodule=datamodule)
+                    # Assuming ModelCheckpoint is always the second callback if present and not HPT
+                    mc_callback = None
+                    for cb in trainer.callbacks:  # type: ignore
+                        if isinstance(cb, ModelCheckpoint):
+                            mc_callback = cb
+                            break
 
-                    # Collect results
-                    best_model_path = checkpoint_callback.best_model_path
-                    best_model_score = checkpoint_callback.best_model_score
-
-                    if best_model_path and best_model_score is not None:
-                        best_model_score_value = best_model_score.item()
-                        logger.info(f"Run {run_idx} completed with best val_loss: {best_model_score_value}")
-
-                        # Store the result for this run
+                    if mc_callback and mc_callback.best_model_path and mc_callback.best_model_score is not None:
+                        best_model_path = mc_callback.best_model_path
+                        best_model_score_value = mc_callback.best_model_score.item()
+                        logger.info(
+                            f"Run {run_idx} completed. Best val_loss: {best_model_score_value}, Path: {best_model_path}"
+                        )
                         current_model_run_results.append(
                             (
                                 best_model_path,
@@ -373,25 +410,45 @@ class ExperimentRunner:
                         )
                         status = "success"
                     else:
-                        logger.warning(f"No best model path or score found for run {run_idx}")
-
+                        logger.warning(f"No best model path or score found from ModelCheckpoint for run {run_idx}")
                 except Exception as e:
-                    logger.error(f"Training failed for {model_type}, run {run_idx}: {e}")
-
+                    logger.error(f"Training failed for {model_type}, run {run_idx}: {e}", exc_info=True)
                 finally:
                     if hasattr(trainer, "logger") and trainer.logger:
-                        trainer.logger.finalize(status)
+                        trainer.logger.finalize(status)  # type: ignore
 
-            # 5. Process results across all runs
-            return self._process_results(
-                model_type=model_type,
-                model_run_results=current_model_run_results,
-                model_checkpoints_base_dir=model_checkpoints_base_dir,
-            )
+            return self._process_results(model_type, current_model_run_results, model_checkpoints_base_dir)
 
         except Exception as e:
-            logger.error(f"Unexpected error in run_training_for_model for {model_type}: {e}")
+            logger.error(f"Unexpected error in run_training_for_model for {model_type}: {e}", exc_info=True)
             return None, {"error": str(e)}
+
+    def _process_results(
+        self,
+        model_type: str,
+        model_run_results: list[tuple[str, dict[str, Any]]],
+        model_checkpoints_base_dir: Path,
+    ) -> tuple[str | None, dict[str, Any]]:
+        if not model_run_results:
+            logger.warning(f"No successful runs for {model_type}")
+            return None, {"error": "No successful runs"}
+
+        sorted_results = sorted(model_run_results, key=lambda x: x[1]["val_loss"])  # Assumes val_loss is the metric
+        overall_best_model_path, overall_best_metrics = sorted_results[0]
+
+        try:
+            relative_best_path = Path(overall_best_model_path).relative_to(model_checkpoints_base_dir)
+            update_result = checkpoint_manager.update_overall_best_model_info_file(
+                model_checkpoints_output_dir=model_checkpoints_base_dir,
+                best_checkpoint_relative_path=str(relative_best_path),
+            )
+            if not isinstance(update_result, Success):
+                logger.error(f"Failed to update best model info for {model_type}: {update_result.failure()}")
+            logger.info(f"Overall best model for {model_type}: {relative_best_path}, Metrics: {overall_best_metrics}")
+            return overall_best_model_path, overall_best_metrics
+        except Exception as e:
+            logger.error(f"Error recording overall best model for {model_type}: {e}")
+            return None, {"error": f"Error recording best model: {str(e)}"}
 
     def run_experiment(
         self,
@@ -400,38 +457,17 @@ class ExperimentRunner:
         model_provider_fns: list[ModelProviderFn],
         gauge_ids: list[str],
     ) -> Result[dict[str, tuple[str | None, dict[str, Any]]], str]:
-        """
-        Run training experiment for multiple model types.
-
-        Args:
-            model_types: List of model types to train ('tide', 'tft', 'ealstm', etc.)
-            yaml_paths: List of paths to YAML files with model hyperparameters
-            model_provider_fns: List of functions that provide models (one per model type)
-            gauge_ids: List of basin/gauge IDs to use for training
-
-        Returns:
-            Result containing a dictionary mapping model types to tuples of
-            (best_checkpoint_path, metrics_dict) if successful, or an error message if failed.
-        """
         if not gauge_ids:
             return Failure("No gauge IDs provided for training")
-
         if len(model_types) != len(yaml_paths) or len(model_types) != len(model_provider_fns):
-            return Failure("Length mismatch between model_types, yaml_paths, and model_provider_fns")
+            return Failure("Length mismatch: model_types, yaml_paths, model_provider_fns")
 
-        logger.info(f"Starting experiment '{self.experiment_name}'")
-        logger.info(f"Output directory: {self.main_experiment_dir}")
-        logger.info(f"Models to process: {', '.join(model_types)}")
-        logger.info(f"Number of runs per model: {self.num_runs}")
-
+        logger.info(f"Starting experiment '{self.experiment_name}' from ExperimentRunner.")
         all_models_results = {}
-
-        # Process each model type
         for i, (current_model_type, current_yaml_path, current_provider_fn) in enumerate(
             zip(model_types, yaml_paths, model_provider_fns, strict=True)
         ):
             logger.info(f"Processing model ({i + 1}/{len(model_types)}): {current_model_type}")
-
             try:
                 best_result = self.run_training_for_model(
                     model_type=current_model_type,
@@ -439,14 +475,11 @@ class ExperimentRunner:
                     model_provider_fn=current_provider_fn,
                     gauge_ids=gauge_ids,
                 )
-
                 all_models_results[current_model_type] = best_result
-
             except Exception as e:
-                logger.error(f"Failed to process model {current_model_type}: {e}")
+                logger.error(f"Failed to process model {current_model_type} in run_experiment: {e}", exc_info=True)
                 all_models_results[current_model_type] = (None, {"error": str(e)})
 
         if not all_models_results:
-            return Failure("No models were successfully processed")
-
+            return Failure("No models were successfully processed in experiment.")
         return Success(all_models_results)

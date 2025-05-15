@@ -7,41 +7,47 @@ import pytorch_lightning as pl
 from returns.result import Failure, Result, Success
 
 from ..experiment_utils import checkpoint_manager
-from ..experiment_utils.training_runner import ExperimentRunner
 from ..models import model_factory
+from .training_runner import ExperimentRunner, ModelProviderFn
 
 logger = logging.getLogger(__name__)
 
 
-def load_finetune_model(
+def load_finetune_model_from_hps(
     model_type: str,
-    yaml_path: str,
+    finalized_hps: dict[str, Any],
     pretrained_checkpoint_path: str,
-    lr_factor: float = 10.0,
+    lr_factor: float = 1.0,
 ) -> pl.LightningModule:
     """
-    Load a pre-trained model for fine-tuning.
-
-    Args:
-        model_type: Type of model ('tide', 'tft', 'ealstm', etc.)
-        yaml_path: Path to the YAML file with model hyperparameters
-        pretrained_checkpoint_path: Path to the pre-trained checkpoint
-        lr_factor: Factor by which to reduce the learning rate for fine-tuning
-
-    Returns:
-        Loaded model with reduced learning rate
+    Load a pre-trained model for fine-tuning using finalized hyperparameters.
+    The learning rate from finalized_hps will be adjusted by lr_factor.
     """
-    model, _ = model_factory.load_pretrained_model(
-        model_type=model_type,
-        yaml_path=yaml_path,
-        checkpoint_path=str(pretrained_checkpoint_path),
-        lr_factor=lr_factor,
+
+    model_config = model_factory.get_model_config_class(model_type)(**finalized_hps)
+    model = model_factory.get_model_class(model_type).load_from_checkpoint(
+        pretrained_checkpoint_path, config=model_config
     )
+
+    if "learning_rate" in finalized_hps:
+        original_lr = finalized_hps["learning_rate"]
+        new_lr = original_lr / lr_factor
+        if hasattr(model, "hparams") and "learning_rate" in model.hparams:
+            model.hparams.learning_rate = new_lr
+        elif hasattr(model, "learning_rate"):
+            model.learning_rate = new_lr
+        else:
+            logger.warning(f"Could not set new learning rate on loaded model {model_type}")
+
+        finalized_hps["original_lr_for_finetune"] = original_lr
+        finalized_hps["learning_rate"] = new_lr
+        logger.info(f"Finetuning {model_type}: Original LR {original_lr}, New LR {new_lr}")
+    else:
+        logger.warning(f"Cannot adjust LR for {model_type}: 'learning_rate' not in finalized_hps. Check YAML.")
     return model
 
 
 def finetune_pretrained_models(
-    # --- Pretrained Model Identification ---
     gauge_ids: list[str],
     pretrained_checkpoint_dir: str | Path,
     model_types: list[str],
@@ -57,62 +63,29 @@ def finetune_pretrained_models(
     num_runs: int = 1,
     base_seed: int = 42,
     override_previous_attempts: bool = False,
-) -> Result[dict[str, tuple[str, dict[str, Any]]], str]:
-    """
-    Fine-tune pre-trained hydrological forecasting models.
-
-    This function orchestrates the fine-tuning process for one or more pre-trained models:
-    1. Locates pre-trained checkpoints from a previous experiment
-    2. Loads models with reduced learning rates
-    3. Sets up data modules with the fine-tuning dataset
-    4. Executes training loops for fine-tuning
-    5. Manages versioned outputs and identifies best checkpoints
-    6. Returns a summary of fine-tuning results
-
-    Args:
-        pretrained_checkpoint_dir: Directory containing pre-trained model checkpoints
-        model_types: List of model types to fine-tune ('tide', 'tft', 'ealstm', etc.)
-        pretrained_yaml_paths: List of paths to YAML files with model hyperparameters,
-                              or a single path to a directory containing YAML files,
-                              or a single path to a YAML file to be used for all model types
-        select_best_from_pretrained: Whether to use the best checkpoint from pre-training
-        pretrained_run_index: Specific run index to use when select_best_from_pretrained is False
-        pretrained_attempt_index: Specific attempt index to use when select_best_from_pretrained is False
-        lr_reduction_factor: Factor by which to reduce the learning rate for fine-tuning
-        gauge_ids: List of basin/gauge IDs to use for fine-tuning
-        datamodule_config: Configuration for the HydroInMemoryDataModule
-        training_config: Configuration for PyTorch Lightning Trainer
-        output_dir: Base directory for storing fine-tuning outputs
-        experiment_name: Name of the fine-tuning experiment for directory organization
-        num_runs: Number of independent fine-tuning runs for each model type
-        base_seed: Base random seed (will be incremented for each run)
-        override_previous_attempts: Whether to override existing fine-tuning outputs
-
-    Returns:
-        Result containing a dictionary mapping model types to tuples of
-        (best_checkpoint_path, metrics_dict) if successful, or an error message if failed.
-    """
-    # Resolve pretrained_yaml_paths to a list if it's a string
+) -> Result[dict[str, tuple[str | None, dict[str, Any]]], str]:
+    actual_pretrained_yaml_paths: list[str]
     if isinstance(pretrained_yaml_paths, str | Path):
         yaml_dir = Path(pretrained_yaml_paths)
         if yaml_dir.is_dir():
             resolved_yaml_paths = []
             for model_type in model_types:
-                yaml_path = yaml_dir / f"{model_type.lower()}.yaml"
-                if not yaml_path.exists():
-                    return Failure(f"YAML file for model type '{model_type}' not found at {yaml_path}")
-                resolved_yaml_paths.append(str(yaml_path))
-            pretrained_yaml_paths = resolved_yaml_paths
+                yaml_path_obj = yaml_dir / f"{model_type.lower()}.yaml"
+                if not yaml_path_obj.exists():
+                    return Failure(f"YAML file for model type '{model_type}' not found at {yaml_path_obj}")
+                resolved_yaml_paths.append(str(yaml_path_obj))
+            actual_pretrained_yaml_paths = resolved_yaml_paths
         else:
             logger.warning(
                 "Provided pretrained_yaml_paths is a string but not a directory. Using it as a single YAML path for all models."
             )
-            pretrained_yaml_paths = [pretrained_yaml_paths] * len(model_types)
+            actual_pretrained_yaml_paths = [str(yaml_dir)] * len(model_types)
+    else:
+        actual_pretrained_yaml_paths = [str(p) for p in pretrained_yaml_paths]
 
-    if len(model_types) != len(pretrained_yaml_paths):
-        return Failure("Length of model_types must match length of pretrained_yaml_paths")
+    if len(model_types) != len(actual_pretrained_yaml_paths):
+        return Failure("Length of model_types must match length of resolved pretrained_yaml_paths")
 
-    # Create experiment runner
     runner = ExperimentRunner(
         output_dir=output_dir,
         experiment_name=experiment_name,
@@ -124,11 +97,12 @@ def finetune_pretrained_models(
     )
 
     pretrained_base_dir = Path(pretrained_checkpoint_dir)
-    all_models_results = {}
-    model_provider_fns = []
+    model_provider_fns_for_exp: list[ModelProviderFn] = []
+    valid_model_types_for_exp: list[str] = []
+    valid_yaml_paths_for_exp: list[str] = []
+    accumulated_error_results: dict[str, tuple[None, dict[str, Any]]] = {}
 
-    # Locate pre-trained checkpoints for each model
-    for model_type in model_types:
+    for model_type, initial_yaml_path_str in zip(model_types, actual_pretrained_yaml_paths, strict=False):
         pretrained_checkpoint_path_result = checkpoint_manager.get_checkpoint_path_to_load(
             base_checkpoint_load_dir=pretrained_base_dir,
             model_type=model_type,
@@ -140,56 +114,42 @@ def finetune_pretrained_models(
         if not isinstance(pretrained_checkpoint_path_result, Success):
             error_msg = pretrained_checkpoint_path_result.failure()
             logger.warning(f"Could not find pre-trained checkpoint for {model_type}: {error_msg}")
-            all_models_results[model_type] = (None, {"error": f"Checkpoint not found: {error_msg}"})
-            # Add a dummy provider function that will be skipped
-            model_provider_fns.append(None)
+            accumulated_error_results[model_type] = (None, {"error": f"Checkpoint not found: {error_msg}"})
         else:
             pretrained_checkpoint_path = pretrained_checkpoint_path_result.unwrap()
             logger.info(f"Found pre-trained checkpoint for {model_type}: {pretrained_checkpoint_path}")
-            # Create a partially-applied function with the checkpoint path and lr factor
-            model_provider_fn = functools.partial(
-                load_finetune_model,
+
+            provider_fn = functools.partial(
+                load_finetune_model_from_hps,
                 pretrained_checkpoint_path=str(pretrained_checkpoint_path),
                 lr_factor=lr_reduction_factor,
             )
-            model_provider_fns.append(model_provider_fn)
+            model_provider_fns_for_exp.append(provider_fn)
+            valid_model_types_for_exp.append(model_type)
+            valid_yaml_paths_for_exp.append(initial_yaml_path_str)
 
-    # Filter out models with missing checkpoints
-    valid_model_types = []
-    valid_yaml_paths = []
-    valid_provider_fns = []
+    if not valid_model_types_for_exp:
+        if accumulated_error_results:
+            return Success(accumulated_error_results)
+        return Failure("No models with valid pre-trained checkpoints found and no prior errors.")
 
-    for i, (model_type, yaml_path, provider_fn) in enumerate(
-        zip(model_types, pretrained_yaml_paths, model_provider_fns, strict=True)
-    ):
-        if provider_fn is not None:
-            valid_model_types.append(model_type)
-            valid_yaml_paths.append(yaml_path)
-            valid_provider_fns.append(provider_fn)
-        else:
-            # We already added an error entry to all_models_results for this model
-            pass
-
-    if not valid_model_types:
-        return Failure("No models with valid pre-trained checkpoints found")
-
-    # Run the experiment for valid models
-    result = runner.run_experiment(
-        model_types=valid_model_types,
-        yaml_paths=valid_yaml_paths,
-        model_provider_fns=valid_provider_fns,
+    experiment_run_result = runner.run_experiment(
+        model_types=valid_model_types_for_exp,
+        yaml_paths=valid_yaml_paths_for_exp,
+        model_provider_fns=model_provider_fns_for_exp,
         gauge_ids=gauge_ids,
     )
 
-    # Merge results
-    if isinstance(result, Success):
-        all_models_results.update(result.unwrap())
-        return Success(all_models_results)
+    if isinstance(experiment_run_result, Success):
+        final_results = experiment_run_result.unwrap()
+        final_results.update(accumulated_error_results)
+        return Success(final_results)
     else:
-        # If there was a failure with valid models, but we had some error entries,
-        # still return those error entries
-        if all_models_results:
-            logger.warning(f"Experiment failed but returning partial results: {result.failure()}")
-            return Success(all_models_results)
-        else:
-            return result
+        if accumulated_error_results:
+            logger.warning(
+                f"ExperimentRunner failed but returning partial error results: {experiment_run_result.failure()}"
+            )
+            return Failure(
+                f"ExperimentRunner failed: {experiment_run_result.failure()}. Prior errors: {accumulated_error_results}"
+            )
+        return experiment_run_result
