@@ -4,9 +4,12 @@ import logging
 from pathlib import Path
 from typing import Any
 
+import matplotlib.pyplot as plt
 import optuna
+import pandas as pd
 import pytorch_lightning as pl
 import torch
+import yaml
 from returns.result import Failure, Result, Success
 
 from hydro_forecasting.data.in_memory_datamodule import HydroInMemoryDataModule
@@ -27,6 +30,16 @@ def _handle_trial_error(
 
 
 def _load_search_space(model_type: str, search_spaces_dir: str | Path = "search_spaces") -> Result[dict[str, Any], str]:
+    """
+    Get the expected parameters for a specified model type.
+
+    Args:
+        model_type: The type of model (tide, tft, ealstm, tsmixer)
+        search_spaces_dir: Directory containing search space definitions
+
+    Returns:
+        Result containing the search space dictionary or an error message
+    """
     search_spaces_path = Path(search_spaces_dir)
     model_space_file = search_spaces_path / f"{model_type.lower()}_space.py"
     if not model_space_file.exists():
@@ -47,6 +60,16 @@ def _load_search_space(model_type: str, search_spaces_dir: str | Path = "search_
 
 
 def _suggest_trial_hparams(trial: optuna.Trial, search_space: dict[str, Any]) -> dict[str, Any]:
+    """
+    Suggest hyperparameters for a trial based on the search space.
+
+    Args:
+        trial: Optuna trial
+        search_space: Search space dictionary
+
+    Returns:
+        Dictionary of suggested hyperparameters
+    """
     hparams: dict[str, Any] = {}
     combined_search_space: dict[str, Any] = {}
     if "common" in search_space:
@@ -69,6 +92,208 @@ def _suggest_trial_hparams(trial: optuna.Trial, search_space: dict[str, Any]) ->
     return hparams
 
 
+def save_best_hp_to_yaml(
+    best_config: dict[str, Any],
+    output_dir: Path,
+    model_type: str,
+) -> Result[Path, str]:
+    """
+    Save the best hyperparameters to a YAML file.
+
+    Args:
+        best_config: Best hyperparameters configuration
+        output_dir: Directory to save the YAML file
+        model_type: Type of model being tuned
+
+    Returns:
+        Result containing the path to the saved YAML file or an error message
+    """
+    try:
+        # Create output directory if it doesn't exist
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Define output file path
+        yaml_path = output_dir / f"{model_type}_best_params.yaml"
+
+        # Write to YAML file
+        with open(yaml_path, "w") as f:
+            yaml.safe_dump(best_config, f, default_flow_style=False, sort_keys=False)
+
+        logger.info(f"Saved best hyperparameters to {yaml_path}")
+        return Success(yaml_path)
+
+    except Exception as e:
+        logger.error(f"Error saving best HP to YAML: {e}", exc_info=True)
+        return Failure(f"Failed to save best hyperparameters to YAML: {e}")
+
+
+def plot_optimization_history(
+    study: optuna.Study,
+    output_dir: Path,
+    model_type: str,
+) -> Result[Path, str]:
+    """
+    Create and save optimization history plot.
+
+    Args:
+        study: Completed optuna study
+        output_dir: Directory to save the plot
+        model_type: Type of model being tuned
+
+    Returns:
+        Result containing the path to the saved plot or an error message
+    """
+    try:
+        # Create plots directory
+        plots_dir = output_dir / "plots"
+        plots_dir.mkdir(parents=True, exist_ok=True)
+
+        # Get dataframe of all trials
+        df = study.trials_dataframe()
+
+        # Plot optimization history
+        plt.figure(figsize=(10, 6))
+        plt.title(f"Optimization History - {model_type}")
+        plt.xlabel("Trial Number")
+        plt.ylabel(f"Objective Value ({study.direction})")
+        plt.plot(df["number"], df["value"], "o-")
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+
+        # Save the plot
+        history_path = plots_dir / f"{model_type}_optimization_history.png"
+        plt.savefig(history_path)
+        plt.close()
+
+        logger.info(f"Saved optimization history plot to {history_path}")
+        return Success(history_path)
+
+    except Exception as e:
+        logger.error(f"Error creating optimization history plot: {e}", exc_info=True)
+        return Failure(f"Failed to create optimization history plot: {e}")
+
+
+def plot_parameter_importance(
+    study: optuna.Study,
+    output_dir: Path,
+    model_type: str,
+) -> Result[Path, str]:
+    """
+    Create and save parameter importance plot.
+
+    Args:
+        study: Completed optuna study
+        output_dir: Directory to save the plot
+        model_type: Type of model being tuned
+
+    Returns:
+        Result containing the path to the saved plot or an error message
+    """
+    try:
+        # Check if there are enough trials for importance analysis
+        if len(study.trials) < 5:
+            return Failure("Not enough trials (minimum 5) to calculate parameter importance")
+
+        # Create plots directory
+        plots_dir = output_dir / "plots"
+        plots_dir.mkdir(parents=True, exist_ok=True)
+
+        # Calculate parameter importances
+        importances = optuna.importance.get_param_importances(study)
+        importance_df = pd.DataFrame(importances.items(), columns=["Parameter", "Importance"]).sort_values(
+            "Importance", ascending=True
+        )
+
+        # Plot parameter importances
+        plt.figure(figsize=(10, max(6, len(importances) * 0.3)))
+        plt.barh(importance_df["Parameter"], importance_df["Importance"])
+        plt.title(f"Parameter Importances - {model_type}")
+        plt.xlabel("Importance")
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+
+        # Save the plot
+        importance_path = plots_dir / f"{model_type}_parameter_importance.png"
+        plt.savefig(importance_path)
+        plt.close()
+
+        logger.info(f"Saved parameter importance plot to {importance_path}")
+        return Success(importance_path)
+
+    except Exception as e:
+        logger.error(f"Error creating parameter importance plot: {e}", exc_info=True)
+        return Failure(f"Failed to create parameter importance plot: {e}")
+
+
+def analyze_hpt_results(
+    study: optuna.Study,
+    output_dir: Path,
+    model_type: str,
+    save_yaml: bool = True,
+    create_plots: bool = True,
+) -> Result[dict[str, Any], str]:
+    """
+    Analyze hyperparameter tuning results, save best parameters to YAML,
+    and create visualization plots.
+
+    Args:
+        study: The completed optuna study
+        output_dir: Directory to save results
+        model_type: Type of model being tuned
+        save_yaml: Whether to save best params to YAML
+        create_plots: Whether to create visualization plots
+
+    Returns:
+        Result containing the best hyperparameters or an error message
+    """
+    try:
+        if not study.trials:
+            return Failure("No trials found in study.")
+
+        # Get best trial and its parameters
+        best_trial = study.best_trial
+        best_params = best_trial.params
+
+        # Get complete model config from user_attrs if available
+        best_config = best_params.copy()
+        if "model_config" in best_trial.user_attrs:
+            best_config = best_trial.user_attrs["model_config"]
+        elif "hparams" in best_trial.user_attrs:
+            best_config = best_trial.user_attrs["hparams"]
+
+        # Log results summary
+        logger.info(f"HPT completed for {model_type}. Best trial: #{best_trial.number}")
+        logger.info(f"Best {study.direction} value: {best_trial.value}")
+        logger.info("Best hyperparameters:")
+        for param_name, param_value in best_config.items():
+            logger.info(f"  {param_name}: {param_value}")
+
+        # Save best hyperparameters to YAML if requested
+        if save_yaml:
+            yaml_result = save_best_hp_to_yaml(best_config, output_dir, model_type)
+            if not isinstance(yaml_result, Success):
+                logger.warning(f"Failed to save best HP to YAML: {yaml_result.failure()}")
+
+        # Create visualization plots if requested
+        if create_plots and len(study.trials) > 1:
+            history_result = plot_optimization_history(study, output_dir, model_type)
+            if not isinstance(history_result, Success):
+                logger.warning(f"Failed to create optimization history plot: {history_result.failure()}")
+
+            if len(study.trials) >= 5:
+                importance_result = plot_parameter_importance(study, output_dir, model_type)
+                if not isinstance(importance_result, Success):
+                    logger.warning(f"Failed to create parameter importance plot: {importance_result.failure()}")
+            else:
+                logger.info("Not enough trials (minimum 5) to create parameter importance plot")
+
+        return Success(best_config)
+
+    except Exception as e:
+        logger.error(f"Error analyzing HPT results: {e}", exc_info=True)
+        return Failure(f"Failed to analyze HPT results: {e}")
+
+
 def hyperparameter_tune_model(
     model_type: str,
     gauge_ids: list[str],
@@ -84,7 +309,34 @@ def hyperparameter_tune_model(
     # Removed optuna_pruner parameter
     metric_to_optimize: str = "val_loss",
     seed: int = 42,
-) -> optuna.Study:
+    save_best_yaml: bool = True,
+    create_plots: bool = True,
+) -> tuple[optuna.Study, Result[dict[str, Any], str]]:
+    """
+    Run hyperparameter tuning for a specified model.
+
+    Args:
+        model_type: Type of model to tune
+        gauge_ids: List of gauge IDs for training
+        datamodule_config: Configuration for data module
+        training_config: Configuration for training
+        output_dir_study: Directory to save study results
+        experiment_name: Name of the experiment/study
+        n_trials: Number of trials to run
+        search_spaces_dir: Directory containing search space definitions
+        optuna_storage_url: URL for storing optuna results (default: SQLite in output_dir)
+        optuna_direction: Direction of optimization ('minimize' or 'maximize')
+        optuna_sampler: Custom optuna sampler
+        metric_to_optimize: Metric to optimize
+        seed: Random seed
+        save_best_yaml: Whether to save best parameters to YAML
+        create_plots: Whether to create visualization plots
+
+    Returns:
+        tuple containing:
+        - optuna.Study: The completed study
+        - Result: Success with best hyperparameters or Failure with error message
+    """
     pl.seed_everything(seed, workers=True)
     output_dir_study_path = Path(output_dir_study)
     study_dir = output_dir_study_path / experiment_name
@@ -242,6 +494,8 @@ def hyperparameter_tune_model(
     )
     study.set_user_attr("model_type", model_type)
 
+    analysis_result = Failure("Study optimization not yet run")
+
     try:
         study.optimize(
             _objective,
@@ -249,10 +503,22 @@ def hyperparameter_tune_model(
             timeout=training_config.get("optuna_timeout_per_study_seconds"),
             gc_after_trial=training_config.get("optuna_gc_after_trial", True),
         )
+
+        # Analyze HPT results after study optimization
+        analysis_result = analyze_hpt_results(
+            study=study,
+            output_dir=study_dir,
+            model_type=model_type,
+            save_yaml=save_best_yaml,
+            create_plots=create_plots,
+        )
+
     except KeyboardInterrupt:
         logger.warning(f"Optuna optimization for study '{experiment_name}' interrupted.")
     except Exception as e:
         logger.error(f"Unexpected error during study.optimize for '{experiment_name}': {e}", exc_info=True)
+        analysis_result = Failure(f"Study optimization failed: {e}")
     finally:
         logger.info(f"Optuna study '{experiment_name}' process finished or interrupted.")
-    return study
+
+    return study, analysis_result
