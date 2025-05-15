@@ -177,8 +177,8 @@ class ExperimentRunner:
 
         callbacks_list = [early_stopping_callback, checkpoint_callback, lr_monitor_callback]
 
-        # Configure trainer arguments
-        trainer_kwargs = {
+        # Configure trainer arguments 
+        trainer_kwargs = { 
             "max_epochs": self.training_config.get("max_epochs", 100),
             "accelerator": self.training_config.get("accelerator", "auto"),
             "devices": self.training_config.get("devices", 1),
@@ -186,7 +186,7 @@ class ExperimentRunner:
             "logger": tb_logger,
             "callbacks": callbacks_list,
             "num_sanity_val_steps": self.training_config.get("num_sanity_val_steps", 2),
-            "reload_dataloaders_every_n_epochs": self.training_config.get("reload_dataloaders_every_n_epochs", 1),
+            "reload_dataloaders_every_n_epochs": self.training_config.get("reload_dataloaders_every_n_epochs", False),
         }
 
         # Configure precision if specified

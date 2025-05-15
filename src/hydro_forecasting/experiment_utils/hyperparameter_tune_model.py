@@ -37,8 +37,7 @@ def _handle_trial_error(
     raise optuna.exceptions.TrialPruned(error_message)
 
 
-@safe
-def _load_search_space(model_type: str, search_spaces_dir: str | Path = "search_spaces") -> dict[str, Any]:
+def _load_search_space(model_type: str, search_spaces_dir: str | Path = "search_spaces") -> Result[dict[str, Any], str]:
     """
     Loads the hyperparameter search space for a given model type.
 
@@ -124,50 +123,31 @@ def _suggest_trial_hparams(trial: optuna.Trial, search_space: dict[str, Any]) ->
 def _map_hparams_to_model_config(
     model_type: str,
     trial_hparams: dict[str, Any],
-    datamodule_dims: dict[str, Any],
-    base_model_config_params: dict[str, Any],
+    datamodule: HydroInMemoryDataModule,
 ) -> dict[str, Any]:
     """
-    Maps sampled hyperparameters and datamodule dimensions to a model configuration dictionary.
+    Maps trial hyperparameters to a model configuration dictionary, adding
+    necessary parameters derived from the datamodule.
 
     Args:
         model_type: The type of the model.
         trial_hparams: Hyperparameters suggested by Optuna for this trial.
-        datamodule_dims: Dimensions obtained from the datamodule (e.g., input_size).
-        base_model_config_params: Base parameters for the model config not part of HPT search space
-                                 (e.g., output_len, group_identifier).
+        datamodule: The configured datamodule to extract dimensions from.
 
     Returns:
         A dictionary formatted for instantiating the model's configuration class.
     """
+    # Start with trial hyperparameters
     model_config_dict = copy.deepcopy(trial_hparams)
-    model_config_dict.update(datamodule_dims)
-    model_config_dict.update(base_model_config_params)
 
-    parameter_mappings: dict[str, str] = {
-        "input_length": "input_len",
-    }
+    if "input_length" in model_config_dict:
+        model_config_dict["input_len"] = model_config_dict.pop("input_length")
 
-    for search_param, model_param_name in parameter_mappings.items():
-        if search_param in model_config_dict and search_param != model_param_name:
-            model_config_dict[model_param_name] = model_config_dict.pop(search_param)
-
-    if "output_len" not in model_config_dict and "output_length" in base_model_config_params:
-        model_config_dict["output_len"] = base_model_config_params["output_length"]
-
-    if model_type == "tide":
-        if "past_feature_projection_size" not in model_config_dict:
-            model_config_dict["past_feature_projection_size"] = model_config_dict.get("hidden_size", 64) // 4
-        if "future_forcing_projection_size" not in model_config_dict:
-            model_config_dict["future_forcing_projection_size"] = model_config_dict.get("hidden_size", 64) // 4
-        if "decoder_output_dim" in model_config_dict and "decoder_output_size" not in model_config_dict:  # common typo
-            model_config_dict["decoder_output_size"] = model_config_dict.pop("decoder_output_dim")
-
-    elif model_type == "tsmixer":
-        if "static_embedding_size" not in model_config_dict:
-            model_config_dict["static_embedding_size"] = 10  # A default if not in search space
-        if "fusion_method" not in model_config_dict:
-            model_config_dict["fusion_method"] = "add"
+    model_config_dict["input_size"] = len(datamodule.input_features_ordered_for_X)
+    model_config_dict["static_size"] = len(datamodule.static_features) if datamodule.static_features else 0
+    model_config_dict["future_input_size"] = len(datamodule.future_features_ordered)
+    model_config_dict["group_identifier"] = datamodule.group_identifier
+    model_config_dict["output_len"] = datamodule.output_length
 
     return model_config_dict
 
@@ -192,28 +172,22 @@ def _configure_datamodule_for_trial(
     """
     current_datamodule_config = copy.deepcopy(base_datamodule_config)
 
+    # Apply trial hyperparameters to datamodule config. This should be handled differently tho :()
     if "input_length" in trial_hparams:
         current_datamodule_config["input_length"] = trial_hparams["input_length"]
     elif "input_len" in trial_hparams:
         current_datamodule_config["input_length"] = trial_hparams["input_len"]
 
-    if "output_length" in trial_hparams:
-        current_datamodule_config["output_length"] = trial_hparams["output_length"]
-    elif "output_len" in trial_hparams:
-        current_datamodule_config["output_length"] = trial_hparams["output_len"]
-
-    if "batch_size" in trial_hparams:
-        current_datamodule_config["batch_size"] = trial_hparams["batch_size"]
-
     datamodule = HydroInMemoryDataModule(list_of_gauge_ids_to_process=gauge_ids, **current_datamodule_config)
     datamodule.prepare_data()
     datamodule.setup()
+
     logger.info(
-        f"Trial datamodule configured. Dims: {datamodule.get_dims()}. "
-        f"Effective batch_size: {datamodule.batch_size}, "
-        f"input_length: {datamodule.input_length}, "
-        f"output_length: {datamodule.output_length}."
+        f"Trial datamodule configured. Input length: {datamodule.input_length}, "
+        f"Output length: {datamodule.output_length}, "
+        f"Batch size: {datamodule.batch_size}"
     )
+
     return datamodule
 
 
@@ -232,7 +206,7 @@ def _instantiate_model_for_trial(
     Returns:
         Result[pl.LightningModule, str]: The instantiated model or an error message.
     """
-    model = model_factory.create_model_from_config_dict(
+    model, _ = model_factory.create_model_from_config_dict(
         model_type=model_type,
         config_dict=mapped_model_config,
     )
@@ -248,7 +222,6 @@ def hyperparameter_tune_model(
     experiment_name: str,
     n_trials: int,
     search_spaces_dir: str | Path = "search_spaces",
-    base_model_config_params: dict[str, Any] | None = None,
     optuna_storage_url: str | None = None,
     optuna_direction: str = "minimize",
     optuna_sampler: optuna.samplers.BaseSampler | None = None,
@@ -268,11 +241,6 @@ def hyperparameter_tune_model(
         experiment_name: Name for the Optuna study.
         n_trials: Number of optimization trials to run.
         search_spaces_dir: Directory containing model-specific search space files.
-        base_model_config_params: Dictionary of base parameters for the model config
-                                  that are not part of the HPT search space but are
-                                  required by the model's config class (e.g., output_len,
-                                  group_identifier). These will be merged into the
-                                  final model config.
         optuna_storage_url: Optional URL for Optuna's storage (e.g., SQLite).
                             If None, a local SQLite DB is created in output_dir_study.
         optuna_direction: "minimize" or "maximize" the metric_to_optimize.
@@ -299,13 +267,13 @@ def hyperparameter_tune_model(
     logger.info(f"Number of trials: {n_trials}")
 
     search_space_result = _load_search_space(model_type, search_spaces_dir)
-    if search_space_result.is_failure:
+    if isinstance(search_space_result, Failure):
         err_msg = search_space_result.failure()
         logger.error(f"Failed to load search space for {model_type}: {err_msg}")
         raise ValueError(f"Failed to load search space: {err_msg}")
     search_space = search_space_result.unwrap()
 
-    _base_model_config_params = base_model_config_params or {}
+    logger.info(f"Loaded search space for {model_type}: {search_space}")
 
     def _objective(trial: optuna.Trial) -> float:
         """
@@ -316,35 +284,33 @@ def hyperparameter_tune_model(
         trainer: pl.Trainer | None = None
 
         try:
+            # 1. Suggest hyperparameters for this trial
             trial_hparams = _suggest_trial_hparams(trial, search_space)
             logger.info(f"Trial {trial.number}: Suggested HPs: {trial_hparams}")
             trial.set_user_attr("hparams", trial_hparams)
 
-            datamodule_result: Result[HydroInMemoryDataModule, Exception] = _configure_datamodule_for_trial(
-                datamodule_config, trial_hparams, gauge_ids
-            ).alt(lambda err_msg: Failure(Exception(f"DataModule config error for trial {trial.number}: {err_msg}")))
-
-            if datamodule_result.is_failure:
+            # 2. Configure datamodule with trial hyperparameters
+            datamodule_result = _configure_datamodule_for_trial(datamodule_config, trial_hparams, gauge_ids)
+            if isinstance(datamodule_result, Failure):
                 err = datamodule_result.failure()
-                return _handle_trial_error(str(err), trial)
+                return _handle_trial_error(f"DataModule config error: {err}", trial)
+
             datamodule = datamodule_result.unwrap()
-            datamodule_dims = datamodule.get_dims()
-            trial.set_user_attr("datamodule_dims", datamodule_dims)
 
-            mapped_model_config = _map_hparams_to_model_config(
-                model_type, trial_hparams, datamodule_dims, _base_model_config_params
-            )
+            # 3. Map hyperparameters to model configuration format
+            mapped_model_config = _map_hparams_to_model_config(model_type, trial_hparams, datamodule)
             logger.info(f"Trial {trial.number}: Mapped Model Config: {mapped_model_config}")
+            trial.set_user_attr("model_config", mapped_model_config)
 
-            model_result: Result[pl.LightningModule, Exception] = _instantiate_model_for_trial(
-                model_type, mapped_model_config
-            ).alt(lambda err_msg: Failure(Exception(f"Model instantiation error for trial {trial.number}: {err_msg}")))
-
-            if model_result.is_failure:
+            # 4. Instantiate model with the configuration
+            model_result = _instantiate_model_for_trial(model_type, mapped_model_config)
+            if isinstance(model_result, Failure):
                 err = model_result.failure()
-                return _handle_trial_error(str(err), trial)
+                return _handle_trial_error(f"Model instantiation error: {err}", trial)
+
             model_pl = model_result.unwrap()
 
+            # 5. Configure training callbacks
             callbacks = []
             early_stopping_config = training_config.get("early_stopping", {})
             if early_stopping_config.get("enabled", True):
@@ -357,6 +323,7 @@ def hyperparameter_tune_model(
                     f"patience={patience}, mode='{es_mode}')."
                 )
 
+            # 6. Configure and create trainer
             trainer_params = {
                 "max_epochs": training_config.get("max_epochs_per_trial", training_config.get("max_epochs", 10)),
                 "accelerator": training_config.get("accelerator", "auto"),
@@ -372,9 +339,11 @@ def hyperparameter_tune_model(
             }
             trainer = pl.Trainer(**trainer_params)
 
+            # 7. Train the model
             trainer.fit(model_pl, datamodule=datamodule)
-            metric_val_tensor = trainer.callback_metrics.get(metric_to_optimize)
 
+            # 8. Extract and return performance metric
+            metric_val_tensor = trainer.callback_metrics.get(metric_to_optimize)
             if metric_val_tensor is None:
                 logger.warning(
                     f"Trial {trial.number}: Metric '{metric_to_optimize}' not "
@@ -382,9 +351,11 @@ def hyperparameter_tune_model(
                     f"{list(trainer.callback_metrics.keys())}. Pruning trial."
                 )
                 raise optuna.exceptions.TrialPruned(f"Metric '{metric_to_optimize}' not found.")
+
             final_value = metric_val_tensor.item()
             logger.info(f"Trial {trial.number} finished. {metric_to_optimize}: {final_value}")
             trial.set_user_attr(metric_to_optimize, final_value)
+            return final_value
 
         except optuna.exceptions.TrialPruned as e:
             logger.info(f"Trial {trial.number} pruned: {e}")
@@ -396,6 +367,7 @@ def hyperparameter_tune_model(
             )
             return _handle_trial_error(f"Unhandled error: {e}", trial)
         finally:
+            # Clean up resources
             if "model_pl" in locals() and model_pl is not None:
                 del model_pl
             if "datamodule" in locals() and datamodule is not None:
@@ -407,8 +379,7 @@ def hyperparameter_tune_model(
                 torch.cuda.empty_cache()
             gc.collect()
 
-        return final_value
-
+    # Create and configure the study
     study = optuna.create_study(
         study_name=experiment_name,
         storage=optuna_storage_url,
@@ -418,6 +389,7 @@ def hyperparameter_tune_model(
         load_if_exists=True,
     )
 
+    # Set study metadata
     study.set_user_attr("model_type", model_type)
     study.set_user_attr("metric_optimized", metric_to_optimize)
     study.set_user_attr("datamodule_config_keys", list(datamodule_config.keys()))
@@ -426,6 +398,7 @@ def hyperparameter_tune_model(
     if gauge_ids:
         study.set_user_attr("gauge_ids_sample", gauge_ids[: min(5, len(gauge_ids))])
 
+    # Run optimization
     try:
         study.optimize(
             _objective,
@@ -441,6 +414,7 @@ def hyperparameter_tune_model(
             exc_info=True,
         )
     finally:
+        # Log summary of results
         logger.info(f"Optuna optimization process for '{experiment_name}' finished or was interrupted.")
         completed_trials = [t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE]
         if completed_trials:
