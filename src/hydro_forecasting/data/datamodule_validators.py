@@ -31,7 +31,7 @@ def validate_non_negative_integer(param_name: str, value: Any) -> Result[None, s
 
 def validate_positive_float(param_name: str, value: Any) -> Result[None, str]:
     """Validate that a parameter is a positive float."""
-    if not isinstance(value, (int, float)):
+    if not isinstance(value, int | float):
         return Failure(f"Parameter '{param_name}' must be a number, got {type(value).__name__}")
     if value <= 0:
         return Failure(f"Parameter '{param_name}' must be greater than 0, got {value}")
@@ -72,7 +72,7 @@ def validate_path_dict(param_name: str, value: Any, check_existence: bool = Fals
     for k, v in value.items():
         if not isinstance(k, str):
             return Failure(f"Keys in '{param_name}' must be strings, got {type(k).__name__}")
-        if not isinstance(v, (str, Path)):
+        if not isinstance(v, str | Path):
             return Failure(
                 f"Values in '{param_name}' must be strings or Path objects, got {type(v).__name__} for key '{k}'"
             )
@@ -91,7 +91,7 @@ def validate_path(
     must_be_dir: bool = False,
 ) -> Result[None, str]:
     """Validate that a parameter is a Path object and optionally check existence/type."""
-    if not isinstance(value, (str, Path)):
+    if not isinstance(value, str | Path):
         return Failure(f"Parameter '{param_name}' must be a string or Path object, got {type(value).__name__}")
     path_value = Path(value)
     if must_exist and not path_value.exists():
@@ -103,7 +103,7 @@ def validate_path(
 
 def validate_train_val_test_proportions(train_p: float, val_p: float, test_p: float) -> Result[None, str]:
     """Validate that train, val, and test proportions sum to approximately 1."""
-    if not all(isinstance(p, (int, float)) and 0.0 <= p <= 1.0 for p in [train_p, val_p, test_p]):
+    if not all(isinstance(p, int | float) and 0.0 <= p <= 1.0 for p in [train_p, val_p, test_p]):
         return Failure("Train, val, and test proportions must be floats between 0.0 and 1.0.")
     total_prop = math.fsum([train_p, val_p, test_p])
     if not math.isclose(total_prop, 1.0, abs_tol=1e-6):
