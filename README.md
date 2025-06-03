@@ -1,7 +1,8 @@
 ## TODOs
 
 - [x] Merge refactor branc into main
-- [ ] Implement Observer Pattern to manage logs
+- [x] Implement Observer Pattern to manage logs
+  - [x] Fix logging when HPT. The progress bar is not showing
 - [ ] Tune HP for all models for Tajikistan and Kyrgyzstan
 - [ ] Use new set of HP to retrain the challenger models (low and medium hii)
 - [ ] Retrain benchmark models. Important to use the same preprocessing as used during HPT!

@@ -8,7 +8,6 @@ from returns.result import Failure, Result, Success, safe
 from torch.utils.data import Dataset
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 

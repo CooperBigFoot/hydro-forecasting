@@ -189,7 +189,7 @@ def _configure_trainer_core(
 
         if is_hpt_trial:
             trainer_kwargs["max_epochs"] = training_config.get("max_epochs_per_trial", 10)
-            trainer_kwargs["enable_progress_bar"] = training_config.get("enable_progress_bar_in_trial", False)
+            trainer_kwargs["enable_progress_bar"] = training_config.get("enable_progress_bar", False)
             trainer_kwargs["num_sanity_val_steps"] = training_config.get("num_sanity_val_steps_hpt", 0)
         else:  # Full run
             trainer_kwargs["max_epochs"] = training_config.get("max_epochs", 100)
