@@ -21,6 +21,7 @@ ModelType = TypeVar("ModelType", bound=pl.LightningModule)
 
 ModelProviderFn = Callable[[str, dict[str, Any]], ModelType]
 
+torch.set_float32_matmul_precision('medium')
 
 def _setup_datamodule_core(
     base_datamodule_config: dict[str, Any],
@@ -196,25 +197,6 @@ def _configure_trainer_core(
             trainer_kwargs["reload_dataloaders_every_n_epochs"] = training_config.get(
                 "reload_dataloaders_every_n_epochs", 1
             )
-
-        # Configure precision if specified
-        precision = training_config.get("precision")
-        if precision is not None:
-            valid_precision_values = ["32-true", "32", "16-mixed", "bf16-mixed"]
-            if str(precision) in valid_precision_values:
-                trainer_kwargs["precision"] = precision
-            else:
-                logger.warning(f"Invalid precision value: {precision}. Using default.")
-
-        # Configure matmul precision if specified
-        matmul_precision = training_config.get("torch_float32_matmul_precision")
-        if matmul_precision is not None:
-            valid_matmul_values = ["highest", "high", "medium"]
-            if matmul_precision in valid_matmul_values:
-                torch.set_float32_matmul_precision(matmul_precision)
-            else:
-                logger.warning(f"Invalid torch_float32_matmul_precision value: {matmul_precision}. Not setting.")
-
         # Create trainer
         trainer = pl.Trainer(**trainer_kwargs)
         return Success(trainer)
