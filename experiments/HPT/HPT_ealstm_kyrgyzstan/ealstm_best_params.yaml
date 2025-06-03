@@ -1,0 +1,10 @@
+learning_rate: 2.7892732183210532e-05
+num_layers: 2
+hidden_size: 115
+dropout: 0.013630067744213381
+input_len: 201
+input_size: 10
+static_size: 10
+future_input_size: 9
+group_identifier: gauge_id
+output_len: 10
