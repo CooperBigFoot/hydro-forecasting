@@ -245,10 +245,10 @@ def main(config: ClusteringConfig):
 if __name__ == "__main__":
     # Define configuration
     config = ClusteringConfig(
-        countries=["CH", "CL", "USA"],
-        attributes_base_dir=Path("/Users/cooper/Desktop/CaravanifyParquet"),
-        timeseries_base_dir=Path("/Users/cooper/Desktop/CaravanifyParquet"),
-        output_dir=Path(".scripts/cluster_basins/clustering_results"),
+        countries=["CH", "CL", "USA", "camelsaus", "camelsgb", "camelsbr", "hysets", "lamah"],
+        attributes_base_dir=Path("/workspace/CaravanifyParquet"),
+        timeseries_base_dir=Path("/workspace/CaravanifyParquet"),
+        output_dir=Path("/workspace/hydro-forecasting/scripts/cluster_basins/clustering_results"),
         min_clusters=10,
         max_clusters=18,
         max_iter=75,
@@ -260,6 +260,11 @@ if __name__ == "__main__":
             "CL": "southern",
             "USA": "northern",
             "CH": "northern",
+            "camelsaus": "southern",
+            "camelsgb": "northern",
+            "camelsbr": "southern",
+            "hysets": "northern",
+            "lamah": "northern",
         },
     )
 
