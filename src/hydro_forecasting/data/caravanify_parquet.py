@@ -2,6 +2,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
+import geopandas as gpd
 import pandas as pd
 
 
@@ -232,6 +233,28 @@ class CaravanifyParquet:
         """
         return self.static_attributes.copy()
 
+    def get_shapefiles(self) -> gpd.GeoDataFrame:
+        """
+        Load and return shapefile data as a GeoDataFrame.
+
+        Constructs the shapefile path using the configured shapefile directory and gauge ID prefix,
+        and uses geopandas to read the shapefile.
+
+        Returns:
+            A GeoDataFrame containing the shapefile data.
+
+        Raises:
+            FileNotFoundError: If the shapefile is not found at the constructed path.
+        """
+        shapefile_path = (
+            self.config.shapefile_dir / self.config.gauge_id_prefix / f"{self.config.gauge_id_prefix}_basin_shapes.shp"
+        )
+        if not shapefile_path.exists():
+            raise FileNotFoundError(f"Shapefile {shapefile_path} not found")
+
+        gdf = gpd.read_file(shapefile_path)
+        return gdf
+
     def filter_gauge_ids_by_human_influence(
         self,
         gauge_ids: list[str],
@@ -257,7 +280,7 @@ class CaravanifyParquet:
         try:
             human_influence_df = pd.read_parquet(self.config.human_influence_path, engine="pyarrow")
         except Exception as e:
-            raise OSError(f"Failed to load human influence Parquet data: {e}")
+            raise OSError(f"Failed to load human influence Parquet data: {e}") from e
 
         # Verify human influence data has required columns
         required_cols = ["gauge_id", "human_influence_category"]
