@@ -30,3 +30,5 @@ experiments/low-medium-hii/data_cache
 
 experiments/*/data_cache
 experiments/*/lightning_logs
+
+images
