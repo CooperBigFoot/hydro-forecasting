@@ -1016,10 +1016,10 @@ def main(config: ClassificationConfig) -> None:
 if __name__ == "__main__":
     # Define configuration
     config = ClassificationConfig(
-        attributes_base_dir="/Users/cooper/Desktop/CaravanifyParquet",
-        timeseries_base_dir="/Users/cooper/Desktop/CaravanifyParquet",
-        output_dir="/Users/cooper/Desktop/hydro-forecasting/scripts/cluster_basins/classification_results",
-        cluster_assignment_path="/Users/cooper/Desktop/hydro-forecasting/scripts/cluster_basins/clustering_results/cluster_assignments_shifted_refactor.csv",
+        attributes_base_dir="/workspace/CaravanifyParquet",
+        timeseries_base_dir="/workspace/CaravanifyParquet",
+        output_dir="/workspace/hydro-forecasting/scripts/cluster_basins/classification_results",
+        cluster_assignment_path="/workspace/hydro-forecasting/scripts/cluster_basins/clustering_results/cluster_assignments_shifted_refactor.csv",
         source_countries=["CH", "CL", "USA", "camelsaus", "camelsgb", "camelsbr", "hysets", "lamah"],
         target_country="CA",
         cv_folds=10,

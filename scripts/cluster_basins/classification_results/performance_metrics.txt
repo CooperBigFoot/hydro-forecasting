@@ -1,0 +1,20 @@
+Random Forest Classification Performance
+=============================================
+
+Model Configuration:
+--------------------
+Number of features: 17
+Number of samples: 16053
+Number of classes: 11
+
+Best Hyperparameters:
+--------------------
+  n_estimators: 300
+  min_samples_split: 5
+  min_samples_leaf: 2
+  max_depth: None
+
+Performance Metrics:
+--------------------
+Cross-validation accuracy: 0.7090
+Log loss score: 0.9610
