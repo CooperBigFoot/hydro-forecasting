@@ -33,6 +33,7 @@ dependencies = [
 hydro-forecasting = "hydro_forecasting:main"
 hii = "scripts.human_influence_index.hii:main"
 cluster_all = "scripts.cluster_basins.cluster_all:main"
+random_forest_classification = "scripts.cluster_basins.random_forest_classification:main"
 
 [build-system]
 requires = ["hatchling"]

@@ -10,7 +10,6 @@ import pandas as pd
 import seaborn as sns
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.feature_selection import mutual_info_regression
-from sklearn.impute import KNNImputer
 from sklearn.metrics import log_loss
 from sklearn.model_selection import (
     RandomizedSearchCV,
@@ -18,34 +17,25 @@ from sklearn.model_selection import (
     cross_val_predict,
 )
 
-# Setup logging
+sys.path.append(str(Path(__file__).resolve().parent.parent))
+
+from src.hydro_forecasting.data.caravanify_parquet import CaravanifyParquet, CaravanifyParquetConfig
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[logging.StreamHandler(), logging.FileHandler("classification.log")],
+    handlers=[logging.StreamHandler()],
 )
 logger = logging.getLogger(__name__)
-
-# Add parent directory to path
-sys.path.append(str(Path(__file__).resolve().parent.parent))
-
-try:
-    from src.hydro_forecasting.data.caravanify_parquet import CaravanifyParquet, CaravanifyParquetConfig
-except ImportError as e:
-    logger.error(f"Failed to import caravanify modules: {e}")
-    raise
 
 
 class Constants:
     """Constants used throughout the classification pipeline."""
 
     DEFAULT_RANDOM_STATE = 42
-    MIN_CV_FOLDS = 2
-    MAX_MISSING_THRESHOLD = 0.5
+    MIN_CV_FOLDS = 5
     DEFAULT_N_ITER_SEARCH = 20
-    DEFAULT_IMPUTATION_NEIGHBORS = 5
 
-    # Default features to keep
     DEFAULT_STATIC_FEATURES = [
         "gauge_id",
         "area",
@@ -98,10 +88,6 @@ class ClassificationConfig:
     # Features to use for classification
     statics_to_keep: list[str] | None = None
 
-    # Data quality parameters
-    max_missing_threshold: float = Constants.MAX_MISSING_THRESHOLD
-    imputation_strategy: str = "median"  # "median", "knn", or "zero"
-
     def __post_init__(self):
         """Validate configuration and set defaults."""
         self._validate_paths()
@@ -140,13 +126,6 @@ class ClassificationConfig:
         if self.cv_folds < Constants.MIN_CV_FOLDS:
             raise ValueError(f"cv_folds must be at least {Constants.MIN_CV_FOLDS}")
 
-        if not 0 <= self.max_missing_threshold <= 1:
-            raise ValueError("max_missing_threshold must be between 0 and 1")
-
-        valid_strategies = ["median", "knn", "zero"]
-        if self.imputation_strategy not in valid_strategies:
-            raise ValueError(f"imputation_strategy must be one of {valid_strategies}")
-
 
 class DataValidationError(Exception):
     """Custom exception for data validation errors."""
@@ -179,14 +158,6 @@ def validate_data_quality(df: pd.DataFrame, required_cols: list[str], name: str 
     if missing_cols:
         raise DataValidationError(f"{name} missing required columns: {missing_cols}")
 
-    # Check for excessive missing values
-    missing_pct = df.isnull().sum() / len(df)
-    problematic_cols = missing_pct[missing_pct > Constants.MAX_MISSING_THRESHOLD].index.tolist()
-    if problematic_cols:
-        logger.warning(
-            f"{name} has columns with >{Constants.MAX_MISSING_THRESHOLD * 100}% missing values: {problematic_cols}"
-        )
-
 
 def validate_feature_alignment(X_train: pd.DataFrame, X_target: pd.DataFrame) -> None:
     """
@@ -209,47 +180,10 @@ def validate_feature_alignment(X_train: pd.DataFrame, X_target: pd.DataFrame) ->
             logger.warning(f"Extra features in target data: {extra_in_target}")
 
 
-def impute_missing_values(X: pd.DataFrame, strategy: str = "median") -> pd.DataFrame:
-    """
-    Handle missing values with various imputation strategies.
-
-    Args:
-        X: DataFrame with potential missing values
-        strategy: Imputation strategy ("median", "knn", or "zero")
-
-    Returns:
-        DataFrame with imputed values
-
-    Raises:
-        ValueError: If strategy is not supported
-    """
-    if not X.isnull().any().any():
-        return X.copy()
-
-    logger.info(f"Imputing missing values using strategy: {strategy}")
-    X_imputed = X.copy()
-
-    if strategy == "median":
-        numeric_cols = X.select_dtypes(include=[np.number]).columns
-        X_imputed[numeric_cols] = X_imputed[numeric_cols].fillna(X[numeric_cols].median())
-    elif strategy == "knn":
-        try:
-            imputer = KNNImputer(n_neighbors=Constants.DEFAULT_IMPUTATION_NEIGHBORS)
-            X_imputed = pd.DataFrame(imputer.fit_transform(X), columns=X.columns, index=X.index)
-        except Exception as e:
-            logger.warning(f"KNN imputation failed: {e}. Falling back to median imputation")
-            return impute_missing_values(X, "median")
-    elif strategy == "zero":
-        X_imputed = X_imputed.fillna(0)
-    else:
-        raise ValueError(f"Unsupported imputation strategy: {strategy}")
-
-    return X_imputed
-
-
 def get_cluster_assignments(config: ClassificationConfig) -> pd.DataFrame:
     """
     Load cluster assignments from CSV file.
+    This should only be called ONCE at the beginning.
 
     Args:
         config: Classification configuration
@@ -265,7 +199,7 @@ def get_cluster_assignments(config: ClassificationConfig) -> pd.DataFrame:
     try:
         cluster_assignments = pd.read_csv(config.cluster_assignment_path)
     except Exception as e:
-        raise DataValidationError(f"Failed to load cluster assignments: {e}")
+        raise DataValidationError(f"Failed to load cluster assignments: {e}") from e
 
     # Validate required columns
     if "gauge_id" not in cluster_assignments.columns:
@@ -279,30 +213,30 @@ def get_cluster_assignments(config: ClassificationConfig) -> pd.DataFrame:
     return cluster_assignments
 
 
-def get_country_basins_from_cluster_assignments(country: str, config: ClassificationConfig) -> list[str]:
+def get_country_basins_from_cluster_assignments(country: str, cluster_assignments: pd.DataFrame) -> list[str]:
     """
     Extract unique basins for a given country from cluster assignments DataFrame.
 
     Args:
         country: Country code (e.g., 'CH', 'CL', 'USA')
-        config: Classification configuration
+        cluster_assignments: Pre-loaded cluster assignments DataFrame
 
     Returns:
         List of gauge_ids for the specified country
     """
-    cluster_assignments = get_cluster_assignments(config)
     country_basins = cluster_assignments[cluster_assignments["country"] == country]["gauge_id"].unique().tolist()
+
     logger.info(f"Found {len(country_basins)} basins with cluster assignments for {country}")
     return country_basins
 
 
-def map_clusters_to_basins(static_df: pd.DataFrame, config: ClassificationConfig) -> pd.DataFrame:
+def map_clusters_to_basins(static_df: pd.DataFrame, cluster_assignments: pd.DataFrame) -> pd.DataFrame:
     """
     Map clusters to basins for a given country.
 
     Args:
         static_df: DataFrame with static attributes
-        config: Classification configuration
+        cluster_assignments: Pre-loaded cluster assignments DataFrame
 
     Returns:
         DataFrame with added cluster column
@@ -312,8 +246,6 @@ def map_clusters_to_basins(static_df: pd.DataFrame, config: ClassificationConfig
     """
     if "gauge_id" not in static_df.columns:
         raise DataValidationError("Static DataFrame must contain a 'gauge_id' column")
-
-    cluster_assignments = get_cluster_assignments(config)
 
     # Create mapping from gauge_id to cluster
     cluster_map = dict(zip(cluster_assignments["gauge_id"], cluster_assignments["cluster"], strict=False))
@@ -332,13 +264,16 @@ def map_clusters_to_basins(static_df: pd.DataFrame, config: ClassificationConfig
     return static_df
 
 
-def get_labelled_data_by_country(country: str, config: ClassificationConfig) -> pd.DataFrame:
+def get_labelled_data_by_country(
+    country: str, config: ClassificationConfig, cluster_assignments: pd.DataFrame
+) -> pd.DataFrame:
     """
     Load and prepare data for a country.
 
     Args:
         country: Country code (e.g., 'CH', 'CL', 'USA')
         config: Classification configuration
+        cluster_assignments: Pre-loaded cluster assignments DataFrame
 
     Returns:
         DataFrame with static attributes and cluster assignments
@@ -346,8 +281,8 @@ def get_labelled_data_by_country(country: str, config: ClassificationConfig) -> 
     logger.info(f"Loading data for {country}...")
 
     try:
-        # Get basin IDs with cluster assignments
-        basin_ids = get_country_basins_from_cluster_assignments(country, config)
+        # Get basin IDs with cluster assignments (no CSV read here!)
+        basin_ids = get_country_basins_from_cluster_assignments(country, cluster_assignments)
 
         if not basin_ids:
             logger.warning(f"No basins with cluster assignments found for {country}")
@@ -368,8 +303,9 @@ def get_labelled_data_by_country(country: str, config: ClassificationConfig) -> 
 
         caravan = CaravanifyParquet(caravan_config)
 
-        # Load stations
-        caravan.load_stations(basin_ids)
+        # Load ONLY static attributes (skip expensive time series loading)
+        caravan._validate_gauge_ids(basin_ids)
+        caravan._load_static_attributes(basin_ids)
         static_df = caravan.get_static_attributes()
 
         if static_df.empty:
@@ -387,8 +323,8 @@ def get_labelled_data_by_country(country: str, config: ClassificationConfig) -> 
         # Get only the columns we want to keep
         static_df = static_df[config.statics_to_keep]
 
-        # Add cluster assignments - this will add the cluster column
-        labeled_df = map_clusters_to_basins(static_df, config)
+        # Add cluster assignments (no CSV read here!)
+        labeled_df = map_clusters_to_basins(static_df, cluster_assignments)
 
         # Filter rows with missing cluster
         result_df = labeled_df.dropna(subset=["cluster"])
@@ -420,7 +356,7 @@ def get_unlabelled_data_for_target(config: ClassificationConfig) -> pd.DataFrame
             Path(config.timeseries_base_dir) / config.target_country / "post_processed" / "timeseries" / "csv"
         )
 
-        caravan_config = CaravanifyConfig(
+        caravan_config = CaravanifyParquetConfig(
             attributes_dir=str(attributes_path),
             timeseries_dir=str(timeseries_path),
             gauge_id_prefix=config.target_country,
@@ -429,7 +365,7 @@ def get_unlabelled_data_for_target(config: ClassificationConfig) -> pd.DataFrame
             use_other_attributes=True,
         )
 
-        caravan = Caravanify(caravan_config)
+        caravan = CaravanifyParquet(caravan_config)
         ids = caravan.get_all_gauge_ids()
 
         if not ids:
@@ -438,7 +374,9 @@ def get_unlabelled_data_for_target(config: ClassificationConfig) -> pd.DataFrame
 
         logger.info(f"Found {len(ids)} basins for {config.target_country}")
 
-        caravan.load_stations(ids)
+        # Load ONLY static attributes (skip expensive time series loading)
+        caravan._validate_gauge_ids(ids)
+        caravan._load_static_attributes(ids)
         static_df = caravan.get_static_attributes()
 
         if static_df.empty:
@@ -479,8 +417,12 @@ def create_mutual_info_heatmap(X: pd.DataFrame, output_path: Path) -> None:
             logger.warning("No numeric features available for mutual information analysis")
             return
 
-        # Handle missing values
-        X_numeric = impute_missing_values(X_numeric, "median")
+        # Drop rows with any missing values for MI calculation
+        X_numeric = X_numeric.dropna()
+        if X_numeric.empty:
+            logger.warning("No complete cases available for mutual information analysis")
+            return
+
         features = X_numeric.columns
 
         # Initialize matrix with identity diagonal
@@ -567,11 +509,18 @@ def train_rf_classifier(
         if X_numeric.empty:
             raise ModelTrainingError("No numeric features available for training")
 
-        # Handle missing values
-        X_numeric = impute_missing_values(X_numeric, config.imputation_strategy)
+        # Drop rows with missing values
+        valid_mask = X_numeric.notna().all(axis=1)
+        X_clean = X_numeric[valid_mask]
+        y_clean = y[valid_mask]
+
+        if X_clean.empty:
+            raise ModelTrainingError("No complete cases available for training")
+
+        logger.info(f"Training with {len(X_clean)} complete cases out of {len(X_numeric)} total samples")
 
         # Validate that we have enough samples for cross-validation
-        n_classes = len(np.unique(y))
+        n_classes = len(np.unique(y_clean))
         cv_folds = min(config.cv_folds, n_classes)
 
         if cv_folds < Constants.MIN_CV_FOLDS:
@@ -597,28 +546,28 @@ def train_rf_classifier(
             RandomForestClassifier(random_state=config.random_state, n_jobs=config.n_jobs),
             param_distributions=param_grid,
             n_iter=Constants.DEFAULT_N_ITER_SEARCH,
-            cv=cv,
             scoring="accuracy",
+            cv=cv,
             random_state=config.random_state,
             n_jobs=config.n_jobs,
         )
 
-        rf_search.fit(X_numeric, y)
+        rf_search.fit(X_clean, y_clean)
         best_rf = rf_search.best_estimator_
 
         # Cross-validation for prediction probabilities
-        proba_predictions = cross_val_predict(best_rf, X_numeric, y, cv=cv, method="predict_proba")
+        proba_predictions = cross_val_predict(best_rf, X_clean, y_clean, cv=cv, method="predict_proba")
 
         # Compute metrics
-        log_loss_score = log_loss(y, proba_predictions)
+        log_loss_score = log_loss(y_clean, proba_predictions)
         accuracy = rf_search.best_score_
 
         metrics = {
             "best_params": rf_search.best_params_,
             "accuracy": accuracy,
             "log_loss": log_loss_score,
-            "n_features": X_numeric.shape[1],
-            "n_samples": X_numeric.shape[0],
+            "n_features": X_clean.shape[1],
+            "n_samples": X_clean.shape[0],
             "n_classes": n_classes,
         }
 
@@ -626,13 +575,13 @@ def train_rf_classifier(
         logger.info(f"Cross-validation accuracy: {accuracy:.4f}")
         logger.info(f"Log loss score: {log_loss_score:.4f}")
 
-        # Train final model on all data
+        # Train final model on all clean data
         final_model = RandomForestClassifier(
             random_state=config.random_state,
             n_jobs=config.n_jobs,
             **rf_search.best_params_,
         )
-        final_model.fit(X_numeric, y)
+        final_model.fit(X_clean, y_clean)
 
         return final_model, metrics
 
@@ -641,10 +590,15 @@ def train_rf_classifier(
         # Fall back to default parameters
         try:
             X_numeric = X.select_dtypes(include=[np.number])
-            X_numeric = impute_missing_values(X_numeric, "median")
+            valid_mask = X_numeric.notna().all(axis=1)
+            X_clean = X_numeric[valid_mask]
+            y_clean = y[valid_mask]
+
+            if X_clean.empty:
+                raise ModelTrainingError("No complete cases for fallback training")
 
             default_rf = create_baseline_model(config)
-            default_rf.fit(X_numeric, y)
+            default_rf.fit(X_clean, y_clean)
 
             metrics = {
                 "best_params": {
@@ -655,16 +609,16 @@ def train_rf_classifier(
                 },
                 "accuracy": np.nan,
                 "log_loss": np.nan,
-                "n_features": X_numeric.shape[1],
-                "n_samples": X_numeric.shape[0],
-                "n_classes": len(np.unique(y)),
+                "n_features": X_clean.shape[1],
+                "n_samples": X_clean.shape[0],
+                "n_classes": len(np.unique(y_clean)),
             }
 
             logger.info("Fallback to baseline model successful")
             return default_rf, metrics
 
         except Exception as fallback_error:
-            raise ModelTrainingError(f"Both primary and fallback training failed: {fallback_error}")
+            raise ModelTrainingError(f"Both primary and fallback training failed: {fallback_error}") from fallback_error
 
 
 def plot_feature_importance(model: RandomForestClassifier, feature_names: list[str], output_path: Path) -> None:
@@ -735,24 +689,32 @@ def predict_target_clusters(
         if X_numeric.empty:
             raise ValueError("No numeric features available for prediction")
 
-        # Handle missing values
-        X_numeric = impute_missing_values(X_numeric, config.imputation_strategy)
+        # Only predict for complete cases
+        valid_mask = X_numeric.notna().all(axis=1)
+        X_clean = X_numeric[valid_mask]
+        clean_ids = target_ids[valid_mask]
+
+        if X_clean.empty:
+            logger.warning("No complete cases available for prediction")
+            return pd.DataFrame()
+
+        logger.info(f"Predicting for {len(X_clean)} complete cases out of {len(X_numeric)} total targets")
 
         # Get cluster probabilities
-        proba_predictions = model.predict_proba(X_numeric)
+        proba_predictions = model.predict_proba(X_clean)
 
         # Create DataFrame with gauge_id and probabilities for each class
         proba_df = pd.DataFrame(
             proba_predictions, columns=[f"cluster_{model.classes_[i]}_prob" for i in range(len(model.classes_))]
         )
-        proba_df["gauge_id"] = target_ids.values
+        proba_df["gauge_id"] = clean_ids.values
 
         # Reorder columns to have gauge_id first
         cols = ["gauge_id"] + [col for col in proba_df.columns if col != "gauge_id"]
         proba_df = proba_df[cols]
 
         # Add predicted cluster (highest probability)
-        predicted_clusters = model.predict(X_numeric)
+        predicted_clusters = model.predict(X_clean)
         proba_df["predicted_cluster"] = predicted_clusters
 
         # Add prediction confidence (max probability)
@@ -777,6 +739,7 @@ def predict_target_clusters(
 def load_and_combine_source_data(config: ClassificationConfig) -> pd.DataFrame:
     """
     Load and combine data from all source countries.
+    OPTIMIZED: Load cluster assignments only once!
 
     Args:
         config: Classification configuration
@@ -789,10 +752,14 @@ def load_and_combine_source_data(config: ClassificationConfig) -> pd.DataFrame:
     """
     logger.info("Loading and combining source country data...")
 
+    # LOAD CLUSTER ASSIGNMENTS ONLY ONCE!
+    cluster_assignments = get_cluster_assignments(config)
+
     all_data = []
     for country in config.source_countries:
         try:
-            country_data = get_labelled_data_by_country(country, config)
+            # Pass the pre-loaded cluster assignments
+            country_data = get_labelled_data_by_country(country, config, cluster_assignments)
             if not country_data.empty:
                 country_data["source_country"] = country  # Track source country
                 all_data.append(country_data)
@@ -959,9 +926,9 @@ def run_prediction_pipeline(config: ClassificationConfig, model: RandomForestCla
 
         X_target = target_data[available_features].copy()
 
-        # Add missing features with zeros
+        # Add missing features with NaN (they will be handled by complete case analysis)
         for col in missing_features:
-            X_target[col] = 0
+            X_target[col] = np.nan
 
         # Reorder columns to match training data
         X_target = X_target[training_features]
@@ -1049,13 +1016,13 @@ def main(config: ClassificationConfig) -> None:
 if __name__ == "__main__":
     # Define configuration
     config = ClassificationConfig(
-        attributes_base_dir="/workspace/CARAVANIFY",
-        timeseries_base_dir="/workspace/CARAVANIFY",
-        output_dir="./classification_results",
-        cluster_assignment_path="/workspace/CAMELS-CH/clustering_results/cluster_assignments_shifted_refactor.csv",
-        source_countries=["CH", "CL", "USA"],
+        attributes_base_dir="/Users/cooper/Desktop/CaravanifyParquet",
+        timeseries_base_dir="/Users/cooper/Desktop/CaravanifyParquet",
+        output_dir="/Users/cooper/Desktop/hydro-forecasting/scripts/cluster_basins/classification_results",
+        cluster_assignment_path="/Users/cooper/Desktop/hydro-forecasting/scripts/cluster_basins/clustering_results/cluster_assignments_shifted_refactor.csv",
+        source_countries=["CH", "CL", "USA", "camelsaus", "camelsgb", "camelsbr", "hysets", "lamah"],
         target_country="CA",
-        imputation_strategy="median",  # Options: "median", "knn", "zero"
+        cv_folds=10,
     )
 
     try:
