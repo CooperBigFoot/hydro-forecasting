@@ -39,7 +39,6 @@ def load_finetune_model_from_hps(
         else:
             logger.warning(f"Could not set new learning rate on loaded model {model_type}")
 
-        finalized_hps["original_lr_for_finetune"] = original_lr
         finalized_hps["learning_rate"] = new_lr
         logger.info(f"Finetuning {model_type}: Original LR {original_lr}, New LR {new_lr}")
     else:
