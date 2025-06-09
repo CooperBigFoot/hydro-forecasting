@@ -348,7 +348,7 @@ class ExperimentRunner:
 
                 try:
                     # Model provider function now receives the finalized HPs
-                    model = model_provider_fn(model_type, finalized_model_hps)
+                    model = model_provider_fn(model_type, copy.deepcopy(finalized_model_hps))
                 except Exception as e:
                     logger.error(f"Failed to provide model for {model_type}, run {run_idx}: {e}", exc_info=True)
                     continue

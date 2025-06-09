@@ -17,10 +17,10 @@ temporal_decoder_hidden_size: 63
 scheduler_patience: 5
 scheduler_factor: 0.5
 region_time_series_base_dirs:
-  CA: /Users/cooper/Desktop/CaravanifyParquet/CA/post_processed/timeseries/csv/CA
+  CA: /workspace/CaravanifyParquet/CA/post_processed/timeseries/csv/CA
 region_static_attributes_base_dirs:
-  CA: /Users/cooper/Desktop/CaravanifyParquet/CA/post_processed/attributes/CA
-path_to_preprocessing_output_directory: /Users/cooper/Desktop/hydro-forecasting/experiments/finetune/data_cache/{COUNTRY}
+  CA: /workspace/CaravanifyParquet/CA/post_processed/attributes/CA
+path_to_preprocessing_output_directory: /workspace/hydro-forecasting/experiments/finetune/data_cache/tajikistan
 batch_size: 2048
 input_length: 81
 output_length: 10
