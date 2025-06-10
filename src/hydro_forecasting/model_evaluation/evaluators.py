@@ -1,10 +1,12 @@
 import copy
 import datetime
+import random
 from typing import Any
 
 import numpy as np
 import polars as pl
 import pytorch_lightning as pl_trainer
+import torch
 
 
 class TSForecastEvaluator:
@@ -17,19 +19,68 @@ class TSForecastEvaluator:
         default_datamodule: pl_trainer.LightningDataModule | None = None,
         benchmark_model: str = None,
         trainer_kwargs: dict[str, Any] = None,
+        random_seed: int = 42,  # Add explicit random seed
     ):
         self.horizons = sorted(set(horizons))
         self.default_datamodule = default_datamodule
         self.benchmark_model = benchmark_model
         self.trainer_kwargs = trainer_kwargs or {"accelerator": "cpu", "devices": 1}
+        self.random_seed = random_seed
         self.results: dict[str, dict[str, Any]] = {}
         self.models: dict[str, pl_trainer.LightningModule] = {}
         self.datamodules: dict[str, pl_trainer.LightningDataModule] = {}
 
         if models_and_datamodules:
             for name, (model, datamodule) in models_and_datamodules.items():
-                self.models[name] = copy.deepcopy(model)
+                self.models[name] = self._deep_copy_model(model)
                 self.datamodules[name] = datamodule
+
+    def _set_random_seeds(self, seed: int = None):
+        """Set random seeds for reproducibility."""
+        if seed is None:
+            seed = self.random_seed
+
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+        # For deterministic behavior (might slow down training)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+
+    def _deep_copy_model(self, model: pl_trainer.LightningModule) -> pl_trainer.LightningModule:
+        """Create a proper deep copy of a PyTorch Lightning model."""
+        # Save the model state
+        model_state = model.state_dict()
+        model_config = getattr(model, "config", None)
+
+        # Create a new instance with the same class and config
+        model_class = model.__class__
+        if model_config is not None:
+            new_model = model_class(model_config)
+        else:
+            # Fallback to deepcopy if config not available
+            new_model = copy.deepcopy(model)
+
+        # Load the saved state
+        if model_config is not None:
+            new_model.load_state_dict(model_state, strict=False)
+
+        return new_model
+
+    def _prepare_model_for_testing(self, model: pl_trainer.LightningModule) -> pl_trainer.LightningModule:
+        """Prepare a fresh model instance for testing."""
+        # Create a fresh copy
+        test_model = self._deep_copy_model(model)
+
+        # Set to eval mode
+        test_model.eval()
+
+        # Disable gradients
+        for param in test_model.parameters():
+            param.requires_grad = False
+
+        return test_model
 
     def register_model(
         self,
@@ -37,62 +88,79 @@ class TSForecastEvaluator:
         model: pl_trainer.LightningModule,
         datamodule: pl_trainer.LightningDataModule | None = None,
     ):
-        self.models[name] = copy.deepcopy(model)
+        self.models[name] = self._deep_copy_model(model)
         if datamodule:
             self.datamodules[name] = datamodule
         elif name not in self.datamodules and self.default_datamodule is None:
             print(f"Warning: No datamodule provided for model '{name}' and no default datamodule available")
 
     def test_models(self, datamodule: pl_trainer.LightningDataModule | None = None) -> dict[str, dict[str, Any]]:
+        """Test all registered models with proper isolation."""
+        self.results = {}  # Clear previous results
+
         for name, model in self.models.items():
-            model_datamodule = self.datamodules.get(name, datamodule or self.default_datamodule)
-            if model_datamodule is None:
-                raise ValueError(f"No datamodule found for model '{name}'")
-
             print(f"Testing {name}...")
-            trainer = pl_trainer.Trainer(**self.trainer_kwargs)
-            trainer.test(model, datamodule=model_datamodule)
+            result = self.test_specific_model(name, datamodule)
+            self.results[name] = result
 
-            if not hasattr(model, "test_results"):
-                raise AttributeError(
-                    f"Model {name} doesn't have test_results attribute. "
-                    "Ensure your LightningModule stores test outputs in self.test_results."
-                )
-
-            df, metrics, basin_metrics = self.evaluate(model.test_results, model_datamodule)
-            self.results[name] = {
-                "df": df,
-                "metrics": metrics,
-                "basin_metrics": basin_metrics,
-                "datamodule": model_datamodule,
-            }
         return self.results
 
     def test_specific_model(
         self, name: str, datamodule: pl_trainer.LightningDataModule | None = None
     ) -> dict[str, Any]:
+        """Test a specific model with proper isolation."""
         if name not in self.models:
             raise ValueError(f"Model '{name}' not found")
 
-        model = self.models[name]
+        # Set random seeds for reproducibility
+        self._set_random_seeds()
+
+        # Get model and datamodule
+        original_model = self.models[name]
         model_datamodule = datamodule or self.datamodules.get(name, self.default_datamodule)
+
         if model_datamodule is None:
             raise ValueError(f"No datamodule found for model '{name}'")
 
-        trainer = pl_trainer.Trainer(**self.trainer_kwargs)
-        trainer.test(model, datamodule=model_datamodule)
+        # Prepare a fresh model instance for testing
+        test_model = self._prepare_model_for_testing(original_model)
 
-        if not hasattr(model, "test_results"):
-            raise AttributeError(f"Model {name} doesn't have test_results attribute.")
+        # Create a fresh trainer instance for each test
+        trainer_config = self.trainer_kwargs.copy()
+        trainer_config.update(
+            {
+                "logger": False,  # Disable logging
+                "enable_checkpointing": False,  # Disable checkpointing
+                "enable_progress_bar": True,  # Keep progress bar
+            }
+        )
+        trainer = pl_trainer.Trainer(**trainer_config)
 
-        df, metrics, basin_metrics = self.evaluate(model.test_results, model_datamodule)
-        self.results[name] = {
+        # Run the test
+        trainer.test(test_model, datamodule=model_datamodule)
+
+        if not hasattr(test_model, "test_results"):
+            raise AttributeError(
+                f"Model {name} doesn't have test_results attribute. "
+                "Ensure your LightningModule stores test outputs in self.test_results."
+            )
+
+        # Evaluate results
+        df, metrics, basin_metrics = self.evaluate(test_model.test_results, model_datamodule)
+
+        result = {
             "df": df,
             "metrics": metrics,
             "basin_metrics": basin_metrics,
             "datamodule": model_datamodule,
         }
-        return self.results[name]
+
+        # Clean up
+        del test_model
+        del trainer
+        torch.cuda.empty_cache() if torch.cuda.is_available() else None
+
+        return result
 
     def evaluate(
         self,

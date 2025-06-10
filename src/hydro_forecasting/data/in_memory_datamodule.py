@@ -443,7 +443,7 @@ class HydroInMemoryDataModule(LightningDataModule):
         basin_row_map: dict[str, tuple[int, int]] = {}
         current_absolute_start_row = 0
 
-        for basin_id_in_order in chunk_df_with_ids[self.group_identifier].unique().to_list():
+        for basin_id_in_order in sorted(chunk_df_with_ids[self.group_identifier].unique().to_list()):
             basin_specific_df_from_concat = chunk_df_with_ids.filter(pl.col(self.group_identifier) == basin_id_in_order)
 
             if basin_specific_df_from_concat.height == 0:
