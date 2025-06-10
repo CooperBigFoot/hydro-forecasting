@@ -18,7 +18,7 @@ class TSForecastEvaluator:
         benchmark_model: str = None,
         trainer_kwargs: dict[str, Any] = None,
     ):
-        self.horizons = sorted(list(set(horizons)))
+        self.horizons = sorted(set(horizons))
         self.default_datamodule = default_datamodule
         self.benchmark_model = benchmark_model
         self.trainer_kwargs = trainer_kwargs or {"accelerator": "cpu", "devices": 1}
@@ -167,7 +167,13 @@ class TSForecastEvaluator:
 
             base_python_datetimes = []
             for ms_timestamp in input_end_date_ms_list:
-                if ms_timestamp is None or np.isnan(ms_timestamp):  # np.isnan for safety if it could be float NaN
+                # Handle tensor conversion to CPU if needed
+                if hasattr(ms_timestamp, "cpu"):
+                    ms_timestamp = (
+                        ms_timestamp.cpu().item() if ms_timestamp.numel() == 1 else ms_timestamp.cpu().numpy()
+                    )
+
+                if ms_timestamp is None or (isinstance(ms_timestamp, int | float) and np.isnan(ms_timestamp)):
                     base_python_datetimes.append(None)
                 else:
                     try:
