@@ -272,7 +272,12 @@ class TSForecastEvaluator:
             return dict.fromkeys(["MSE", "MAE", "NSE", "RMSE"], np.nan)
 
         # Filter rows where both prediction and observation are non-null to maintain alignment
-        valid_data = data.filter(pl.col("prediction").is_not_null() & pl.col("observed").is_not_null())
+        valid_data = data.filter(
+            pl.col("prediction").is_not_null()
+            & pl.col("observed").is_not_null()
+            & pl.col("prediction").is_finite()
+            & pl.col("observed").is_finite()
+        )
 
         if valid_data.is_empty():
             return dict.fromkeys(["MSE", "MAE", "NSE", "RMSE"], np.nan)
