@@ -6,6 +6,7 @@ https://arxiv.org/pdf/2304.08424
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from .config import TiDEConfig
 
@@ -38,8 +39,8 @@ class TiDEResBlock(nn.Module):
             nn.Linear(input_dim, hidden_size),
             nn.ReLU(),
             nn.Linear(hidden_size, output_dim),
-            nn.Dropout(dropout),
         )
+        self.dropout_rate = dropout
         self.skip = nn.Linear(input_dim, output_dim)
         self.use_layer_norm = use_layer_norm
         if use_layer_norm:
@@ -54,7 +55,9 @@ class TiDEResBlock(nn.Module):
         Returns:
             Output tensor [batch_size, ..., output_dim]
         """
-        out = self.dense(x) + self.skip(x)
+        dense_out = self.dense(x)
+        dense_out = F.dropout(dense_out, p=self.dropout_rate, training=self.training)
+        out = dense_out + self.skip(x)
         if self.use_layer_norm:
             out = self.layer_norm(out)
         return out

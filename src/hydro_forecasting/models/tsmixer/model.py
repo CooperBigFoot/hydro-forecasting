@@ -6,6 +6,7 @@ https://arxiv.org/abs/2303.06053
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from .config import TSMixerConfig
 
@@ -89,9 +90,9 @@ class AlignmentStage(nn.Module):
         self.historical_feature_mixing = nn.Sequential(
             nn.Linear(input_size, hidden_size),
             nn.ReLU(),
-            nn.Dropout(dropout),
             nn.LayerNorm(hidden_size),
         )
+        self.historical_dropout_rate = dropout
 
         # Future feature branch: temporal projection + feature mixing
         self.future_temporal_proj = TemporalProjection(
@@ -101,18 +102,18 @@ class AlignmentStage(nn.Module):
         self.future_feature_mixing = nn.Sequential(
             nn.Linear(future_input_size, hidden_size),
             nn.ReLU(),
-            nn.Dropout(dropout),
             nn.LayerNorm(hidden_size),
         )
+        self.future_dropout_rate = dropout
 
         # Static feature branch: expansion + feature mixing
         if static_size > 0:
             self.static_feature_mixing = nn.Sequential(
                 nn.Linear(static_size, hidden_size),
                 nn.ReLU(),
-                nn.Dropout(dropout),
                 nn.LayerNorm(hidden_size),
             )
+            self.static_dropout_rate = dropout
             self.output_size = hidden_size * 3  # Concatenation of all three branches
         else:
             self.static_feature_mixing = None
@@ -139,16 +140,19 @@ class AlignmentStage(nn.Module):
 
         # Process historical features
         hist_projected = self.historical_temporal_proj(historical)
-        hist_aligned = self.historical_feature_mixing(hist_projected)
+        hist_mixed = self.historical_feature_mixing(hist_projected)
+        hist_aligned = F.dropout(hist_mixed, p=self.historical_dropout_rate, training=self.training)
 
         # Process future features
         future_projected = self.future_temporal_proj(future)
-        future_aligned = self.future_feature_mixing(future_projected)
+        future_mixed = self.future_feature_mixing(future_projected)
+        future_aligned = F.dropout(future_mixed, p=self.future_dropout_rate, training=self.training)
 
         # Process static features if available
         if static is not None and self.static_feature_mixing is not None:
             # Project static features
-            static_emb = self.static_feature_mixing(static)  # [B, hidden_size]
+            static_mixed = self.static_feature_mixing(static)  # [B, hidden_size]
+            static_emb = F.dropout(static_mixed, p=self.static_dropout_rate, training=self.training)
 
             # Expand static features to match temporal dimension
             static_aligned = static_emb.unsqueeze(1).expand(-1, output_len, -1)
@@ -181,8 +185,8 @@ class TimeMixing(nn.Module):
             nn.Linear(seq_len, hidden_size),
             nn.ReLU(),
             nn.Linear(hidden_size, seq_len),
-            nn.Dropout(dropout),
         )
+        self.dropout_rate = dropout
 
         self.norm = nn.LayerNorm(seq_len)
 
@@ -199,7 +203,9 @@ class TimeMixing(nn.Module):
         x_t = x.transpose(1, 2)  # [B, F, T]
 
         # Apply MLP along time dimension with residual connection
-        mixed = x_t + self.time_mlp(x_t)
+        mlp_out = self.time_mlp(x_t)
+        mlp_out = F.dropout(mlp_out, p=self.dropout_rate, training=self.training)
+        mixed = x_t + mlp_out
 
         # Apply normalization and transpose back
         return self.norm(mixed).transpose(1, 2)  # [B, T, F]
@@ -225,10 +231,9 @@ class FeatureMixing(nn.Module):
         self.feature_mlp = nn.Sequential(
             nn.Linear(feature_dim, hidden_size),
             nn.ReLU(),
-            nn.Dropout(dropout),
             nn.Linear(hidden_size, feature_dim),
-            nn.Dropout(dropout),
         )
+        self.dropout_rate = dropout
 
         self.norm = nn.LayerNorm(feature_dim)
 
@@ -242,7 +247,9 @@ class FeatureMixing(nn.Module):
             Feature-mixed tensor [batch_size, seq_len, feature_dim]
         """
         # Apply MLP along feature dimension with residual connection
-        mixed = x + self.feature_mlp(x)
+        mlp_out = self.feature_mlp(x)
+        mlp_out = F.dropout(mlp_out, p=self.dropout_rate, training=self.training)
+        mixed = x + mlp_out
 
         # Apply normalization
         return self.norm(mixed)
@@ -278,8 +285,8 @@ class ConditionalFeatureMixing(nn.Module):
         self.static_proj = nn.Sequential(
             nn.Linear(static_size, static_embedding_size),
             nn.ReLU(),
-            nn.Dropout(dropout),
         )
+        self.static_dropout_rate = dropout
 
         # Conditioning mechanism (gate)
         self.gate_proj = nn.Linear(static_embedding_size, feature_dim)
@@ -288,9 +295,9 @@ class ConditionalFeatureMixing(nn.Module):
         self.feature_mlp = nn.Sequential(
             nn.Linear(feature_dim, hidden_size),
             nn.ReLU(),
-            nn.Dropout(dropout),
             nn.Linear(hidden_size, feature_dim),
         )
+        self.feature_dropout_rate = dropout
 
         self.norm = nn.LayerNorm(feature_dim)
 
@@ -309,7 +316,8 @@ class ConditionalFeatureMixing(nn.Module):
             Conditionally mixed features
         """
         # Project static features
-        static_emb = self.static_proj(static)  # [B, static_embedding_size]
+        static_proj_out = self.static_proj(static)  # [B, static_embedding_size]
+        static_emb = F.dropout(static_proj_out, p=self.static_dropout_rate, training=self.training)
 
         # Expand static features to match sequence length
         static_expanded = static_emb.unsqueeze(1).expand(-1, x.size(1), -1)
@@ -321,10 +329,12 @@ class ConditionalFeatureMixing(nn.Module):
         x_conditioned = x * gate
 
         # Apply feature mixing with residual connection
-        mixed = self.feature_mlp(x_conditioned)
+        mlp_out = self.feature_mlp(x_conditioned)
+        mlp_out = F.dropout(mlp_out, p=self.feature_dropout_rate, training=self.training)
+        mixed = x_conditioned + mlp_out
 
         # Apply normalization
-        return self.norm(x_conditioned + mixed)
+        return self.norm(mixed)
 
 
 class MixerLayer(nn.Module):

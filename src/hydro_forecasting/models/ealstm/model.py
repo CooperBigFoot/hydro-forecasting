@@ -114,8 +114,8 @@ class EALSTM(nn.Module):
             else None
         )
 
-        # Add dropout between layers
-        self.dropout = nn.Dropout(config.dropout) if config.dropout > 0 else None
+        # Add dropout between layers - store dropout rate instead of module
+        self.dropout_rate = config.dropout if config.dropout > 0 else 0.0
 
         # Projection from hidden state to output (for multi-step forecasting)
         self.projection = nn.Sequential(
@@ -173,9 +173,9 @@ class EALSTM(nn.Module):
                     # Get the h_t from the previous layer's output
                     h_t, _ = hidden_states[layer - 1]
 
-                    # Apply dropout if configured
-                    if self.dropout is not None:
-                        h_t = self.dropout(h_t)
+                    # Apply dropout if configured - respect training mode
+                    if self.dropout_rate > 0:
+                        h_t = F.dropout(h_t, p=self.dropout_rate, training=self.training)
 
                     # Project hidden state to match expected input size for next layer
                     layer_input = self.hidden_to_input_projections[layer - 1](h_t)
