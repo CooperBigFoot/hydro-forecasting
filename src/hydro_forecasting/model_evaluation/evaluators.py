@@ -18,7 +18,7 @@ class TSForecastEvaluator:
         benchmark_model: str = None,
         trainer_kwargs: dict[str, Any] = None,
     ):
-        self.horizons = sorted(list(set(horizons)))
+        self.horizons = sorted(set(horizons))
         self.default_datamodule = default_datamodule
         self.benchmark_model = benchmark_model
         self.trainer_kwargs = trainer_kwargs or {"accelerator": "cpu", "devices": 1}
@@ -167,7 +167,13 @@ class TSForecastEvaluator:
 
             base_python_datetimes = []
             for ms_timestamp in input_end_date_ms_list:
-                if ms_timestamp is None or np.isnan(ms_timestamp):  # np.isnan for safety if it could be float NaN
+                # Handle tensor conversion to CPU if needed
+                if hasattr(ms_timestamp, "cpu"):
+                    ms_timestamp = (
+                        ms_timestamp.cpu().item() if ms_timestamp.numel() == 1 else ms_timestamp.cpu().numpy()
+                    )
+
+                if ms_timestamp is None or (isinstance(ms_timestamp, int | float) and np.isnan(ms_timestamp)):
                     base_python_datetimes.append(None)
                 else:
                     try:
@@ -265,19 +271,19 @@ class TSForecastEvaluator:
         if "prediction" not in data.columns or "observed" not in data.columns:
             return dict.fromkeys(["MSE", "MAE", "NSE", "RMSE"], np.nan)
 
-        pred = data.get_column("prediction").drop_nulls().to_numpy()  # Drop nulls before to_numpy
-        obs = data.get_column("observed").drop_nulls().to_numpy()
+        # Filter rows where both prediction and observation are non-null to maintain alignment
+        valid_data = data.filter(
+            pl.col("prediction").is_not_null()
+            & pl.col("observed").is_not_null()
+            & pl.col("prediction").is_finite()
+            & pl.col("observed").is_finite()
+        )
 
-        # Align arrays after dropping nulls independently if lengths differ
-        # A more robust way is to filter rows where both are non-null in Polars first
-        # For simplicity, if they became different lengths, metrics might be skewed or error.
-        # A quick check:
-        min_len = min(len(pred), len(obs))
-        pred = pred[:min_len]
-        obs = obs[:min_len]
-
-        if len(pred) == 0:
+        if valid_data.is_empty():
             return dict.fromkeys(["MSE", "MAE", "NSE", "RMSE"], np.nan)
+
+        pred = valid_data.get_column("prediction").to_numpy()
+        obs = valid_data.get_column("observed").to_numpy()
 
         return {
             "MSE": self.calculate_mse(pred, obs),

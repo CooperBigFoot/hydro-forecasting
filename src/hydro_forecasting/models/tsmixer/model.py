@@ -6,8 +6,17 @@ https://arxiv.org/abs/2303.06053
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from .config import TSMixerConfig
+
+
+class DeterministicDropout(nn.Dropout):
+    """Dropout that explicitly respects training mode for deterministic evaluation."""
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Apply dropout that explicitly checks training mode."""
+        return F.dropout(x, p=self.p, training=self.training)
 
 
 class TemporalProjection(nn.Module):
@@ -89,9 +98,10 @@ class AlignmentStage(nn.Module):
         self.historical_feature_mixing = nn.Sequential(
             nn.Linear(input_size, hidden_size),
             nn.ReLU(),
-            nn.Dropout(dropout),
+            DeterministicDropout(dropout),
             nn.LayerNorm(hidden_size),
         )
+        self.historical_dropout_rate = dropout
 
         # Future feature branch: temporal projection + feature mixing
         self.future_temporal_proj = TemporalProjection(
@@ -101,16 +111,17 @@ class AlignmentStage(nn.Module):
         self.future_feature_mixing = nn.Sequential(
             nn.Linear(future_input_size, hidden_size),
             nn.ReLU(),
-            nn.Dropout(dropout),
+            DeterministicDropout(dropout),
             nn.LayerNorm(hidden_size),
         )
+        self.future_dropout_rate = dropout
 
         # Static feature branch: expansion + feature mixing
         if static_size > 0:
             self.static_feature_mixing = nn.Sequential(
                 nn.Linear(static_size, hidden_size),
                 nn.ReLU(),
-                nn.Dropout(dropout),
+                DeterministicDropout(dropout),
                 nn.LayerNorm(hidden_size),
             )
             self.output_size = hidden_size * 3  # Concatenation of all three branches
@@ -148,10 +159,10 @@ class AlignmentStage(nn.Module):
         # Process static features if available
         if static is not None and self.static_feature_mixing is not None:
             # Project static features
-            static_emb = self.static_feature_mixing(static)  # [B, hidden_size]
+            static_aligned = self.static_feature_mixing(static)  # [B, hidden_size]
 
             # Expand static features to match temporal dimension
-            static_aligned = static_emb.unsqueeze(1).expand(-1, output_len, -1)
+            static_aligned = static_aligned.unsqueeze(1).expand(-1, output_len, -1)
 
             # Concatenate all three aligned representations
             return torch.cat([hist_aligned, future_aligned, static_aligned], dim=-1)
@@ -181,7 +192,7 @@ class TimeMixing(nn.Module):
             nn.Linear(seq_len, hidden_size),
             nn.ReLU(),
             nn.Linear(hidden_size, seq_len),
-            nn.Dropout(dropout),
+            DeterministicDropout(dropout),
         )
 
         self.norm = nn.LayerNorm(seq_len)
@@ -225,9 +236,9 @@ class FeatureMixing(nn.Module):
         self.feature_mlp = nn.Sequential(
             nn.Linear(feature_dim, hidden_size),
             nn.ReLU(),
-            nn.Dropout(dropout),
+            DeterministicDropout(dropout),
             nn.Linear(hidden_size, feature_dim),
-            nn.Dropout(dropout),
+            DeterministicDropout(dropout),
         )
 
         self.norm = nn.LayerNorm(feature_dim)
@@ -278,7 +289,7 @@ class ConditionalFeatureMixing(nn.Module):
         self.static_proj = nn.Sequential(
             nn.Linear(static_size, static_embedding_size),
             nn.ReLU(),
-            nn.Dropout(dropout),
+            DeterministicDropout(dropout),
         )
 
         # Conditioning mechanism (gate)
@@ -288,7 +299,7 @@ class ConditionalFeatureMixing(nn.Module):
         self.feature_mlp = nn.Sequential(
             nn.Linear(feature_dim, hidden_size),
             nn.ReLU(),
-            nn.Dropout(dropout),
+            DeterministicDropout(dropout),
             nn.Linear(hidden_size, feature_dim),
         )
 
@@ -321,10 +332,10 @@ class ConditionalFeatureMixing(nn.Module):
         x_conditioned = x * gate
 
         # Apply feature mixing with residual connection
-        mixed = self.feature_mlp(x_conditioned)
+        mixed = x_conditioned + self.feature_mlp(x_conditioned)
 
         # Apply normalization
-        return self.norm(x_conditioned + mixed)
+        return self.norm(mixed)
 
 
 class MixerLayer(nn.Module):
