@@ -212,10 +212,7 @@ class TSForecastEvaluator:
                 obs_val = observations[sample_idx, horizon_idx]
 
                 # Calculate forecast date
-                if input_end_date is not None:
-                    forecast_date = input_end_date + pd.Timedelta(days=horizon)
-                else:
-                    forecast_date = None
+                forecast_date = input_end_date + pd.Timedelta(days=horizon) if input_end_date is not None else None
 
                 # Skip rows with missing data
                 if pd.isna(pred_val) or pd.isna(obs_val):
@@ -267,7 +264,7 @@ class TSForecastEvaluator:
                         self.logger.warning(f"Failed to calculate {metric_name} for {gauge_id} horizon {horizon}: {e}")
                         horizon_metrics[metric_name] = np.nan
 
-                metrics_by_gauge[gauge_id][f"horizon_{horizon}"] = horizon_metrics
+                metrics_by_gauge[gauge_id][horizon] = horizon_metrics
 
         return metrics_by_gauge
 

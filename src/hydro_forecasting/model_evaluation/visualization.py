@@ -4,6 +4,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
+# TODO: Fix plots to work with new TSForecastEvaluator results format
+
+
 def plot_horizon_performance_bars(
     seasonal_results: dict[str, Any],
     horizon: int,
@@ -68,13 +71,13 @@ def plot_horizon_performance_bars(
         performance_data[arch] = {}
         for variant in variants:
             if arch in model_data and variant in model_data[arch]:
-                basin_metrics = model_data[arch][variant]["basin_metrics"]
+                metrics_by_gauge = model_data[arch][variant]["metrics_by_gauge"]
 
                 # Extract metric values for this horizon across all basins
                 values = []
-                for basin_data in basin_metrics.values():
-                    if horizon in basin_data and metric in basin_data[horizon]:
-                        value = basin_data[horizon][metric]
+                for basin_data in metrics_by_gauge.values():
+                    if f"horizon_{horizon}" in basin_data and metric in basin_data[f"horizon_{horizon}"]:
+                        value = basin_data[f"horizon_{horizon}"][metric]
                         if not np.isnan(value):
                             values.append(value)
 
@@ -279,12 +282,12 @@ def plot_basin_performance_scatter(
         if benchmark_pattern not in model_data[arch] or challenger_pattern not in model_data[arch]:
             continue
 
-        benchmark_basin_metrics = model_data[arch][benchmark_pattern]["basin_metrics"]
-        challenger_basin_metrics = model_data[arch][challenger_pattern]["basin_metrics"]
+        benchmark_metrics_by_gauge = model_data[arch][benchmark_pattern]["metrics_by_gauge"]
+        challenger_metrics_by_gauge = model_data[arch][challenger_pattern]["metrics_by_gauge"]
 
         # Find common basins between benchmark and challenger
-        benchmark_basins = set(benchmark_basin_metrics.keys())
-        challenger_basins = set(challenger_basin_metrics.keys())
+        benchmark_basins = set(benchmark_metrics_by_gauge.keys())
+        challenger_basins = set(challenger_metrics_by_gauge.keys())
         common_basins = benchmark_basins.intersection(challenger_basins)
 
         if not common_basins:
@@ -297,17 +300,17 @@ def plot_basin_performance_scatter(
 
         for basin_id in common_basins:
             # Check if horizon and metric exist for both models
-            benchmark_data = benchmark_basin_metrics[basin_id]
-            challenger_data = challenger_basin_metrics[basin_id]
+            benchmark_data = benchmark_metrics_by_gauge[basin_id]
+            challenger_data = challenger_metrics_by_gauge[basin_id]
 
             if (
-                horizon in benchmark_data
-                and metric in benchmark_data[horizon]
-                and horizon in challenger_data
-                and metric in challenger_data[horizon]
+                f"horizon_{horizon}" in benchmark_data
+                and metric in benchmark_data[f"horizon_{horizon}"]
+                and f"horizon_{horizon}" in challenger_data
+                and metric in challenger_data[f"horizon_{horizon}"]
             ):
-                benchmark_val = benchmark_data[horizon][metric]
-                challenger_val = challenger_data[horizon][metric]
+                benchmark_val = benchmark_data[f"horizon_{horizon}"][metric]
+                challenger_val = challenger_data[f"horizon_{horizon}"][metric]
 
                 # Skip if either value is NaN
                 if not (np.isnan(benchmark_val) or np.isnan(challenger_val)):
@@ -497,12 +500,12 @@ def plot_model_cdf_grid(
                 # Extract metric values for the specific horizon
                 metric_values = []
 
-                # Get the basin metrics for this model
-                basin_metrics = model_data[arch][variant]["basin_metrics"]
+                # Get the metrics by gauge for this model
+                metrics_by_gauge = model_data[arch][variant]["metrics_by_gauge"]
 
-                for basin_id, basin_data in basin_metrics.items():
-                    if horizon in basin_data and metric in basin_data[horizon]:
-                        val = basin_data[horizon][metric]
+                for basin_id, basin_data in metrics_by_gauge.items():
+                    if f"horizon_{horizon}" in basin_data and metric in basin_data[f"horizon_{horizon}"]:
+                        val = basin_data[f"horizon_{horizon}"][metric]
                         # Convert numpy types to Python float if needed
                         if hasattr(val, "item"):
                             val = val.item()

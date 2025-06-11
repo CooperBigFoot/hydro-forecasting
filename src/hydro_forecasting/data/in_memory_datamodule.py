@@ -175,13 +175,12 @@ class HydroInMemoryDataModule(LightningDataModule):
         self._test_basin_ids: list[str] = []
 
         if self.hparams.is_autoregressive:
-            self.input_features_ordered_for_X = [self.hparams.target] + [
-                f for f in self.hparams.forcing_features if f != self.hparams.target
-            ]
+            self.input_features_ordered_for_X = [self.hparams.target] + sorted(
+                [f for f in self.hparams.forcing_features if f != self.hparams.target]
+            )
         else:
-            self.input_features_ordered_for_X = self.hparams.forcing_features
+            self.input_features_ordered_for_X = sorted(self.hparams.forcing_features)
 
-        self.input_features_ordered_for_X = sorted(set(self.input_features_ordered_for_X))
         self.future_features_ordered = sorted(set(self.hparams.forcing_features))
 
         # remove temp attribute used for validation
