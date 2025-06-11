@@ -1,0 +1,14 @@
+learning_rate: 7.958900104259938e-05
+hidden_size: 40
+dropout: 0.1360603272437388
+num_encoder_layers: 2
+num_decoder_layers: 1
+decoder_output_size: 8
+temporal_decoder_hidden_size: 64
+use_layer_norm: false
+input_len: 217
+input_size: 10
+static_size: 10
+future_input_size: 9
+group_identifier: gauge_id
+output_len: 10
