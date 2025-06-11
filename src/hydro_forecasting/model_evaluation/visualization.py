@@ -3,7 +3,6 @@ from typing import Any
 import matplotlib.pyplot as plt
 import numpy as np
 
-
 # TODO: Fix plots to work with new TSForecastEvaluator results format
 
 
