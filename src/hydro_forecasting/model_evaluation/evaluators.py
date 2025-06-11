@@ -194,7 +194,12 @@ class TSForecastEvaluator:
             input_end_date_ms = input_end_dates[sample_idx]
 
             # Convert input end date to timestamp if available
-            input_end_date = pd.Timestamp(input_end_date_ms, unit="ms") if input_end_date_ms is not None else None
+            input_end_date = None
+            if input_end_date_ms is not None:
+                # Convert tensor to scalar if needed
+                if torch.is_tensor(input_end_date_ms):
+                    input_end_date_ms = input_end_date_ms.item()
+                input_end_date = pd.Timestamp(input_end_date_ms, unit="ms")
 
             for horizon_idx in range(output_len):
                 horizon = horizon_idx + 1  # 1-indexed horizons
