@@ -887,68 +887,93 @@ class HydroInMemoryDataModule(LightningDataModule):
             logger.info("No fitted static pipeline found or specified in processing output.")
         logger.info(f"Successfully loaded {len(self.fitted_pipelines)} categories of fitted pipelines.")
 
-    # TODO: Verify that these types are correct
     def inverse_transform_predictions(
         self,
         predictions: np.ndarray,
         basin_ids: np.ndarray,
     ) -> np.ndarray:
         """
-        Inverse transform predictions using the fitted 'target' pipeline.
+        Inverse transform predictions using the fitted target pipeline.
+
+        Args:
+            predictions: Array of predictions with shape (n_samples, forecast_horizon)
+            basin_ids: Array of basin identifiers corresponding to each prediction
+
+        Returns:
+            Inverse transformed predictions with same shape as input
+
+        Raises:
+            RuntimeError: If target pipeline is missing or not fitted
+            ValueError: If input validation fails or basin pipelines missing
         """
+        # Validate target pipeline exists
         if "target" not in self.fitted_pipelines:
-            raise RuntimeError("No 'target' pipeline found. Was prepare_data() called and did it succeed?")
+            raise RuntimeError("No 'target' pipeline found. Was prepare_data() called successfully?")
+
         target_pipeline = self.fitted_pipelines["target"]
         if not isinstance(target_pipeline, GroupedPipeline):
-            raise RuntimeError("Expected 'target' pipeline to be a GroupedPipeline.")
-        if not target_pipeline.fitted_pipelines:
-            raise RuntimeError("The 'target' GroupedPipeline has not been fitted.")
+            raise RuntimeError("Expected 'target' pipeline to be a GroupedPipeline")
 
+        if not target_pipeline.fitted_pipelines:
+            raise RuntimeError("The 'target' GroupedPipeline has not been fitted")
+
+        # Validate input shapes
         if predictions.shape[0] != basin_ids.shape[0]:
             raise ValueError(
-                f"Shape mismatch: predictions ({predictions.shape[0]}) and basin_ids ({basin_ids.shape[0]})"
+                f"Shape mismatch: predictions ({predictions.shape[0]}) != basin_ids ({basin_ids.shape[0]})"
             )
 
-        orig_shape = predictions.shape
-        all_basin_ids_repeated = []
-        all_predictions_flat = []
+        # Check all required basin pipelines exist
+        unique_basin_ids = {str(bid) for bid in basin_ids}
+        available_basin_ids = {str(bid) for bid in target_pipeline.fitted_pipelines}
+        missing_basin_ids = unique_basin_ids - available_basin_ids
 
-        for i in range(predictions.shape[0]):
-            current_basin_id = str(basin_ids[i])
-            pred_values = predictions[i].ravel()
-            all_basin_ids_repeated.extend([current_basin_id] * len(pred_values))
-            all_predictions_flat.extend(pred_values)
+        if missing_basin_ids:
+            raise ValueError(f"No fitted pipeline for basins: {sorted(missing_basin_ids)}")
 
-        df_to_transform = pl.DataFrame(
+        # Store original shape for reconstruction
+        original_shape = predictions.shape
+
+        # Prepare data for inverse transformation
+        basin_id_list: list[str] = []
+        prediction_list: list[float] = []
+
+        # Flatten predictions while tracking basin associations
+        for i, basin_id in enumerate(basin_ids):
+            basin_str = str(basin_id)
+            pred_sequence = predictions[i].flatten()
+
+            basin_id_list.extend([basin_str] * len(pred_sequence))
+            prediction_list.extend(pred_sequence.tolist())
+
+        # Create DataFrame for inverse transformation
+        # GroupedPipeline expects pandas, so create it directly
+        import pandas as pd
+
+        transform_df = pd.DataFrame(
             {
-                self.group_identifier: all_basin_ids_repeated,
-                self.target: all_predictions_flat,
+                self.group_identifier: basin_id_list,
+                self.target: prediction_list,
             }
         )
 
-        unique_request_gids = set(map(str, basin_ids))
-        missing_gids = unique_request_gids - set(
-            map(str, target_pipeline.fitted_pipelines.keys())  # Ensure comparison with string keys
-        )
-        if missing_gids:
-            raise ValueError(f"Inverse transform failed: No fitted pipeline for basins: {sorted(list(missing_gids))}")
-
+        # Apply inverse transformation
         try:
-            # GroupedPipeline expects pandas DataFrame
-            inv_df_pd = target_pipeline.inverse_transform(df_to_transform.to_pandas())
-            inv_vals = inv_df_pd[self.target].values
+            inverse_df = target_pipeline.inverse_transform(transform_df)
+            inverse_values = inverse_df[self.target].values
         except Exception as e:
-            logger.error(f"Error during inverse_transform: {e}")
-            raise RuntimeError("Inverse transformation failed.") from e
+            raise RuntimeError(f"Inverse transformation failed: {str(e)}") from e
 
+        # Reshape back to original dimensions
         try:
-            reshaped_inv_vals = inv_vals.reshape(orig_shape)
+            reshaped_values = inverse_values.reshape(original_shape)
         except ValueError as e:
-            logger.error(
-                f"Error reshaping inverse transformed values. Original shape: {orig_shape}, Inv_vals shape: {inv_vals.shape}"
-            )
-            raise RuntimeError("Failed to reshape inverse transformed predictions.") from e
-        return reshaped_inv_vals
+            raise RuntimeError(
+                f"Failed to reshape inverse transformed values. "
+                f"Expected shape: {original_shape}, got {inverse_values.shape}"
+            ) from e
+
+        return reshaped_values
 
     def get_train_dataloader(self) -> DataLoader:
         return self.train_dataloader()

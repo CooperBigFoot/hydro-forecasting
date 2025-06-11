@@ -1,12 +1,10 @@
 import copy
 import datetime
-import random
 from typing import Any
 
 import numpy as np
 import polars as pl
 import pytorch_lightning as pl_trainer
-import torch
 
 
 class TSForecastEvaluator:
@@ -19,68 +17,19 @@ class TSForecastEvaluator:
         default_datamodule: pl_trainer.LightningDataModule | None = None,
         benchmark_model: str = None,
         trainer_kwargs: dict[str, Any] = None,
-        random_seed: int = 42,  # Add explicit random seed
     ):
         self.horizons = sorted(set(horizons))
         self.default_datamodule = default_datamodule
         self.benchmark_model = benchmark_model
         self.trainer_kwargs = trainer_kwargs or {"accelerator": "cpu", "devices": 1}
-        self.random_seed = random_seed
         self.results: dict[str, dict[str, Any]] = {}
         self.models: dict[str, pl_trainer.LightningModule] = {}
         self.datamodules: dict[str, pl_trainer.LightningDataModule] = {}
 
         if models_and_datamodules:
             for name, (model, datamodule) in models_and_datamodules.items():
-                self.models[name] = self._deep_copy_model(model)
+                self.models[name] = copy.deepcopy(model)
                 self.datamodules[name] = datamodule
-
-    def _set_random_seeds(self, seed: int = None):
-        """Set random seeds for reproducibility."""
-        if seed is None:
-            seed = self.random_seed
-
-        random.seed(seed)
-        np.random.seed(seed)
-        torch.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)
-        # For deterministic behavior (might slow down training)
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
-
-    def _deep_copy_model(self, model: pl_trainer.LightningModule) -> pl_trainer.LightningModule:
-        """Create a proper deep copy of a PyTorch Lightning model."""
-        # Save the model state
-        model_state = model.state_dict()
-        model_config = getattr(model, "config", None)
-
-        # Create a new instance with the same class and config
-        model_class = model.__class__
-        if model_config is not None:
-            new_model = model_class(model_config)
-        else:
-            # Fallback to deepcopy if config not available
-            new_model = copy.deepcopy(model)
-
-        # Load the saved state
-        if model_config is not None:
-            new_model.load_state_dict(model_state, strict=False)
-
-        return new_model
-
-    def _prepare_model_for_testing(self, model: pl_trainer.LightningModule) -> pl_trainer.LightningModule:
-        """Prepare a fresh model instance for testing."""
-        # Create a fresh copy
-        test_model = self._deep_copy_model(model)
-
-        # Set to eval mode
-        test_model.eval()
-
-        # Disable gradients
-        for param in test_model.parameters():
-            param.requires_grad = False
-
-        return test_model
 
     def register_model(
         self,
@@ -88,79 +37,61 @@ class TSForecastEvaluator:
         model: pl_trainer.LightningModule,
         datamodule: pl_trainer.LightningDataModule | None = None,
     ):
-        self.models[name] = self._deep_copy_model(model)
+        self.models[name] = copy.deepcopy(model)
         if datamodule:
             self.datamodules[name] = datamodule
         elif name not in self.datamodules and self.default_datamodule is None:
             print(f"Warning: No datamodule provided for model '{name}' and no default datamodule available")
 
     def test_models(self, datamodule: pl_trainer.LightningDataModule | None = None) -> dict[str, dict[str, Any]]:
-        """Test all registered models with proper isolation."""
-        self.results = {}  # Clear previous results
-
         for name, model in self.models.items():
-            print(f"Testing {name}...")
-            result = self.test_specific_model(name, datamodule)
-            self.results[name] = result
+            model_datamodule = self.datamodules.get(name, datamodule or self.default_datamodule)
+            if model_datamodule is None:
+                raise ValueError(f"No datamodule found for model '{name}'")
 
+            trainer = pl_trainer.Trainer(**self.trainer_kwargs)
+            trainer.test(model, datamodule=model_datamodule)
+
+            if not hasattr(model, "test_results"):
+                raise AttributeError(
+                    f"Model {name} doesn't have test_results attribute. "
+                    "Ensure your LightningModule stores test outputs in self.test_results."
+                )
+
+            df, metrics, basin_metrics = self.evaluate(model.test_results, model_datamodule)
+            self.results[name] = {
+                "df": df,
+                "metrics": metrics,
+                "basin_metrics": basin_metrics,
+                "datamodule": model_datamodule,
+            }
         return self.results
 
     def test_specific_model(
         self, name: str, datamodule: pl_trainer.LightningDataModule | None = None
     ) -> dict[str, Any]:
-        """Test a specific model with proper isolation."""
         if name not in self.models:
             raise ValueError(f"Model '{name}' not found")
 
-        # Set random seeds for reproducibility
-        self._set_random_seeds()
-
-        # Get model and datamodule
-        original_model = self.models[name]
+        model = self.models[name]
         model_datamodule = datamodule or self.datamodules.get(name, self.default_datamodule)
-
         if model_datamodule is None:
             raise ValueError(f"No datamodule found for model '{name}'")
 
-        # Prepare a fresh model instance for testing
-        test_model = self._prepare_model_for_testing(original_model)
+        trainer = pl_trainer.Trainer(**self.trainer_kwargs)
+        trainer.test(model, datamodule=model_datamodule)
 
-        # Create a fresh trainer instance for each test
-        trainer_config = self.trainer_kwargs.copy()
-        trainer_config.update(
-            {
-                "logger": False,  # Disable logging
-                "enable_checkpointing": False,  # Disable checkpointing
-                "enable_progress_bar": True,  # Keep progress bar
-            }
-        )
-        trainer = pl_trainer.Trainer(**trainer_config)
+        if not hasattr(model, "test_results"):
+            raise AttributeError(f"Model {name} doesn't have test_results attribute.")
 
-        # Run the test
-        trainer.test(test_model, datamodule=model_datamodule)
-
-        if not hasattr(test_model, "test_results"):
-            raise AttributeError(
-                f"Model {name} doesn't have test_results attribute. "
-                "Ensure your LightningModule stores test outputs in self.test_results."
-            )
-
-        # Evaluate results
-        df, metrics, basin_metrics = self.evaluate(test_model.test_results, model_datamodule)
-
-        result = {
+        df, metrics, basin_metrics = self.evaluate(model.test_results, model_datamodule)
+        self.results[name] = {
             "df": df,
             "metrics": metrics,
             "basin_metrics": basin_metrics,
             "datamodule": model_datamodule,
         }
-
-        # Clean up
-        del test_model
-        del trainer
-        torch.cuda.empty_cache() if torch.cuda.is_available() else None
-
-        return result
+        return self.results[name]
 
     def evaluate(
         self,
@@ -205,9 +136,6 @@ class TSForecastEvaluator:
         horizons_per_sample = preds_np.shape[1]
         current_horizons = self.horizons
         if horizons_per_sample != len(current_horizons):
-            print(
-                f"Warning: Model output horizons ({horizons_per_sample}) != evaluator horizons ({len(current_horizons)}). Adjusting."
-            )
             current_horizons = list(range(1, horizons_per_sample + 1))
 
         preds_flat = preds_np.flatten()
@@ -221,9 +149,6 @@ class TSForecastEvaluator:
         dates_expanded = []
         if input_end_date_ms_list:
             if len(input_end_date_ms_list) != num_samples:
-                print(
-                    f"Warning: input_end_date_ms_list length ({len(input_end_date_ms_list)}) != num samples ({num_samples}). Aligning."
-                )
                 if not input_end_date_ms_list:
                     input_end_date_ms_list = [None] * num_samples  # Default to None if empty
                 elif len(input_end_date_ms_list) < num_samples:
@@ -233,8 +158,9 @@ class TSForecastEvaluator:
                 else:
                     input_end_date_ms_list = input_end_date_ms_list[:num_samples]
 
+            # FIXED: Process timestamps more carefully and ensure correct date generation
             base_python_datetimes = []
-            for ms_timestamp in input_end_date_ms_list:
+            for i, ms_timestamp in enumerate(input_end_date_ms_list):
                 # Handle tensor conversion to CPU if needed
                 if hasattr(ms_timestamp, "cpu"):
                     ms_timestamp = (
@@ -252,14 +178,18 @@ class TSForecastEvaluator:
                         print(f"Warning: Could not convert timestamp {ms_timestamp} to datetime: {e}. Using None.")
                         base_python_datetimes.append(None)
 
-            for base_dt_naive in base_python_datetimes:
+            # FIXED: Generate dates in the correct order to match flattened arrays
+            # The flattened arrays are ordered as: [sample1_horizon1, sample1_horizon2, ..., sample1_horizonN, sample2_horizon1, ...]
+            for sample_idx in range(num_samples):
+                base_dt_naive = base_python_datetimes[sample_idx]
                 for h_val in current_horizons:
                     if base_dt_naive is None:
                         dates_expanded.append(None)
                     else:
-                        dates_expanded.append(base_dt_naive + datetime.timedelta(days=int(h_val)))
+                        # Each horizon adds to the base input_end_date
+                        forecast_date = base_dt_naive + datetime.timedelta(days=int(h_val))
+                        dates_expanded.append(forecast_date)
         else:
-            print("Warning: No 'input_end_date' in test_results. Dates will be missing.")
             dates_expanded = [None] * len(preds_flat)
 
         schema = {
@@ -283,10 +213,17 @@ class TSForecastEvaluator:
         dm_for_transform = datamodule or self.default_datamodule
         if dm_for_transform and hasattr(dm_for_transform, "inverse_transform_predictions"):
             try:
-                pred_numpy = df.get_column("prediction").to_numpy()
-                obs_numpy = df.get_column("observed").to_numpy()
-                transformed_preds = dm_for_transform.inverse_transform_predictions(pred_numpy, basin_ids_expanded)
-                transformed_obs = dm_for_transform.inverse_transform_predictions(obs_numpy, basin_ids_expanded)
+                # FIXED: Reshape flattened data back to 2D before inverse transformation
+                pred_2d = preds_np  # Use original 2D shape instead of flattened
+                obs_2d = obs_np  # Use original 2D shape instead of flattened
+
+                transformed_preds_2d = dm_for_transform.inverse_transform_predictions(pred_2d, basin_ids_np)
+                transformed_obs_2d = dm_for_transform.inverse_transform_predictions(obs_2d, basin_ids_np)
+
+                # Flatten the results to match the DataFrame structure
+                transformed_preds = transformed_preds_2d.flatten()
+                transformed_obs = transformed_obs_2d.flatten()
+
                 df = df.with_columns(
                     [
                         pl.Series("prediction", transformed_preds, dtype=pl.Float32),
