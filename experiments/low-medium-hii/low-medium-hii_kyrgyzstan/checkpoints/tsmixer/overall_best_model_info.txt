@@ -1,1 +1,0 @@
-run_0/attempt_0/tsmixer-run0-attempt_1-epoch=76-val_loss=0.0919.ckpt

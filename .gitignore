@@ -32,3 +32,5 @@ experiments/*/data_cache
 experiments/*/lightning_logs
 
 images
+
+experiments/*/deprecated
