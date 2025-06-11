@@ -1,0 +1,12 @@
+learning_rate: 0.00031288962030021344
+hidden_size: 51
+dropout: 0.029917019631322206
+num_mixing_layers: 7
+static_embedding_size: 9
+fusion_method: add
+input_len: 53
+input_size: 10
+static_size: 10
+future_input_size: 9
+group_identifier: gauge_id
+output_len: 10
