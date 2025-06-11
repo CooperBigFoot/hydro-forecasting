@@ -1,343 +1,289 @@
-import copy
-import datetime
+import logging
+import pickle
+from pathlib import Path
 from typing import Any
 
 import numpy as np
-import polars as pl
-import pytorch_lightning as pl_trainer
+import pandas as pd
+import pytorch_lightning as pl
+import torch
+
+from .metrics import (
+    calculate_atpe,
+    calculate_kge,
+    calculate_mae,
+    calculate_mse,
+    calculate_nse,
+    calculate_pbias,
+    calculate_pearson_r,
+    calculate_rmse,
+)
 
 
 class TSForecastEvaluator:
-    """Evaluator for time series forecasting models with per-basin metrics support, using Polars."""
+    """Evaluator for time series forecasting models with horizon-specific metrics.
+
+    This class tests pre-trained PyTorch Lightning models and computes performance
+    metrics separately for each forecast horizon (e.g., 1-day ahead, 2-day ahead, etc.).
+    """
 
     def __init__(
         self,
         horizons: list[int],
-        models_and_datamodules: dict[str, tuple[pl_trainer.LightningModule, pl_trainer.LightningDataModule]] = None,
-        default_datamodule: pl_trainer.LightningDataModule | None = None,
-        benchmark_model: str = None,
-        trainer_kwargs: dict[str, Any] = None,
-    ):
-        self.horizons = sorted(set(horizons))
-        self.default_datamodule = default_datamodule
-        self.benchmark_model = benchmark_model
-        self.trainer_kwargs = trainer_kwargs or {"accelerator": "cpu", "devices": 1}
-        self.results: dict[str, dict[str, Any]] = {}
-        self.models: dict[str, pl_trainer.LightningModule] = {}
-        self.datamodules: dict[str, pl_trainer.LightningDataModule] = {}
+        models_and_datamodules: dict[str, tuple],
+        trainer_kwargs: dict[str, Any],
+        save_path: str | Path | None = None,
+    ) -> None:
+        """Initialize the time series forecast evaluator.
 
-        if models_and_datamodules:
-            for name, (model, datamodule) in models_and_datamodules.items():
-                self.models[name] = copy.deepcopy(model)
-                self.datamodules[name] = datamodule
+        Args:
+            horizons: List of forecast horizons to evaluate (e.g., [1, 2, 3, ..., 10])
+            models_and_datamodules: Dictionary mapping model names to (model, datamodule) tuples
+            trainer_kwargs: PyTorch Lightning Trainer configuration dictionary
+            save_path: Optional path to save evaluation results
+        """
+        self.horizons = horizons
+        self.models_and_datamodules = models_and_datamodules
+        self.trainer_kwargs = trainer_kwargs
+        self.save_path = Path(save_path) if save_path else None
 
-    def register_model(
-        self,
-        name: str,
-        model: pl_trainer.LightningModule,
-        datamodule: pl_trainer.LightningDataModule | None = None,
-    ):
-        self.models[name] = copy.deepcopy(model)
-        if datamodule:
-            self.datamodules[name] = datamodule
-        elif name not in self.datamodules and self.default_datamodule is None:
-            print(f"Warning: No datamodule provided for model '{name}' and no default datamodule available")
+        # Set up logging
+        self.logger = logging.getLogger(__name__)
 
-    def test_models(self, datamodule: pl_trainer.LightningDataModule | None = None) -> dict[str, dict[str, Any]]:
-        for name, model in self.models.items():
-            model_datamodule = self.datamodules.get(name, datamodule or self.default_datamodule)
-            if model_datamodule is None:
-                raise ValueError(f"No datamodule found for model '{name}'")
-
-            print(f"Testing {name}...")
-            trainer = pl_trainer.Trainer(**self.trainer_kwargs)
-            trainer.test(model, datamodule=model_datamodule)
-
-            if not hasattr(model, "test_results"):
-                raise AttributeError(
-                    f"Model {name} doesn't have test_results attribute. "
-                    "Ensure your LightningModule stores test outputs in self.test_results."
-                )
-
-            df, metrics, basin_metrics = self.evaluate(model.test_results, model_datamodule)
-            self.results[name] = {
-                "df": df,
-                "metrics": metrics,
-                "basin_metrics": basin_metrics,
-                "datamodule": model_datamodule,
-            }
-        return self.results
-
-    def test_specific_model(
-        self, name: str, datamodule: pl_trainer.LightningDataModule | None = None
-    ) -> dict[str, Any]:
-        if name not in self.models:
-            raise ValueError(f"Model '{name}' not found")
-
-        model = self.models[name]
-        model_datamodule = datamodule or self.datamodules.get(name, self.default_datamodule)
-        if model_datamodule is None:
-            raise ValueError(f"No datamodule found for model '{name}'")
-
-        trainer = pl_trainer.Trainer(**self.trainer_kwargs)
-        trainer.test(model, datamodule=model_datamodule)
-
-        if not hasattr(model, "test_results"):
-            raise AttributeError(f"Model {name} doesn't have test_results attribute.")
-
-        df, metrics, basin_metrics = self.evaluate(model.test_results, model_datamodule)
-        self.results[name] = {
-            "df": df,
-            "metrics": metrics,
-            "basin_metrics": basin_metrics,
-            "datamodule": model_datamodule,
+        # Define all metrics functions
+        self.metric_functions = {
+            "mse": calculate_mse,
+            "mae": calculate_mae,
+            "rmse": calculate_rmse,
+            "nse": calculate_nse,
+            "pearson_r": calculate_pearson_r,
+            "kge": calculate_kge,
+            "pbias": calculate_pbias,
+            "atpe": calculate_atpe,
         }
-        return self.results[name]
 
-    def evaluate(
-        self,
-        test_results: dict[str, Any],
-        datamodule: pl_trainer.LightningDataModule | None = None,
-    ) -> tuple[
-        pl.DataFrame,
-        dict[int, dict[str, float]],
-        dict[str, dict[int, dict[str, float]]],
-    ]:
-        df = self._prepare_evaluation_dataframe(test_results, datamodule)
-        overall_metrics = self._calculate_overall_metrics(df)
-        basin_metrics = self._calculate_basin_metrics(df)
-        return df, overall_metrics, basin_metrics
+    def test_models(self) -> dict[str, dict]:
+        """Test all models and compute horizon-specific metrics.
 
-    def _prepare_evaluation_dataframe(
-        self,
-        test_results: dict[str, Any],
-        datamodule: pl_trainer.LightningDataModule | None = None,
-    ) -> pl.DataFrame:
-        basin_ids_list = test_results.get("basin_ids")
-        preds_tensor = test_results.get("predictions")
-        obs_tensor = test_results.get("observations")
-        # Expecting a list of integer millisecond timestamps or Nones
-        input_end_date_ms_list = test_results.get("input_end_date")
-
-        if basin_ids_list is None or preds_tensor is None or obs_tensor is None:
-            raise ValueError("Missing required keys in test_results: 'basin_ids', 'predictions', 'observations'")
-
-        preds_np = preds_tensor.cpu().numpy() if hasattr(preds_tensor, "cpu") else np.array(preds_tensor)
-        obs_np = obs_tensor.cpu().numpy() if hasattr(obs_tensor, "cpu") else np.array(obs_tensor)
-        basin_ids_np = np.array(basin_ids_list)
-
-        if preds_np.shape != obs_np.shape:
-            raise ValueError(f"Prediction shape {preds_np.shape} doesn't match observation shape {obs_np.shape}")
-        if preds_np.ndim != 2:
-            raise ValueError(
-                f"Unexpected prediction shape {preds_np.shape}, expected 2D array [num_samples, num_horizons]"
-            )
-
-        num_samples = preds_np.shape[0]
-        horizons_per_sample = preds_np.shape[1]
-        current_horizons = self.horizons
-        if horizons_per_sample != len(current_horizons):
-            print(
-                f"Warning: Model output horizons ({horizons_per_sample}) != evaluator horizons ({len(current_horizons)}). Adjusting."
-            )
-            current_horizons = list(range(1, horizons_per_sample + 1))
-
-        preds_flat = preds_np.flatten()
-        obs_flat = obs_np.flatten()
-        if len(basin_ids_np) != num_samples:
-            raise ValueError(f"Basin IDs length ({len(basin_ids_np)}) != num samples ({num_samples})")
-
-        basin_ids_expanded = np.repeat(basin_ids_np, horizons_per_sample)
-        horizons_expanded = np.tile(np.array(current_horizons), num_samples)
-
-        dates_expanded = []
-        if input_end_date_ms_list:
-            if len(input_end_date_ms_list) != num_samples:
-                print(
-                    f"Warning: input_end_date_ms_list length ({len(input_end_date_ms_list)}) != num samples ({num_samples}). Aligning."
-                )
-                if not input_end_date_ms_list:
-                    input_end_date_ms_list = [None] * num_samples  # Default to None if empty
-                elif len(input_end_date_ms_list) < num_samples:
-                    input_end_date_ms_list.extend(
-                        [input_end_date_ms_list[-1]] * (num_samples - len(input_end_date_ms_list))
-                    )
-                else:
-                    input_end_date_ms_list = input_end_date_ms_list[:num_samples]
-
-            base_python_datetimes = []
-            for ms_timestamp in input_end_date_ms_list:
-                # Handle tensor conversion to CPU if needed
-                if hasattr(ms_timestamp, "cpu"):
-                    ms_timestamp = (
-                        ms_timestamp.cpu().item() if ms_timestamp.numel() == 1 else ms_timestamp.cpu().numpy()
-                    )
-
-                if ms_timestamp is None or (isinstance(ms_timestamp, int | float) and np.isnan(ms_timestamp)):
-                    base_python_datetimes.append(None)
-                else:
-                    try:
-                        # Convert ms to seconds for fromtimestamp, ensure UTC
-                        dt_obj = datetime.datetime.fromtimestamp(int(ms_timestamp) / 1000.0, tz=datetime.timezone.utc)
-                        base_python_datetimes.append(dt_obj.replace(tzinfo=None))  # Store as naive for Polars
-                    except (ValueError, TypeError, OverflowError) as e:
-                        print(f"Warning: Could not convert timestamp {ms_timestamp} to datetime: {e}. Using None.")
-                        base_python_datetimes.append(None)
-
-            for base_dt_naive in base_python_datetimes:
-                for h_val in current_horizons:
-                    if base_dt_naive is None:
-                        dates_expanded.append(None)
-                    else:
-                        dates_expanded.append(base_dt_naive + datetime.timedelta(days=int(h_val)))
-        else:
-            print("Warning: No 'input_end_date' in test_results. Dates will be missing.")
-            dates_expanded = [None] * len(preds_flat)
-
-        schema = {
-            "horizon": pl.Int32,
-            "prediction": pl.Float32,
-            "observed": pl.Float32,
-            "basin_id": pl.Utf8,
-            "date": pl.Datetime,
-        }
-        df = pl.DataFrame(
+        Returns:
+            Dictionary containing evaluation results for each model with structure:
             {
-                "horizon": horizons_expanded,
-                "prediction": preds_flat,
-                "observed": obs_flat,
-                "basin_id": basin_ids_expanded,
-                "date": dates_expanded,
-            },
-            schema=schema,
-        )
+                "model_name": {
+                    "predictions_df": pd.DataFrame,  # columns: horizon, observed, predicted, date, gauge_id
+                    "metrics_by_gauge": {
+                        "gauge_id": {
+                            "horizon_1": {"mse": float, "nse": float, ...},
+                            "horizon_2": {"mse": float, "nse": float, ...},
+                            ...
+                        }
+                    }
+                }
+            }
+        """
+        results = {}
 
-        dm_for_transform = datamodule or self.default_datamodule
-        if dm_for_transform and hasattr(dm_for_transform, "inverse_transform_predictions"):
+        for model_name, (model, datamodule) in self.models_and_datamodules.items():
+            self.logger.info(f"Testing model: {model_name}")
+
             try:
-                pred_numpy = df.get_column("prediction").to_numpy()
-                obs_numpy = df.get_column("observed").to_numpy()
-                transformed_preds = dm_for_transform.inverse_transform_predictions(pred_numpy, basin_ids_expanded)
-                transformed_obs = dm_for_transform.inverse_transform_predictions(obs_numpy, basin_ids_expanded)
-                df = df.with_columns(
-                    [
-                        pl.Series("prediction", transformed_preds, dtype=pl.Float32),
-                        pl.Series("observed", transformed_obs, dtype=pl.Float32),
-                    ]
-                )
+                model_results = self._test_single_model(model, datamodule, model_name)
+                results[model_name] = model_results
+                self.logger.info(f"Successfully tested model: {model_name}")
             except Exception as e:
-                print(f"Warning: Failed to inverse transform predictions: {e}")
-
-        return df
-
-    def _calculate_overall_metrics(self, df: pl.DataFrame) -> dict[int, dict[str, float]]:
-        overall_metrics: dict[int, dict[str, float]] = {}
-        max_available_horizon = df.get_column("horizon").max() if df.height > 0 else 0
-
-        for h in self.horizons:
-            if max_available_horizon is not None and h > max_available_horizon:
+                self.logger.error(f"Failed to test model {model_name}: {e}")
                 continue
-            horizon_data = df.filter(pl.col("horizon") == h)
-            if not horizon_data.is_empty():
-                overall_metrics[h] = self._calculate_metrics(horizon_data)
-            else:
-                overall_metrics[h] = dict.fromkeys(["MSE", "MAE", "NSE", "RMSE"], np.nan)
-        return overall_metrics
 
-    def _calculate_basin_metrics(self, df: pl.DataFrame) -> dict[str, dict[int, dict[str, float]]]:
-        basin_metrics: dict[str, dict[int, dict[str, float]]] = {}
-        if df.is_empty():
-            return basin_metrics
+        # Save results if path provided
+        if self.save_path:
+            self._save_results(results)
 
-        unique_basins = df.get_column("basin_id").unique().to_list()
-        max_available_horizon = df.get_column("horizon").max()
+        return results
 
-        for basin_id_val in unique_basins:
-            basin_metrics[basin_id_val] = {}
-            basin_data = df.filter(pl.col("basin_id") == basin_id_val)
-            for h in self.horizons:
-                if max_available_horizon is not None and h > max_available_horizon:
+    def _test_single_model(
+        self, model: pl.LightningModule, datamodule: pl.LightningDataModule, model_name: str
+    ) -> dict[str, Any]:
+        """Test a single model and process results.
+
+        Args:
+            model: PyTorch Lightning model to test
+            datamodule: Associated data module
+            model_name: Name of the model for logging
+
+        Returns:
+            Dictionary containing predictions DataFrame and metrics
+
+        Raises:
+            RuntimeError: If no test results are found
+            ValueError: If prediction and observation shapes don't match
+        """
+        # Create trainer and run test
+        trainer = pl.Trainer(**self.trainer_kwargs)
+        trainer.test(model, datamodule)
+
+        # Extract test results
+        test_results = model.test_results
+        if not test_results:
+            raise RuntimeError(f"No test results found for model {model_name}")
+
+        # Extract components
+        predictions = test_results["predictions"]  # [N_samples, output_len]
+        observations = test_results["observations"]  # [N_samples, output_len]
+        basin_ids = test_results["basin_ids"]  # [N_samples]
+        input_end_dates = test_results.get("input_end_date", [None] * len(basin_ids))
+
+        # Validate shapes
+        if observations.shape != predictions.shape:
+            raise ValueError(f"Shape mismatch: predictions {predictions.shape} vs observations {observations.shape}")
+
+        # Convert to numpy if needed
+        if torch.is_tensor(predictions):
+            predictions = predictions.detach().cpu().numpy()
+        if torch.is_tensor(observations):
+            observations = observations.detach().cpu().numpy()
+
+        # Apply inverse transformation to both predictions and observations
+        predictions_inv = self._apply_inverse_transform(predictions, basin_ids, datamodule)
+        observations_inv = self._apply_inverse_transform(observations, basin_ids, datamodule)
+
+        # Reshape data to horizon-wise format
+        df = self._reshape_to_horizon_format(predictions_inv, observations_inv, basin_ids, input_end_dates)
+
+        # Calculate metrics by gauge and horizon
+        metrics_by_gauge = self._calculate_metrics_by_gauge(df)
+
+        return {"predictions_df": df, "metrics_by_gauge": metrics_by_gauge}
+
+    def _apply_inverse_transform(
+        self, data: np.ndarray, basin_ids: list[str], datamodule: pl.LightningDataModule
+    ) -> np.ndarray:
+        """Apply inverse transformation to predictions or observations.
+
+        Args:
+            data: Data array with shape [N_samples, output_len]
+            basin_ids: List of basin identifiers
+            datamodule: Data module with inverse transformation method
+
+        Returns:
+            Inverse transformed data with same shape as input
+        """
+        try:
+            return datamodule.inverse_transform_predictions(data, np.array(basin_ids))
+        except Exception as e:
+            self.logger.warning(f"Inverse transformation failed: {e}. Using original data.")
+            return data
+
+    def _reshape_to_horizon_format(
+        self, predictions: np.ndarray, observations: np.ndarray, basin_ids: list[str], input_end_dates: list[int | None]
+    ) -> pd.DataFrame:
+        """Reshape data from [N_samples, output_len] to horizon-wise DataFrame.
+
+        Args:
+            predictions: Predictions array [N_samples, output_len]
+            observations: Observations array [N_samples, output_len]
+            basin_ids: List of basin identifiers [N_samples]
+            input_end_dates: List of input end dates in milliseconds [N_samples]
+
+        Returns:
+            DataFrame with columns ["horizon", "observed", "predicted", "date", "gauge_id"]
+        """
+        rows = []
+        n_samples, output_len = predictions.shape
+
+        for sample_idx in range(n_samples):
+            basin_id = basin_ids[sample_idx]
+            input_end_date_ms = input_end_dates[sample_idx]
+
+            # Convert input end date to timestamp if available
+            input_end_date = None
+            if input_end_date_ms is not None:
+                # Convert tensor to scalar if needed
+                if torch.is_tensor(input_end_date_ms):
+                    input_end_date_ms = input_end_date_ms.item()
+                input_end_date = pd.Timestamp(input_end_date_ms, unit="ms")
+
+            for horizon_idx in range(output_len):
+                horizon = horizon_idx + 1  # 1-indexed horizons
+
+                # Only include horizons we're interested in
+                if horizon not in self.horizons:
                     continue
-                horizon_data = basin_data.filter(pl.col("horizon") == h)
-                if not horizon_data.is_empty():
-                    basin_metrics[basin_id_val][h] = self._calculate_metrics(horizon_data)
+
+                pred_val = predictions[sample_idx, horizon_idx]
+                obs_val = observations[sample_idx, horizon_idx]
+
+                # Calculate forecast date
+                if input_end_date is not None:
+                    forecast_date = input_end_date + pd.Timedelta(days=horizon)
                 else:
-                    basin_metrics[basin_id_val][h] = dict.fromkeys(["MSE", "MAE", "NSE", "RMSE"], np.nan)
-        return basin_metrics
+                    forecast_date = None
 
-    def _calculate_metrics(self, data: pl.DataFrame) -> dict[str, float]:
-        if data.is_empty():
-            return dict.fromkeys(["MSE", "MAE", "NSE", "RMSE"], np.nan)
-        if "prediction" not in data.columns or "observed" not in data.columns:
-            return dict.fromkeys(["MSE", "MAE", "NSE", "RMSE"], np.nan)
+                # Skip rows with missing data
+                if pd.isna(pred_val) or pd.isna(obs_val):
+                    continue
 
-        # Filter rows where both prediction and observation are non-null to maintain alignment
-        valid_data = data.filter(
-            pl.col("prediction").is_not_null()
-            & pl.col("observed").is_not_null()
-            & pl.col("prediction").is_finite()
-            & pl.col("observed").is_finite()
-        )
+                rows.append(
+                    {
+                        "horizon": horizon,
+                        "observed": obs_val,
+                        "predicted": pred_val,
+                        "date": forecast_date,
+                        "gauge_id": basin_id,
+                    }
+                )
 
-        if valid_data.is_empty():
-            return dict.fromkeys(["MSE", "MAE", "NSE", "RMSE"], np.nan)
+        return pd.DataFrame(rows)
 
-        pred = valid_data.get_column("prediction").to_numpy()
-        obs = valid_data.get_column("observed").to_numpy()
+    def _calculate_metrics_by_gauge(self, df: pd.DataFrame) -> dict[str, dict[str, dict[str, float]]]:
+        """Calculate metrics for each gauge and horizon combination.
 
-        return {
-            "MSE": self.calculate_mse(pred, obs),
-            "MAE": self.calculate_mae(pred, obs),
-            "NSE": self.calculate_nse(pred, obs),
-            "RMSE": self.calculate_rmse(pred, obs),
-        }
+        Args:
+            df: DataFrame with predictions and observations
 
-    def summarize_metrics(self, metrics_dict: dict[Any, Any], per_basin: bool = False) -> pl.DataFrame:
-        rows = []
-        if per_basin:
-            for basin_id, basin_data in metrics_dict.items():
-                for horizon, horizon_metrics in basin_data.items():
-                    rows.append({"basin_id": basin_id, "horizon": horizon, **horizon_metrics})
-        else:
-            for horizon, horizon_metrics in metrics_dict.items():
-                rows.append({"horizon": horizon, **horizon_metrics})
+        Returns:
+            Nested dictionary with structure: {gauge_id: {horizon_X: {metric: value}}}
+        """
+        metrics_by_gauge = {}
 
-        return pl.from_dicts(rows) if rows else pl.DataFrame()
+        for gauge_id in df["gauge_id"].unique():
+            gauge_df = df[df["gauge_id"] == gauge_id]
+            metrics_by_gauge[gauge_id] = {}
 
-    def flatten_basin_metrics(self, basin_metrics: dict[str, dict[int, dict[str, float]]]) -> pl.DataFrame:
-        rows = []
-        for basin_id, horizons_data in basin_metrics.items():
-            for horizon, metrics_values in horizons_data.items():
-                rows.append({"basin_id": basin_id, "horizon": horizon, **metrics_values})
-        return pl.from_dicts(rows) if rows else pl.DataFrame()
+            for horizon in self.horizons:
+                horizon_df = gauge_df[gauge_df["horizon"] == horizon]
 
-    @staticmethod
-    def calculate_mse(pred: np.ndarray, obs: np.ndarray) -> float:
-        if len(pred) == 0:
-            return np.nan
-        return np.mean((pred - obs) ** 2)
+                if horizon_df.empty:
+                    continue
 
-    @staticmethod
-    def calculate_mae(pred: np.ndarray, obs: np.ndarray) -> float:
-        if len(pred) == 0:
-            return np.nan
-        return np.mean(np.abs(pred - obs))
+                observed = horizon_df["observed"].values
+                predicted = horizon_df["predicted"].values
 
-    @staticmethod
-    def calculate_rmse(pred: np.ndarray, obs: np.ndarray) -> float:
-        if len(pred) == 0:
-            return np.nan
-        return np.sqrt(np.mean((pred - obs) ** 2))
+                # Calculate all metrics
+                horizon_metrics = {}
+                for metric_name, metric_func in self.metric_functions.items():
+                    try:
+                        metric_value = metric_func(predicted, observed)
+                        horizon_metrics[metric_name] = metric_value
+                    except Exception as e:
+                        self.logger.warning(f"Failed to calculate {metric_name} for {gauge_id} horizon {horizon}: {e}")
+                        horizon_metrics[metric_name] = np.nan
 
-    @staticmethod
-    def calculate_nse(pred: np.ndarray, obs: np.ndarray) -> float:
-        if len(obs) == 0 or len(pred) == 0:
-            return np.nan
-        mean_obs = np.mean(obs)
-        if np.all(obs == mean_obs):  # Denominator would be zero
-            return 1.0 if np.sum((pred - obs) ** 2) == 0 else -np.inf  # Or np.nan, or other convention
-        numerator = np.sum((pred - obs) ** 2)
-        denominator = np.sum((obs - mean_obs) ** 2)
-        if denominator == 0:  # Should be caught by above, but for safety
-            return 1.0 if numerator == 0 else -np.inf
-        return 1 - (numerator / denominator)
+                metrics_by_gauge[gauge_id][f"horizon_{horizon}"] = horizon_metrics
+
+        return metrics_by_gauge
+
+    def _save_results(self, results: dict[str, dict]) -> None:
+        """Save evaluation results to disk using pickle.
+
+        Args:
+            results: Evaluation results dictionary
+        """
+        try:
+            if self.save_path is not None:
+                self.save_path.parent.mkdir(parents=True, exist_ok=True)
+
+                with open(self.save_path, "wb") as f:
+                    pickle.dump(results, f)
+
+                self.logger.info(f"Results saved to {self.save_path}")
+        except Exception as e:
+            self.logger.error(f"Failed to save results: {e}")

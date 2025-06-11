@@ -178,7 +178,6 @@ def plot_horizon_performance_bars(
                         ha="center",
                         va="bottom",
                         fontsize=9,
-                        fontweight="bold",
                         color="darkgreen" if (pct_diff >= 0) == positive_is_better else "darkred",
                     )
 
@@ -568,7 +567,7 @@ def plot_model_cdf_grid(
         variant_labels.append(variant.capitalize())
 
     # Add median line to legend
-    variant_handles.append(plt.Line2D([0], [0], color="black", linestyle="-", linewidth=1.5, alpha=0.7))
+    variant_handles.append(plt.Line2D([0], [0], color="black", linestyle="-", linewidth=1.5, alpha=0.5))
     variant_labels.append("Median")
 
     # Add legend
