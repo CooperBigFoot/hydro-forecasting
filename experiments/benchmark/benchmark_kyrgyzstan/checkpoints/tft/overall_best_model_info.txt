@@ -1,1 +1,1 @@
-run_3/attempt_0/tft-run3-attempt_0-epoch=34-val_loss=0.0294.ckpt
+run_2/attempt_0/tft-run2-attempt_0-epoch=140-val_loss=0.0285.ckpt

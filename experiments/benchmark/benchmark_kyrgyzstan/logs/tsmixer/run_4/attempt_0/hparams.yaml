@@ -1,24 +1,24 @@
-input_len: 219
+input_len: 53
 output_len: 10
 input_size: 10
 static_size: 10
 future_input_size: 9
-learning_rate: 0.00023564949502551287
+learning_rate: 0.00031288962030021344
 group_identifier: gauge_id
-hidden_size: 34
-dropout: 0.02873538123690017
-static_embedding_size: 17
-num_mixing_layers: 6
+hidden_size: 51
+dropout: 0.029917019631322206
+static_embedding_size: 9
+num_mixing_layers: 7
 scheduler_patience: 2
 scheduler_factor: 0.5
-fusion_method: concat
+fusion_method: add
 region_time_series_base_dirs:
   CA: /workspace/CaravanifyParquet/CA/post_processed/timeseries/csv/CA
 region_static_attributes_base_dirs:
   CA: /workspace/CaravanifyParquet/CA/post_processed/attributes/CA
 path_to_preprocessing_output_directory: /workspace/hydro-forecasting/experiments/benchmark/data_cache/kyrgyzstan
 batch_size: 2048
-input_length: 219
+input_length: 53
 output_length: 10
 forcing_features:
 - snow_depth_water_equivalent_mean
