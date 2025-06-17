@@ -62,8 +62,12 @@ class TSForecastEvaluator:
             "atpe": calculate_atpe,
         }
 
-    def test_models(self) -> dict[str, dict]:
+    def test_models(self, start_of_season: int | None = None, end_of_season: int | None = None) -> dict[str, dict]:
         """Test all models and compute horizon-specific metrics.
+
+        Args:
+            start_of_season: Starting month (1-12) for seasonal evaluation. If None, use all data.
+            end_of_season: Ending month (1-12) for seasonal evaluation (exclusive). If None, use all data.
 
         Returns:
             Dictionary containing evaluation results for each model with structure:
@@ -86,7 +90,7 @@ class TSForecastEvaluator:
             self.logger.info(f"Testing model: {model_name}")
 
             try:
-                model_results = self._test_single_model(model, datamodule, model_name)
+                model_results = self._test_single_model(model, datamodule, model_name, start_of_season, end_of_season)
                 results[model_name] = model_results
                 self.logger.info(f"Successfully tested model: {model_name}")
             except Exception as e:
@@ -100,7 +104,12 @@ class TSForecastEvaluator:
         return results
 
     def _test_single_model(
-        self, model: pl.LightningModule, datamodule: pl.LightningDataModule, model_name: str
+        self,
+        model: pl.LightningModule,
+        datamodule: pl.LightningDataModule,
+        model_name: str,
+        start_of_season: int | None = None,
+        end_of_season: int | None = None,
     ) -> dict[str, Any]:
         """Test a single model and process results.
 
@@ -108,6 +117,8 @@ class TSForecastEvaluator:
             model: PyTorch Lightning model to test
             datamodule: Associated data module
             model_name: Name of the model for logging
+            start_of_season: Starting month (1-12) for seasonal evaluation
+            end_of_season: Ending month (1-12) for seasonal evaluation (exclusive)
 
         Returns:
             Dictionary containing predictions DataFrame and metrics
@@ -149,7 +160,7 @@ class TSForecastEvaluator:
         df = self._reshape_to_horizon_format(predictions_inv, observations_inv, basin_ids, input_end_dates)
 
         # Calculate metrics by gauge and horizon
-        metrics_by_gauge = self._calculate_metrics_by_gauge(df)
+        metrics_by_gauge = self._calculate_metrics_by_gauge(df, start_of_season, end_of_season)
 
         return {"predictions_df": df, "metrics_by_gauge": metrics_by_gauge}
 
@@ -230,19 +241,33 @@ class TSForecastEvaluator:
 
         return pd.DataFrame(rows)
 
-    def _calculate_metrics_by_gauge(self, df: pd.DataFrame) -> dict[str, dict[str, dict[str, float]]]:
+    def _calculate_metrics_by_gauge(
+        self, df: pd.DataFrame, start_of_season: int | None = None, end_of_season: int | None = None
+    ) -> dict[str, dict[str, dict[str, float]]]:
         """Calculate metrics for each gauge and horizon combination.
 
         Args:
             df: DataFrame with predictions and observations
+            start_of_season: Starting month (1-12) for seasonal evaluation
+            end_of_season: Ending month (1-12) for seasonal evaluation (exclusive)
 
         Returns:
             Nested dictionary with structure: {gauge_id: {horizon_X: {metric: value}}}
         """
+        # Apply seasonal filtering if specified
+        if start_of_season is not None and end_of_season is not None:
+            # Create filtered DataFrame for metric calculations
+            seasonal_mask = (df["date"].dt.month >= start_of_season) & (df["date"].dt.month < end_of_season)
+            df_for_metrics = df[seasonal_mask].copy()
+            self.logger.info(f"Applying seasonal filter: months {start_of_season} to {end_of_season - 1}")
+        else:
+            # Use original DataFrame for metric calculations
+            df_for_metrics = df
+
         metrics_by_gauge = {}
 
-        for gauge_id in df["gauge_id"].unique():
-            gauge_df = df[df["gauge_id"] == gauge_id]
+        for gauge_id in df_for_metrics["gauge_id"].unique():
+            gauge_df = df_for_metrics[df_for_metrics["gauge_id"] == gauge_id]
             metrics_by_gauge[gauge_id] = {}
 
             for horizon in self.horizons:
