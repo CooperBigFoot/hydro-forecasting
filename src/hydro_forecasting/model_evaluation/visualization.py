@@ -3,10 +3,11 @@ from typing import Any
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 
 
 def plot_horizon_performance_bars(
-    seasonal_results: dict[str, Any],
+    results: dict[str, Any],
     horizon: int,
     metric: str = "NSE",
     architectures: list[str] | None = None,
@@ -22,7 +23,7 @@ def plot_horizon_performance_bars(
     Create a bar chart showing model performance for a specific horizon.
 
     Args:
-        seasonal_results: Dictionary from TSForecastEvaluator with model results
+        results: Dictionary from TSForecastEvaluator with model results
         horizon: Forecast horizon to plot (e.g., 5, 10)
         metric: Performance metric to plot (e.g., "NSE", "RMSE")
         architectures: List of architectures to include (auto-detected if None)
@@ -40,7 +41,8 @@ def plot_horizon_performance_bars(
 
     # Parse model names to extract architectures and variants
     model_data = {}
-    for model_name, results in seasonal_results.items():
+    # FIX: Renamed loop variable from 'results' to 'model_result' to avoid shadowing
+    for model_name, model_result in results.items():
         if "_" not in model_name:
             continue
 
@@ -50,7 +52,7 @@ def plot_horizon_performance_bars(
 
         if arch not in model_data:
             model_data[arch] = {}
-        model_data[arch][variant] = results
+        model_data[arch][variant] = model_result
 
     # Auto-detect architectures and variants if not provided
     if architectures is None:
@@ -104,7 +106,7 @@ def plot_horizon_performance_bars(
     # Plot parameters
     n_architectures = len(architectures)
     n_variants = len(variants)
-    bar_width = 0.15
+    bar_width = 0.18
     group_width = n_variants * bar_width
     x_positions = np.arange(n_architectures)
 
@@ -179,11 +181,12 @@ def plot_horizon_performance_bars(
                         ha="center",
                         va="bottom",
                         color="darkgreen" if (pct_diff >= 0) == positive_is_better else "darkred",
+                        fontsize=8,  # Reduced font size by 2 points from default (~10)
                     )
 
     # Add dummy model horizontal line if specified
-    if dummy_model is not None and dummy_model in seasonal_results:
-        dummy_results = seasonal_results[dummy_model]
+    if dummy_model is not None and dummy_model in results:
+        dummy_results = results[dummy_model]
         dummy_metrics_by_gauge = dummy_results["metrics_by_gauge"]
 
         # Extract performance values for the dummy model
@@ -203,12 +206,12 @@ def plot_horizon_performance_bars(
                 linestyle="--",
                 linewidth=2,
                 alpha=0.8,
-                label=f"{dummy_model} Baseline",
+                label="Baseline",
                 zorder=10,
             )
 
     # Customize plot
-    ax.set_ylabel(f"{metric} Value")
+    ax.set_ylabel(f"{metric.upper()} Value")
 
     # Set x-axis
     ax.set_xticks(x_positions)
@@ -221,7 +224,7 @@ def plot_horizon_performance_bars(
     # Add legend
     ax.legend(
         loc="lower center",
-        bbox_to_anchor=(0.5, -0.20),
+        bbox_to_anchor=(0.5, -0.25),
         ncol=len(variants),
         frameon=False,
         fancybox=True,
@@ -236,7 +239,7 @@ def plot_horizon_performance_bars(
 
 
 def plot_basin_performance_scatter(
-    seasonal_results: dict[str, Any],
+    results: dict[str, Any],
     benchmark_pattern: str,
     challenger_pattern: str,
     horizon: int,
@@ -251,7 +254,7 @@ def plot_basin_performance_scatter(
     Create a scatter plot comparing basin-level performance between benchmark and challenger models.
 
     Args:
-        seasonal_results: Dictionary from TSForecastEvaluator with model results
+        results: Dictionary from TSForecastEvaluator with model results
         benchmark_pattern: Pattern to identify benchmark models (e.g., "benchmark", "pretrained")
         challenger_pattern: Pattern to identify challenger models (e.g., "finetuned", "pretrained")
         horizon: Forecast horizon to plot (e.g., 5, 10)
@@ -268,7 +271,8 @@ def plot_basin_performance_scatter(
 
     # Parse model names to extract architectures and patterns
     model_data = {}
-    for model_name, results in seasonal_results.items():
+    # FIX: Renamed loop variable from 'results' to 'model_result' to avoid shadowing
+    for model_name, model_result in results.items():
         if "_" not in model_name:
             continue
 
@@ -278,7 +282,7 @@ def plot_basin_performance_scatter(
 
         if arch not in model_data:
             model_data[arch] = {}
-        model_data[arch][pattern] = results
+        model_data[arch][pattern] = model_result
 
     # Auto-detect architectures if not provided
     if architectures is None:
@@ -378,8 +382,8 @@ def plot_basin_performance_scatter(
         significance_threshold = 0
 
     # Customize plot
-    ax.set_xlabel(f"{metric} - {benchmark_pattern.capitalize()} Models")
-    ax.set_ylabel(f"Δ{metric} ({challenger_pattern.capitalize()} - {benchmark_pattern.capitalize()})")
+    ax.set_xlabel(f"{metric.upper()} - {benchmark_pattern.capitalize()} Models")
+    ax.set_ylabel(f"Δ{metric.upper()} ({challenger_pattern.capitalize()} - {benchmark_pattern.capitalize()})")
 
     # Set limits with margin
     if all_benchmark_values and all_delta_values:
@@ -429,7 +433,7 @@ def plot_basin_performance_scatter(
 
 
 def plot_model_cdf_grid(
-    seasonal_results: dict[str, Any],
+    results: dict[str, Any],
     horizons: list[int] | None = None,
     metric: str = "NSE",
     architectures: list[str] | None = None,
@@ -441,7 +445,7 @@ def plot_model_cdf_grid(
     Plot a grid of CDF curves for different models and prediction horizons.
 
     Args:
-        seasonal_results: Dictionary from TSForecastEvaluator with model results
+        results: Dictionary from TSForecastEvaluator with model results
         horizons: List of forecast horizons to plot (defaults to [1, 5, 10])
         metric: Performance metric to plot (default: "NSE")
         architectures: List of architectures to include (auto-detected if None)
@@ -455,7 +459,8 @@ def plot_model_cdf_grid(
 
     # Parse model names to extract architectures and variants
     model_data = {}
-    for model_name, results in seasonal_results.items():
+    # FIX: Renamed loop variable from 'results' to 'model_result' to avoid shadowing
+    for model_name, model_result in results.items():
         if "_" not in model_name:
             continue
 
@@ -465,7 +470,7 @@ def plot_model_cdf_grid(
 
         if arch not in model_data:
             model_data[arch] = {}
-        model_data[arch][variant] = results
+        model_data[arch][variant] = model_result
 
     # Auto-detect architectures and variants if not provided
     if architectures is None:
@@ -573,7 +578,7 @@ def plot_model_cdf_grid(
             if j == 0:
                 ax.set_ylabel(f"{horizon} Day - CDF")
             if i == len(horizons) - 1:
-                ax.set_xlabel(metric)
+                ax.set_xlabel(metric.upper())
 
             # Add grid
             ax.grid(True, alpha=0.3, linestyle="--")
@@ -599,7 +604,7 @@ def plot_model_cdf_grid(
         labels=variant_labels,
         loc="lower center",
         ncol=len(variants) + 1,  # +1 for median line
-        bbox_to_anchor=(0.5, 0.02),
+        bbox_to_anchor=(0.5, -0.01),
         frameon=False,
     )
 
@@ -607,7 +612,7 @@ def plot_model_cdf_grid(
 
 
 def plot_horizon_performance_boxplots(
-    seasonal_results: dict[str, Any],
+    results: dict[str, Any],
     horizon: int,
     metric: str = "NSE",
     architectures: list[str] | None = None,
@@ -621,7 +626,7 @@ def plot_horizon_performance_boxplots(
     Create a boxplot chart showing model performance for a specific horizon.
 
     Args:
-        seasonal_results: Dictionary from TSForecastEvaluator with model results
+        results: Dictionary from TSForecastEvaluator with model results
         horizon: Forecast horizon to plot (e.g., 5, 10)
         metric: Performance metric to plot (e.g., "NSE", "RMSE")
         architectures: List of architectures to include (auto-detected if None)
@@ -637,7 +642,8 @@ def plot_horizon_performance_boxplots(
 
     # Parse model names to extract architectures and variants
     model_data = {}
-    for model_name, results in seasonal_results.items():
+    # FIX: Renamed loop variable from 'results' to 'model_result' to avoid shadowing
+    for model_name, model_result in results.items():
         if "_" not in model_name:
             continue
 
@@ -647,7 +653,7 @@ def plot_horizon_performance_boxplots(
 
         if arch not in model_data:
             model_data[arch] = {}
-        model_data[arch][variant] = results
+        model_data[arch][variant] = model_result
 
     # Auto-detect architectures and variants if not provided
     if architectures is None:
@@ -691,8 +697,8 @@ def plot_horizon_performance_boxplots(
     current_position = 1
 
     # Add dummy model boxplot first if specified
-    if dummy_model is not None and dummy_model in seasonal_results:
-        dummy_results = seasonal_results[dummy_model]
+    if dummy_model is not None and dummy_model in results:
+        dummy_results = results[dummy_model]
         dummy_metrics_by_gauge = dummy_results["metrics_by_gauge"]
 
         # Extract performance values for the dummy model
@@ -749,7 +755,7 @@ def plot_horizon_performance_boxplots(
             plt.setp(bp[element], color="black", linewidth=1)
 
     # Customize plot
-    ax.set_ylabel(f"{metric} Value")
+    ax.set_ylabel(f"{metric.upper()} Value")
 
     # Set x-axis
     ax.set_xticks(box_positions)
@@ -763,7 +769,7 @@ def plot_horizon_performance_boxplots(
     if title:
         ax.set_title(title, pad=20)
     else:
-        ax.set_title(f"{metric} Performance at {horizon}-Day Horizon", pad=20)
+        ax.set_title(f"{metric.upper()} Performance at {horizon}-Day Horizon", pad=20)
 
     # Create legend for architectures (excluding dummy)
     legend_handles = []
@@ -788,25 +794,29 @@ def plot_horizon_performance_boxplots(
 
 
 def plot_rolling_forecast(
-    seasonal_results: dict[str, Any],
+    results: dict[str, Any],
     model_name: str,
     gauge_id: str,
     horizon: int,
     figsize: tuple[int, int] = (15, 7),
     title: str | None = None,
     color_scheme: dict[str, str] | None = None,
+    start_of_season: int | None = None,
+    end_of_season: int | None = None,
 ) -> tuple[plt.Figure, plt.Axes]:
     """
     Create a time-series plot comparing observed values against model's rolling forecasts.
 
     Args:
-        seasonal_results: Dictionary from TSForecastEvaluator with model results
-        model_name: Name of the model to plot (must exist in seasonal_results)
+        results: Dictionary from TSForecastEvaluator with model results
+        model_name: Name of the model to plot (must exist in results)
         gauge_id: Identifier for the gauge/basin to plot
         horizon: Forecast horizon to plot (e.g., 1, 5, 10)
         figsize: Figure size as (width, height)
         title: Custom plot title (auto-generated if None)
-        color_scheme: Dictionary mapping 'observed' and 'predicted' to colors
+        color_scheme: Dictionary mapping 'observed', 'predicted', and 'season' to colors
+        start_of_season: Start month of seasonal period (1-12, optional)
+        end_of_season: End month of seasonal period (1-12, optional)
 
     Returns:
         Tuple of (figure, axes) objects
@@ -816,12 +826,12 @@ def plot_rolling_forecast(
     """
 
     # Check if model exists in results
-    if model_name not in seasonal_results:
-        available_models = list(seasonal_results.keys())
+    if model_name not in results:
+        available_models = list(results.keys())
         raise ValueError(f"Model '{model_name}' not found in results. Available models: {available_models}")
 
     # Extract predictions DataFrame for the specified model
-    model_results = seasonal_results[model_name]
+    model_results = results[model_name]
     if "predictions_df" not in model_results:
         raise ValueError(f"No predictions_df found for model '{model_name}'")
 
@@ -847,10 +857,40 @@ def plot_rolling_forecast(
 
     # Set default color scheme if not provided
     if color_scheme is None:
-        color_scheme: dict[str, str] = {"observed": "black", "predicted": "red"}
+        color_scheme: dict[str, str] = {"observed": "black", "predicted": "red", "season": "#d3d3d3"}
+    else:
+        # Ensure season color exists in provided color scheme
+        if "season" not in color_scheme:
+            color_scheme["season"] = "#d3d3d3"
 
     # Create the plot
     fig, ax = plt.subplots(figsize=figsize)
+
+    # Add seasonal background shading if both start and end months are provided
+    if start_of_season is not None and end_of_season is not None:
+        # Get unique years from the data
+        unique_years = sorted(filtered_df["date"].dt.year.unique())
+        season_labeled = False  # Flag to label only the first span
+
+        for year in unique_years:
+            # Define the start date for the current year's season
+            season_start_date = mdates.datetime.datetime(year, start_of_season, 1)
+
+            # Determine the year for the end of the season
+            # If the season crosses a year boundary (e.g., Dec-Feb), the end year is the next year
+            end_year = year + 1 if end_of_season < start_of_season else year
+            season_end_date = mdates.datetime.datetime(end_year, end_of_season, 1)
+
+            # Draw the shaded span
+            ax.axvspan(
+                season_start_date,
+                season_end_date,
+                color=color_scheme["season"],
+                alpha=0.2,
+                zorder=0,
+                label="Season" if not season_labeled else "",
+            )
+            season_labeled = True
 
     # Plot observed and predicted values
     ax.plot(
@@ -884,4 +924,224 @@ def plot_rolling_forecast(
     ax.grid(True, alpha=0.3, linestyle="--")
     ax.set_axisbelow(True)
 
+    return fig, ax
+
+
+def plot_performance_vs_test_length(
+    results: dict[str, Any],
+    architecture: str,
+    horizons: list[int],
+    metric: str = "NSE",
+    variants: list[str] | None = None,
+    colors: dict[int, str] | None = None,
+    figsize: tuple[int, int] = (12, 7),
+    debug: bool = False,
+) -> tuple[plt.Figure, plt.Axes]:
+    """
+    Create a scatter plot showing model performance against test period length for multiple horizons and variants.
+
+    This function analyzes the relationship between test period duration and model performance
+    across different basins, horizons, and model variants for a single architecture.
+
+    Args:
+        results: Dictionary from TSForecastEvaluator with model results
+        architecture: Single architecture to analyze (e.g., "lstm", "tsmixer")
+        horizons: List of forecast horizons to analyze (e.g., [1, 5, 10])
+        metric: Performance metric to plot (e.g., "NSE", "RMSE")
+        variants: List of variants to include (auto-detected if None)
+        colors: Dictionary mapping horizon to color (default colors if None)
+        figsize: Figure size as (width, height)
+        debug: Whether to show gauge_id labels on scatter points
+
+    Returns:
+        Tuple of (figure, axes) objects
+
+    Raises:
+        ValueError: If architecture not found, or if required data is missing
+    """
+
+    # Parse model names to extract variants for the specified architecture
+    model_data = {}
+    for model_name, model_result in results.items():
+        if "_" not in model_name:
+            continue
+
+        parts = model_name.split("_", 1)
+        arch = parts[0]
+        variant = parts[1]
+
+        if arch == architecture:
+            model_data[variant] = model_result
+
+    # Check if we have any models for this architecture
+    if not model_data:
+        available_architectures = sorted({name.split("_")[0] for name in results if "_" in name})
+        raise ValueError(
+            f"No models found for architecture '{architecture}'. Available architectures: {available_architectures}"
+        )
+
+    # Auto-detect variants if not provided
+    if variants is None:
+        variants = sorted(model_data.keys())
+
+    # Default colors for horizons using tab10 colormap
+    if colors is None:
+        colors = {horizon: plt.cm.tab10(i / len(horizons)) for i, horizon in enumerate(horizons)}
+
+    # Define markers for variants (up to 3 variants with distinct markers)
+    variant_markers = ["o", "s", "^"]  # circle, square, triangle
+    markers = {variant: variant_markers[i % len(variant_markers)] for i, variant in enumerate(variants)}
+
+    # Collect plotting data
+    plot_data = []
+
+    for variant in variants:
+        if variant not in model_data:
+            continue
+
+        model_result = model_data[variant]
+
+        # Check for required data structures
+        if "predictions_df" not in model_result:
+            continue
+        if "metrics_by_gauge" not in model_result:
+            continue
+
+        predictions_df = model_result["predictions_df"]
+        metrics_by_gauge = model_result["metrics_by_gauge"]
+
+        # Calculate test period length for each (gauge_id, horizon) combination
+        test_lengths = (
+            predictions_df.groupby(["gauge_id", "horizon"])["observed"]
+            .apply(lambda x: x.notna().sum() / 365.25)
+            .to_dict()
+        )
+
+        # Collect data for each horizon
+        for horizon in horizons:
+            for gauge_id, gauge_metrics in metrics_by_gauge.items():
+                # Check if we have both test length and metric data
+                if (gauge_id, horizon) not in test_lengths:
+                    continue
+
+                if horizon not in gauge_metrics or metric not in gauge_metrics[horizon]:
+                    continue
+
+                metric_value = gauge_metrics[horizon][metric]
+                test_length = test_lengths[(gauge_id, horizon)]
+
+                # Only include valid (non-NaN) metric values
+                if not np.isnan(metric_value):
+                    plot_data.append(
+                        {
+                            "gauge_id": gauge_id,
+                            "horizon": horizon,
+                            "variant": variant,
+                            "test_length_years": test_length,
+                            "metric_value": metric_value,
+                        }
+                    )
+
+    # Check if we have any valid data to plot
+    if not plot_data:
+        raise ValueError(
+            f"No valid data found for plotting architecture '{architecture}' "
+            f"with horizons {horizons} and metric '{metric}'"
+        )
+
+    # Convert to DataFrame for easier handling
+    plot_df = pd.DataFrame(plot_data)
+
+    # Create the plot
+    fig, ax = plt.subplots(figsize=figsize)
+
+    # Create scatter plot grouped by variant and horizon
+    for variant in variants:
+        if variant not in plot_df["variant"].values:
+            continue
+
+        variant_data = plot_df[plot_df["variant"] == variant]
+
+        for horizon in horizons:
+            horizon_data = variant_data[variant_data["horizon"] == horizon]
+
+            if horizon_data.empty:
+                continue
+
+            # Create scatter plot for this variant-horizon combination
+            scatter = ax.scatter(
+                horizon_data["test_length_years"],
+                horizon_data["metric_value"],
+                color=colors[horizon],
+                marker=markers[variant],
+                s=80,
+                alpha=0.7,
+                edgecolors="black",
+                linewidth=0.5,
+            )
+
+            # Add debug labels if requested
+            if debug:
+                for _, row in horizon_data.iterrows():
+                    ax.annotate(
+                        row["gauge_id"],
+                        (row["test_length_years"], row["metric_value"]),
+                        xytext=(5, 5),  # Offset in points
+                        textcoords="offset points",
+                        ha="left",
+                        va="bottom",
+                        bbox={
+                            "boxstyle": "round,pad=0.2",
+                            "facecolor": "white",
+                            "alpha": 0.7,
+                            "edgecolor": "none",
+                        },
+                        fontsize=8,
+                    )
+
+    # Customize plot aesthetics
+    ax.set_xlabel("Length of Test Period (Years)")
+    ax.set_ylabel(f"{metric.upper()}")
+    ax.set_title(
+        f"{metric.upper()} vs. Test Period Length for {architecture.upper()} Architecture",
+        pad=20,
+    )
+
+    # Add grid
+    ax.grid(True, alpha=0.3, linestyle="--")
+    ax.set_axisbelow(True)
+
+    # Create combined legend with horizons and variants
+    legend_handles = []
+    legend_labels = []
+
+    # Add horizons section
+    for horizon in horizons:
+        legend_handles.append(
+            plt.Line2D([0], [0], marker="o", color="w", markerfacecolor=colors[horizon], markersize=8)
+        )
+        legend_labels.append(f"{horizon}-day")
+
+    # Add separator line (invisible)
+    legend_handles.append(plt.Line2D([0], [0], color="w", alpha=0))
+    legend_labels.append("")
+
+    # Add variants section
+    for variant in variants:
+        legend_handles.append(
+            plt.Line2D([0], [0], marker=markers[variant], color="w", markerfacecolor="gray", markersize=8)
+        )
+        legend_labels.append(variant.capitalize())
+
+    # Create single combined legend
+    ax.legend(
+        handles=legend_handles,
+        labels=legend_labels,
+        title="Horizons & Variants",
+        loc="center left",
+        bbox_to_anchor=(1.02, 0.5),
+        frameon=True,
+    )
+
+    plt.tight_layout()
     return fig, ax
