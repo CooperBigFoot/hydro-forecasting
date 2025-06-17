@@ -72,8 +72,8 @@ def clean_data(
 
     Only forward fill is used for imputation to avoid potential data leakage.
 
-    Enhanced to ensure that basins marked as passed_quality_check=True will have
-    non-empty train, validation, AND test segments when processed by split_data.
+    Uses target-data-based validation that exactly mirrors split_data() logic to ensure
+    consistency between quality checks and actual data splitting.
 
     Args:
         lf: Input LazyFrame containing hydrological data.
@@ -91,7 +91,10 @@ def clean_data(
         train_prop = config.train_prop
         val_prop = config.val_prop
         test_prop = config.test_prop
-        min_required_train_days = int(min_train_years * 365.25)
+
+        # Convert minimum training years to minimum data points needed
+        # Assuming daily data: 1 year ≈ 365.25 days
+        min_required_train_points = int(min_train_years * 365.25)
 
         # Determine target column name - same logic as split_data
         target_col_name = "streamflow"  # Default fallback
@@ -155,9 +158,6 @@ def clean_data(
 
             # Valid period info
             valid_period: dict[str, dict[str, str | None]] = {}
-            valid_starts: list = []
-            valid_ends: list = []
-
             for c in cols:
                 nonnull = group.filter(pl.col(c).is_not_null())["date"]
                 if nonnull.is_empty():
@@ -169,8 +169,6 @@ def clean_data(
                         "start": start_date.strftime("%Y-%m-%d"),
                         "end": end_date.strftime("%Y-%m-%d"),
                     }
-                    valid_starts.append(start_date)
-                    valid_ends.append(end_date)
 
             # Assemble report
             report = BasinQualityReport(
@@ -178,86 +176,75 @@ def clean_data(
                 processing_steps=[
                     "sorted_by_gauge_and_date",
                     "trimmed_nulls",
-                    "imputed_short_gaps_forward_only",  # Updated processing step description
+                    "imputed_short_gaps_forward_only",
                 ],
                 imputation_info=info,
             )
 
-            # ORIGINAL DATA SUFFICIENCY CHECK (BASELINE)
-            if valid_starts and valid_ends:
-                overall_start = max(valid_starts)
-                overall_end = min(valid_ends)
-                total_days = (overall_end - overall_start).days + 1
-                train_days = int(total_days * train_prop)
-                if train_days < min_required_train_days:
-                    report.passed_quality_check = False
-                    available_years = train_days / 365.25
-                    report.failure_reason = f"Insufficient training data ({available_years:.2f} years available). \
-                         Minimum required training years: {min_train_years}"
-                    reports[basin_id] = report
-                    continue  # Skip additional checks if baseline fails
-                else:
-                    # Original check passes, proceed to the new target-specific checks
-                    report.processing_steps.append("data_sufficiency_check_passed")
-            else:
-                report.passed_quality_check = False
-                report.failure_reason = "No valid data period found"
-                reports[basin_id] = report
-                continue  # Skip additional checks if no valid period
-
-            # NEW CHECK 1: TARGET-SPECIFIC DATA AVAILABILITY
-            # This simulates the filtering that happens in split_data
-            if target_col_name in group.columns:
-                target_valid_df = group.filter(pl.col(target_col_name).is_not_null())
-                n_valid_target = target_valid_df.height
-
-                if n_valid_target == 0:
-                    report.passed_quality_check = False
-                    report.failure_reason = (
-                        "Initial checks passed, but no non-null target data available for splitting."
-                    )
-                    reports[basin_id] = report
-                    continue  # Skip to next basin if no valid target data
-
-                # NEW CHECK 2: SIMULATE SPLIT CALCULATION & VERIFY NON-EMPTY SEGMENTS
-                # This directly mirrors how split_data calculates segment lengths
-                min_points_per_segment = 1  # Minimum required points per segment (train/val/test)
-
-                # Calculate expected segment lengths using integer truncation (as in split_data)
-                calc_train_end = int(n_valid_target * train_prop)
-                calc_val_end = calc_train_end + int(n_valid_target * val_prop)
-
-                # Calculate segment lengths
-                calc_train_len = calc_train_end
-                calc_val_len = calc_val_end - calc_train_end
-                calc_test_len = n_valid_target - calc_val_end
-
-                # Check if all segments meet minimum size requirement
-                if calc_train_len < min_points_per_segment:
-                    report.passed_quality_check = False
-                    report.failure_reason = f"Train segment would be empty or too small ({calc_train_len} points)"
-                    reports[basin_id] = report
-                    continue
-
-                if calc_val_len < min_points_per_segment:
-                    report.passed_quality_check = False
-                    report.failure_reason = f"Validation segment would be empty or too small ({calc_val_len} points)"
-                    reports[basin_id] = report
-                    continue
-
-                if calc_test_len < min_points_per_segment:
-                    report.passed_quality_check = False
-                    report.failure_reason = f"Test segment would be empty or too small ({calc_test_len} points)"
-                    reports[basin_id] = report
-                    continue
-
-                # If we reach here, all checks have passed including the stricter target-based checks
-                report.processing_steps.append("data_sufficiency_check_passed_strict_target_splits")
-                valid_basin_ids.append(basin_id)
-            else:
+            # TARGET-DATA-BASED VALIDATION (mirrors split_data() exactly)
+            if target_col_name not in group.columns:
                 report.passed_quality_check = False
                 report.failure_reason = f"Target column '{target_col_name}' not found in basin data"
+                reports[basin_id] = report
+                continue
 
+            # Filter to only non-null target data (exactly as split_data does)
+            target_valid_df = group.filter(pl.col(target_col_name).is_not_null())
+            n_valid_target = target_valid_df.height
+
+            if n_valid_target == 0:
+                report.passed_quality_check = False
+                report.failure_reason = "No non-null target data available"
+                reports[basin_id] = report
+                continue
+
+            # Calculate segment lengths using identical logic to split_data
+            # Using integer truncation (as in split_data)
+            calc_train_end = int(n_valid_target * train_prop)
+            calc_val_end = calc_train_end + int(n_valid_target * val_prop)
+
+            # Calculate actual segment lengths
+            calc_train_len = calc_train_end
+            calc_val_len = calc_val_end - calc_train_end
+            calc_test_len = n_valid_target - calc_val_end
+
+            # Minimum points per segment requirement
+            min_points_per_segment = 1
+
+            # Check training data sufficiency (convert points back to years for comparison)
+            actual_train_years = calc_train_len / 365.25
+
+            if calc_train_len < min_required_train_points:
+                report.passed_quality_check = False
+                report.failure_reason = (
+                    f"Insufficient training data: {actual_train_years:.2f} years available "
+                    f"({calc_train_len} data points). Minimum required: {min_train_years} years "
+                    f"({min_required_train_points} data points)"
+                )
+                reports[basin_id] = report
+                continue
+
+            # Check all segments meet minimum size requirements
+            if calc_val_len < min_points_per_segment:
+                report.passed_quality_check = False
+                report.failure_reason = f"Validation segment too small: {calc_val_len} data points"
+                reports[basin_id] = report
+                continue
+
+            if calc_test_len < min_points_per_segment:
+                report.passed_quality_check = False
+                report.failure_reason = f"Test segment too small: {calc_test_len} data points"
+                reports[basin_id] = report
+                continue
+
+            # All checks passed
+            report.processing_steps.extend(
+                [
+                    "target_data_validation_passed",
+                    f"training_segment_validated_{actual_train_years:.2f}_years",
+                ]
+            )
+            valid_basin_ids.append(basin_id)
             reports[basin_id] = report
 
         # Step 8: Filter DataFrame to only valid basins
@@ -369,3 +356,12 @@ def summarize_quality_reports_from_folder(
         # Log the full traceback for better debugging
         print(f"ERROR in summarize_quality_reports_from_folder: {e}\n{traceback.format_exc()}")
         return Failure(f"summarize_quality_reports_from_folder failed: {e}")
+        summary = SummaryQualityReport(
+            original_basins=total,
+            passed_basins=passed,
+            failed_basins=failed,
+            excluded_basins=excluded,
+            retained_basins=passed_ids,
+        )
+        summary.save(save_path)
+        return Success(summary)
