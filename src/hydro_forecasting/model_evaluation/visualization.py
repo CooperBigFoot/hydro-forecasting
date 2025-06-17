@@ -3,6 +3,8 @@ from typing import Any
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
+from scipy import stats
 
 
 def plot_horizon_performance_bars(
@@ -105,7 +107,7 @@ def plot_horizon_performance_bars(
     # Plot parameters
     n_architectures = len(architectures)
     n_variants = len(variants)
-    bar_width = 0.15
+    bar_width = 0.18
     group_width = n_variants * bar_width
     x_positions = np.arange(n_architectures)
 
@@ -180,6 +182,7 @@ def plot_horizon_performance_bars(
                         ha="center",
                         va="bottom",
                         color="darkgreen" if (pct_diff >= 0) == positive_is_better else "darkred",
+                        fontsize=8,  # Reduced font size by 2 points from default (~10)
                     )
 
     # Add dummy model horizontal line if specified
@@ -204,12 +207,12 @@ def plot_horizon_performance_bars(
                 linestyle="--",
                 linewidth=2,
                 alpha=0.8,
-                label=f"{dummy_model} Baseline",
+                label="Baseline",
                 zorder=10,
             )
 
     # Customize plot
-    ax.set_ylabel(f"{metric} Value")
+    ax.set_ylabel(f"{metric.upper()} Value")
 
     # Set x-axis
     ax.set_xticks(x_positions)
@@ -222,7 +225,7 @@ def plot_horizon_performance_bars(
     # Add legend
     ax.legend(
         loc="lower center",
-        bbox_to_anchor=(0.5, -0.20),
+        bbox_to_anchor=(0.5, -0.25),
         ncol=len(variants),
         frameon=False,
         fancybox=True,
@@ -380,8 +383,8 @@ def plot_basin_performance_scatter(
         significance_threshold = 0
 
     # Customize plot
-    ax.set_xlabel(f"{metric} - {benchmark_pattern.capitalize()} Models")
-    ax.set_ylabel(f"Δ{metric} ({challenger_pattern.capitalize()} - {benchmark_pattern.capitalize()})")
+    ax.set_xlabel(f"{metric.upper()} - {benchmark_pattern.capitalize()} Models")
+    ax.set_ylabel(f"Δ{metric.upper()} ({challenger_pattern.capitalize()} - {benchmark_pattern.capitalize()})")
 
     # Set limits with margin
     if all_benchmark_values and all_delta_values:
@@ -576,7 +579,7 @@ def plot_model_cdf_grid(
             if j == 0:
                 ax.set_ylabel(f"{horizon} Day - CDF")
             if i == len(horizons) - 1:
-                ax.set_xlabel(metric)
+                ax.set_xlabel(metric.upper())
 
             # Add grid
             ax.grid(True, alpha=0.3, linestyle="--")
@@ -602,7 +605,7 @@ def plot_model_cdf_grid(
         labels=variant_labels,
         loc="lower center",
         ncol=len(variants) + 1,  # +1 for median line
-        bbox_to_anchor=(0.5, 0.02),
+        bbox_to_anchor=(0.5, -0.01),
         frameon=False,
     )
 
@@ -753,7 +756,7 @@ def plot_horizon_performance_boxplots(
             plt.setp(bp[element], color="black", linewidth=1)
 
     # Customize plot
-    ax.set_ylabel(f"{metric} Value")
+    ax.set_ylabel(f"{metric.upper()} Value")
 
     # Set x-axis
     ax.set_xticks(box_positions)
@@ -767,7 +770,7 @@ def plot_horizon_performance_boxplots(
     if title:
         ax.set_title(title, pad=20)
     else:
-        ax.set_title(f"{metric} Performance at {horizon}-Day Horizon", pad=20)
+        ax.set_title(f"{metric.upper()} Performance at {horizon}-Day Horizon", pad=20)
 
     # Create legend for architectures (excluding dummy)
     legend_handles = []
@@ -921,5 +924,140 @@ def plot_rolling_forecast(
 
     ax.grid(True, alpha=0.3, linestyle="--")
     ax.set_axisbelow(True)
+
+    return fig, ax
+
+
+def plot_performance_vs_test_length(
+    results: dict[str, Any],
+    model_name: str,
+    horizon: int,
+    metric: str = "NSE",
+    figsize: tuple[int, int] = (12, 7),
+    add_trendline: bool = True,
+) -> tuple[plt.Figure, plt.Axes]:
+    """
+    Create a scatter plot showing model performance against the length of the testing period for each basin.
+
+    This function analyzes the relationship between test period duration and model performance
+    across different basins. It can optionally include a linear trendline with R-squared statistics
+    to quantify the relationship between test length and performance.
+
+    Args:
+        results: Dictionary from TSForecastEvaluator with model results
+        model_name: Name of the model to analyze (must exist in results)
+        horizon: Forecast horizon to analyze (e.g., 1, 5, 10)
+        metric: Performance metric to plot (e.g., "NSE", "RMSE")
+        figsize: Figure size as (width, height)
+        add_trendline: Whether to add a linear trendline with R-squared statistics
+
+    Returns:
+        Tuple of (figure, axes) objects
+
+    Raises:
+        ValueError: If model_name not found in results, or if required data is missing
+    """
+
+    # Input validation - check if model exists
+    if model_name not in results:
+        available_models = list(results.keys())
+        raise ValueError(f"Model '{model_name}' not found in results. Available models: {available_models}")
+
+    # Extract model results
+    model_results = results[model_name]
+
+    # Check for required data structures
+    if "predictions_df" not in model_results:
+        raise ValueError(f"No predictions_df found for model '{model_name}'")
+    if "metrics_by_gauge" not in model_results:
+        raise ValueError(f"No metrics_by_gauge found for model '{model_name}'")
+
+    predictions_df = model_results["predictions_df"]
+    metrics_by_gauge = model_results["metrics_by_gauge"]
+
+    # Calculate test period length for each basin at the specific horizon
+    # Filter predictions to only include the specified horizon
+    horizon_filtered_df = predictions_df[predictions_df["horizon"] == horizon]
+
+    # Use pandas groupby for efficient aggregation
+    test_lengths = (
+        horizon_filtered_df.groupby("gauge_id")["observed"].apply(lambda x: x.notna().sum() / 365.25).to_dict()
+    )
+
+    # Collate plotting data
+    plot_data = []
+    for gauge_id, gauge_metrics in metrics_by_gauge.items():
+        # Check if we have both test length and metric data for this gauge
+        if gauge_id not in test_lengths:
+            continue
+
+        if horizon not in gauge_metrics or metric not in gauge_metrics[horizon]:
+            continue
+
+        metric_value = gauge_metrics[horizon][metric]
+        test_length = test_lengths[gauge_id]
+
+        # Only include valid (non-NaN) metric values
+        if not np.isnan(metric_value):
+            plot_data.append({"gauge_id": gauge_id, "test_length_years": test_length, "metric_value": metric_value})
+
+    # Check if we have any valid data to plot
+    if not plot_data:
+        raise ValueError(
+            f"No valid data found for plotting. Check that gauge IDs match between predictions_df and metrics_by_gauge for horizon {horizon} and metric {metric}"
+        )
+
+    # Convert to DataFrame for easier handling
+    plot_df = pd.DataFrame(plot_data)
+
+    # Create the plot
+    fig, ax = plt.subplots(figsize=figsize)
+
+    # Create scatter plot
+    ax.scatter(
+        plot_df["test_length_years"],
+        plot_df["metric_value"],
+        color="#4682B4",
+        s=80,
+        alpha=0.7,
+        edgecolors="darkblue",
+        linewidth=0.5,
+        label="Basin Performance",
+    )
+
+    # Add trendline if requested
+    if add_trendline and len(plot_df) > 1:
+        x_values = plot_df["test_length_years"].values
+        y_values = plot_df["metric_value"].values
+
+        # Use scipy for cleaner trendline calculation
+        slope, intercept, r_value, p_value, std_err = stats.linregress(x_values, y_values)
+        r_squared = r_value**2
+
+        # Plot trendline
+        x_trend = np.linspace(x_values.min(), x_values.max(), 100)
+        y_trend = slope * x_trend + intercept
+
+        ax.plot(
+            x_trend,
+            y_trend,
+            color="red",
+            linestyle="--",
+            linewidth=2,
+            alpha=0.8,
+            label=f"Trend (y={slope:.3f}x + {intercept:.3f}, R²={r_squared:.3f})",
+        )
+
+    # Customize plot aesthetics
+    ax.set_xlabel("Length of Test Period (Years)")
+    ax.set_ylabel(f"{metric.upper()}")
+    ax.set_title(f"{metric.upper()} vs. Test Period Length for {model_name} at {horizon}-Day Horizon", pad=20)
+
+    # Add grid
+    ax.grid(True, alpha=0.3, linestyle="--")
+    ax.set_axisbelow(True)
+
+    # Add legend
+    ax.legend(loc="best", frameon=False, fancybox=True, shadow=False)
 
     return fig, ax
