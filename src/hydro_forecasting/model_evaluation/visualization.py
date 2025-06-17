@@ -4,7 +4,6 @@ import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from scipy import stats
 
 
 def plot_horizon_performance_bars(
@@ -930,81 +929,124 @@ def plot_rolling_forecast(
 
 def plot_performance_vs_test_length(
     results: dict[str, Any],
-    model_name: str,
-    horizon: int,
+    architecture: str,
+    horizons: list[int],
     metric: str = "NSE",
+    variants: list[str] | None = None,
+    colors: dict[int, str] | None = None,
     figsize: tuple[int, int] = (12, 7),
-    add_trendline: bool = True,
+    debug: bool = False,
 ) -> tuple[plt.Figure, plt.Axes]:
     """
-    Create a scatter plot showing model performance against the length of the testing period for each basin.
+    Create a scatter plot showing model performance against test period length for multiple horizons and variants.
 
     This function analyzes the relationship between test period duration and model performance
-    across different basins. It can optionally include a linear trendline with R-squared statistics
-    to quantify the relationship between test length and performance.
+    across different basins, horizons, and model variants for a single architecture.
 
     Args:
         results: Dictionary from TSForecastEvaluator with model results
-        model_name: Name of the model to analyze (must exist in results)
-        horizon: Forecast horizon to analyze (e.g., 1, 5, 10)
+        architecture: Single architecture to analyze (e.g., "lstm", "tsmixer")
+        horizons: List of forecast horizons to analyze (e.g., [1, 5, 10])
         metric: Performance metric to plot (e.g., "NSE", "RMSE")
+        variants: List of variants to include (auto-detected if None)
+        colors: Dictionary mapping horizon to color (default colors if None)
         figsize: Figure size as (width, height)
-        add_trendline: Whether to add a linear trendline with R-squared statistics
+        debug: Whether to show gauge_id labels on scatter points
 
     Returns:
         Tuple of (figure, axes) objects
 
     Raises:
-        ValueError: If model_name not found in results, or if required data is missing
+        ValueError: If architecture not found, or if required data is missing
     """
 
-    # Input validation - check if model exists
-    if model_name not in results:
-        available_models = list(results.keys())
-        raise ValueError(f"Model '{model_name}' not found in results. Available models: {available_models}")
+    # Parse model names to extract variants for the specified architecture
+    model_data = {}
+    for model_name, model_result in results.items():
+        if "_" not in model_name:
+            continue
 
-    # Extract model results
-    model_results = results[model_name]
+        parts = model_name.split("_", 1)
+        arch = parts[0]
+        variant = parts[1]
 
-    # Check for required data structures
-    if "predictions_df" not in model_results:
-        raise ValueError(f"No predictions_df found for model '{model_name}'")
-    if "metrics_by_gauge" not in model_results:
-        raise ValueError(f"No metrics_by_gauge found for model '{model_name}'")
+        if arch == architecture:
+            model_data[variant] = model_result
 
-    predictions_df = model_results["predictions_df"]
-    metrics_by_gauge = model_results["metrics_by_gauge"]
+    # Check if we have any models for this architecture
+    if not model_data:
+        available_architectures = sorted({name.split("_")[0] for name in results if "_" in name})
+        raise ValueError(
+            f"No models found for architecture '{architecture}'. Available architectures: {available_architectures}"
+        )
 
-    # Calculate test period length for each basin at the specific horizon
-    # Filter predictions to only include the specified horizon
-    horizon_filtered_df = predictions_df[predictions_df["horizon"] == horizon]
+    # Auto-detect variants if not provided
+    if variants is None:
+        variants = sorted(model_data.keys())
 
-    # Use pandas groupby for efficient aggregation
-    test_lengths = (
-        horizon_filtered_df.groupby("gauge_id")["observed"].apply(lambda x: x.notna().sum() / 365.25).to_dict()
-    )
+    # Default colors for horizons using tab10 colormap
+    if colors is None:
+        colors = {horizon: plt.cm.tab10(i / len(horizons)) for i, horizon in enumerate(horizons)}
 
-    # Collate plotting data
+    # Define markers for variants (up to 3 variants with distinct markers)
+    variant_markers = ["o", "s", "^"]  # circle, square, triangle
+    markers = {variant: variant_markers[i % len(variant_markers)] for i, variant in enumerate(variants)}
+
+    # Collect plotting data
     plot_data = []
-    for gauge_id, gauge_metrics in metrics_by_gauge.items():
-        # Check if we have both test length and metric data for this gauge
-        if gauge_id not in test_lengths:
+
+    for variant in variants:
+        if variant not in model_data:
             continue
 
-        if horizon not in gauge_metrics or metric not in gauge_metrics[horizon]:
+        model_result = model_data[variant]
+
+        # Check for required data structures
+        if "predictions_df" not in model_result:
+            continue
+        if "metrics_by_gauge" not in model_result:
             continue
 
-        metric_value = gauge_metrics[horizon][metric]
-        test_length = test_lengths[gauge_id]
+        predictions_df = model_result["predictions_df"]
+        metrics_by_gauge = model_result["metrics_by_gauge"]
 
-        # Only include valid (non-NaN) metric values
-        if not np.isnan(metric_value):
-            plot_data.append({"gauge_id": gauge_id, "test_length_years": test_length, "metric_value": metric_value})
+        # Calculate test period length for each (gauge_id, horizon) combination
+        test_lengths = (
+            predictions_df.groupby(["gauge_id", "horizon"])["observed"]
+            .apply(lambda x: x.notna().sum() / 365.25)
+            .to_dict()
+        )
+
+        # Collect data for each horizon
+        for horizon in horizons:
+            for gauge_id, gauge_metrics in metrics_by_gauge.items():
+                # Check if we have both test length and metric data
+                if (gauge_id, horizon) not in test_lengths:
+                    continue
+
+                if horizon not in gauge_metrics or metric not in gauge_metrics[horizon]:
+                    continue
+
+                metric_value = gauge_metrics[horizon][metric]
+                test_length = test_lengths[(gauge_id, horizon)]
+
+                # Only include valid (non-NaN) metric values
+                if not np.isnan(metric_value):
+                    plot_data.append(
+                        {
+                            "gauge_id": gauge_id,
+                            "horizon": horizon,
+                            "variant": variant,
+                            "test_length_years": test_length,
+                            "metric_value": metric_value,
+                        }
+                    )
 
     # Check if we have any valid data to plot
     if not plot_data:
         raise ValueError(
-            f"No valid data found for plotting. Check that gauge IDs match between predictions_df and metrics_by_gauge for horizon {horizon} and metric {metric}"
+            f"No valid data found for plotting architecture '{architecture}' "
+            f"with horizons {horizons} and metric '{metric}'"
         )
 
     # Convert to DataFrame for easier handling
@@ -1013,51 +1055,93 @@ def plot_performance_vs_test_length(
     # Create the plot
     fig, ax = plt.subplots(figsize=figsize)
 
-    # Create scatter plot
-    ax.scatter(
-        plot_df["test_length_years"],
-        plot_df["metric_value"],
-        color="#4682B4",
-        s=80,
-        alpha=0.7,
-        edgecolors="darkblue",
-        linewidth=0.5,
-        label="Basin Performance",
-    )
+    # Create scatter plot grouped by variant and horizon
+    for variant in variants:
+        if variant not in plot_df["variant"].values:
+            continue
 
-    # Add trendline if requested
-    if add_trendline and len(plot_df) > 1:
-        x_values = plot_df["test_length_years"].values
-        y_values = plot_df["metric_value"].values
+        variant_data = plot_df[plot_df["variant"] == variant]
 
-        # Use scipy for cleaner trendline calculation
-        slope, intercept, r_value, p_value, std_err = stats.linregress(x_values, y_values)
-        r_squared = r_value**2
+        for horizon in horizons:
+            horizon_data = variant_data[variant_data["horizon"] == horizon]
 
-        # Plot trendline
-        x_trend = np.linspace(x_values.min(), x_values.max(), 100)
-        y_trend = slope * x_trend + intercept
+            if horizon_data.empty:
+                continue
 
-        ax.plot(
-            x_trend,
-            y_trend,
-            color="red",
-            linestyle="--",
-            linewidth=2,
-            alpha=0.8,
-            label=f"Trend (y={slope:.3f}x + {intercept:.3f}, R²={r_squared:.3f})",
-        )
+            # Create scatter plot for this variant-horizon combination
+            scatter = ax.scatter(
+                horizon_data["test_length_years"],
+                horizon_data["metric_value"],
+                color=colors[horizon],
+                marker=markers[variant],
+                s=80,
+                alpha=0.7,
+                edgecolors="black",
+                linewidth=0.5,
+            )
+
+            # Add debug labels if requested
+            if debug:
+                for _, row in horizon_data.iterrows():
+                    ax.annotate(
+                        row["gauge_id"],
+                        (row["test_length_years"], row["metric_value"]),
+                        xytext=(5, 5),  # Offset in points
+                        textcoords="offset points",
+                        ha="left",
+                        va="bottom",
+                        bbox={
+                            "boxstyle": "round,pad=0.2",
+                            "facecolor": "white",
+                            "alpha": 0.7,
+                            "edgecolor": "none",
+                        },
+                        fontsize=8,
+                    )
 
     # Customize plot aesthetics
     ax.set_xlabel("Length of Test Period (Years)")
     ax.set_ylabel(f"{metric.upper()}")
-    ax.set_title(f"{metric.upper()} vs. Test Period Length for {model_name} at {horizon}-Day Horizon", pad=20)
+    ax.set_title(
+        f"{metric.upper()} vs. Test Period Length for {architecture.upper()} Architecture",
+        pad=20,
+    )
 
     # Add grid
     ax.grid(True, alpha=0.3, linestyle="--")
     ax.set_axisbelow(True)
 
-    # Add legend
-    ax.legend(loc="best", frameon=False, fancybox=True, shadow=False)
+    # Create combined legend with horizons and variants
+    legend_handles = []
+    legend_labels = []
 
+    # Add horizons section
+    for horizon in horizons:
+        legend_handles.append(
+            plt.Line2D([0], [0], marker="o", color="w", markerfacecolor=colors[horizon], markersize=8)
+        )
+        legend_labels.append(f"{horizon}-day")
+
+    # Add separator line (invisible)
+    legend_handles.append(plt.Line2D([0], [0], color="w", alpha=0))
+    legend_labels.append("")
+
+    # Add variants section
+    for variant in variants:
+        legend_handles.append(
+            plt.Line2D([0], [0], marker=markers[variant], color="w", markerfacecolor="gray", markersize=8)
+        )
+        legend_labels.append(variant.capitalize())
+
+    # Create single combined legend
+    ax.legend(
+        handles=legend_handles,
+        labels=legend_labels,
+        title="Horizons & Variants",
+        loc="center left",
+        bbox_to_anchor=(1.02, 0.5),
+        frameon=True,
+    )
+
+    plt.tight_layout()
     return fig, ax
