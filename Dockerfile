@@ -24,5 +24,30 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 RUN git config --global user.name "CooperBigFoot" && \
     git config --global user.email "nlazaro@student.ethz.ch"
 
-# Keep the default RunPod startup command
-CMD ["/start.sh"]
+# Install and configure SSH daemon
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-server && \
+    mkdir -p /var/run/sshd && \
+    mkdir -p /root/.ssh && \
+    chmod 700 /root/.ssh && \
+    # Configure SSH daemon
+    sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config && \
+    sed -i 's/#PubkeyAuthentication yes/PubkeyAuthentication yes/' /etc/ssh/sshd_config && \
+    sed -i 's/#AuthorizedKeysFile/AuthorizedKeysFile/' /etc/ssh/sshd_config && \
+    # Clean up
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# Expose SSH port
+EXPOSE 22
+
+# Create startup script that starts SSH daemon and then the default RunPod command
+RUN echo '#!/bin/bash\n\
+    # Start SSH daemon\n\
+    service ssh start\n\
+    # Run the original RunPod startup command\n\
+    exec /start.sh "$@"' > /startup.sh && \
+    chmod +x /startup.sh
+
+# Use the new startup script
+CMD ["/startup.sh"]
