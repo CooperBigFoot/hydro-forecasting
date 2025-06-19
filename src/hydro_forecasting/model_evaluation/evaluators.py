@@ -231,7 +231,7 @@ class TSForecastEvaluator:
             return {}
 
         try:
-            with open(metadata_file, "r") as f:
+            with open(metadata_file) as f:
                 metadata = json.load(f)
                 return metadata.get("cached_models", {})
         except Exception as e:
@@ -263,7 +263,7 @@ class TSForecastEvaluator:
         if not metrics_file.exists():
             raise FileNotFoundError(f"Metrics file not found: {metrics_file}")
 
-        with open(metrics_file, "r") as f:
+        with open(metrics_file) as f:
             metrics_by_gauge = json.load(f)
 
         # Convert string keys back to integers for horizons
@@ -361,7 +361,7 @@ class TSForecastEvaluator:
         # Load existing metadata or create new
         if metadata_file.exists():
             try:
-                with open(metadata_file, "r") as f:
+                with open(metadata_file) as f:
                     metadata = json.load(f)
             except Exception:
                 metadata = {}

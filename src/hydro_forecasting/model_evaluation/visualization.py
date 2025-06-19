@@ -6,6 +6,60 @@ import numpy as np
 import pandas as pd
 
 
+def generate_brightness_gradient(hex_color: str, count: int) -> list[str]:
+    """
+    Generate a list of colors with increasing brightness from a base hex color.
+
+    Args:
+        hex_color: Base hex color code (e.g., '#FF5733' or 'FF5733').
+        count: Number of colors to generate in the gradient.
+
+    Returns:
+        List of hex color codes, starting with the original color and
+        progressively getting brighter.
+
+    Raises:
+        ValueError: If hex_color is invalid or count is less than 1.
+    """
+    if count < 1:
+        raise ValueError("Count must be at least 1")
+
+    # Remove '#' if present and validate hex color
+    hex_color = hex_color.lstrip("#")
+    if len(hex_color) != 6 or not all(c in "0123456789ABCDEFabcdef" for c in hex_color):
+        raise ValueError(f"Invalid hex color: {hex_color}")
+
+    # Convert hex to RGB
+    r = int(hex_color[0:2], 16)
+    g = int(hex_color[2:4], 16)
+    b = int(hex_color[4:6], 16)
+
+    colors = []
+
+    for i in range(count):
+        if i == 0:
+            # First element is the original color
+            colors.append(f"#{hex_color.upper()}")
+        else:
+            brightness_factor = (i / (count - 1)) * 0.7 if count > 1 else 0
+
+            # Brighten by interpolating towards white (255, 255, 255)
+            new_r = int(r + (255 - r) * brightness_factor)
+            new_g = int(g + (255 - g) * brightness_factor)
+            new_b = int(b + (255 - b) * brightness_factor)
+
+            # Ensure values stay within 0-255 range
+            new_r = min(255, max(0, new_r))
+            new_g = min(255, max(0, new_g))
+            new_b = min(255, max(0, new_b))
+
+            # Convert back to hex
+            hex_result = f"#{new_r:02X}{new_g:02X}{new_b:02X}"
+            colors.append(hex_result)
+
+    return colors
+
+
 def plot_horizon_performance_bars(
     results: dict[str, Any],
     horizon: int,
@@ -489,6 +543,14 @@ def plot_model_cdf_grid(
     line_styles = ["-", "--", "-.", ":", (0, (3, 1, 1, 1))]  # solid, dashed, dashdot, dotted, densely dashdotdotted
     variant_styles = {variant: line_styles[i % len(line_styles)] for i, variant in enumerate(variants)}
 
+    # Generate color gradients for each architecture
+    arch_gradients = {}
+    for arch in architectures:
+        arch_gradients[arch] = generate_brightness_gradient(colors[arch], len(variants))
+
+    # Create mapping from variant to gradient index
+    variant_to_index = {variant: i for i, variant in enumerate(variants)}
+
     # Define x-axis limits for each horizon
     horizon_xlims = {1: (0.5, 1.0), 5: (0.5, 1.0), 10: (0.5, 1.0), 15: (0.5, 1.0), 20: (0.5, 1.0), 30: (0.5, 1.0)}
 
@@ -502,9 +564,6 @@ def plot_model_cdf_grid(
         axes = axes.reshape(1, -1)
     elif len(architectures) == 1:
         axes = axes.reshape(-1, 1)
-
-    # Track median values for legend
-    median_lines_added = False
 
     # Loop through each row (horizon)
     for i, horizon in enumerate(horizons):
@@ -546,12 +605,16 @@ def plot_model_cdf_grid(
                     # Calculate cumulative probabilities
                     prob = np.arange(1, len(metric_values) + 1) / len(metric_values)
 
+                    # Get color from gradient
+                    variant_index = variant_to_index[variant]
+                    variant_color = arch_gradients[arch][variant_index]
+
                     # Plot CDF curve
                     ax.plot(
                         metric_values,
                         prob,
                         label=variant.capitalize(),
-                        color=colors[arch],
+                        color=variant_color,
                         linestyle=variant_styles[variant],
                         linewidth=1.8,
                     )
@@ -559,7 +622,7 @@ def plot_model_cdf_grid(
                     # Calculate and plot median
                     median_val = np.median(metric_values)
                     ax.axvline(
-                        x=median_val, color=colors[arch], linestyle=variant_styles[variant], linewidth=1.5, alpha=0.7
+                        x=median_val, color=variant_color, linestyle=variant_styles[variant], linewidth=1.5, alpha=0.7
                     )
 
             # Set standardized x-axis limits based on horizon
@@ -586,16 +649,26 @@ def plot_model_cdf_grid(
             # Set y-axis to show values from 0 to 1
             ax.set_ylim(0, 1)
 
-    # Create legend with variants (line styles)
+    # Create legend with variants (line styles and gradient colors)
     variant_handles = []
     variant_labels = []
 
-    for variant in variants:
-        variant_handles.append(plt.Line2D([0], [0], color="black", linestyle=variant_styles[variant], linewidth=1.8))
+    # Use sample gradient colors for legend (using first architecture's gradient)
+    sample_arch = architectures[0] if architectures else None
+    if sample_arch and sample_arch in arch_gradients:
+        sample_gradient = arch_gradients[sample_arch]
+    else:
+        # Fallback to grayscale if no architectures
+        sample_gradient = generate_brightness_gradient("#000000", len(variants))
+
+    for i, variant in enumerate(variants):
+        variant_handles.append(
+            plt.Line2D([0], [0], color=sample_gradient[i], linestyle=variant_styles[variant], linewidth=1.8)
+        )
         variant_labels.append(variant.capitalize())
 
     # Add median line to legend
-    variant_handles.append(plt.Line2D([0], [0], color="black", linestyle="-", linewidth=1.5, alpha=0.5))
+    variant_handles.append(plt.Line2D([0], [0], color="gray", linestyle="-", linewidth=1.5, alpha=0.7))
     variant_labels.append("Median")
 
     # Add legend
@@ -613,28 +686,40 @@ def plot_model_cdf_grid(
 
 def plot_horizon_performance_boxplots(
     results: dict[str, Any],
-    horizon: int,
+    horizons: list[int],
     metric: str = "NSE",
     architectures: list[str] | None = None,
     variants: list[str] | None = None,
     colors: dict[str, str] | None = None,
-    dummy_model: str | None = None,
-    title: str | None = None,
+    variant_mapping: dict[str, str] | None = None,
     figsize: tuple[int, int] = (12, 6),
+    title: str | None = None,
+    show_median_labels: bool = True,
+    individual_points: bool = False,
+    dummy_model: str | None = None,
 ) -> tuple[plt.Figure, plt.Axes]:
     """
-    Create a boxplot chart showing model performance for a specific horizon.
+    Create a boxplot showing model performance across multiple forecast horizons.
+
+    This function creates a plot where:
+    - X-axis: Forecast horizons (1, 5, 10, etc.)
+    - Y-axis: Performance metric values
+    - Groups: Different model variants (benchmark, pretrained, finetuned)
+    - Colors: Different architectures (LSTM, GRU, etc.) with variant-specific brightness
 
     Args:
         results: Dictionary from TSForecastEvaluator with model results
-        horizon: Forecast horizon to plot (e.g., 5, 10)
+        horizons: List of forecast horizons to plot (e.g., [1, 5, 10])
         metric: Performance metric to plot (e.g., "NSE", "RMSE")
         architectures: List of architectures to include (auto-detected if None)
         variants: List of variants to include (auto-detected if None)
-        colors: Dictionary mapping architecture to color (default colors if None)
-        dummy_model: Name of dummy/baseline model to show as boxplot (optional)
-        title: Plot title (auto-generated if None)
+        colors: Dictionary mapping architecture to base color (default colors if None)
+        variant_mapping: Custom display names for variants {"benchmark": "Benchmark Models"}
         figsize: Figure size as (width, height)
+        title: Plot title (auto-generated if None)
+        show_median_labels: Whether to show median values as text on boxes
+        individual_points: Whether to overlay individual basin points
+        dummy_model: Name of dummy/baseline model to show as boxplot (optional)
 
     Returns:
         Tuple of (figure, axes) objects
@@ -642,7 +727,6 @@ def plot_horizon_performance_boxplots(
 
     # Parse model names to extract architectures and variants
     model_data = {}
-    # FIX: Renamed loop variable from 'results' to 'model_result' to avoid shadowing
     for model_name, model_result in results.items():
         if "_" not in model_name:
             continue
@@ -666,129 +750,266 @@ def plot_horizon_performance_boxplots(
         default_colors = ["#4682B4", "#CD5C5C", "#009E73", "#9370DB", "#FF8C00", "#8B4513"]
         colors = {arch: default_colors[i % len(default_colors)] for i, arch in enumerate(architectures)}
 
-    # Extract performance data
+    # Default variant mapping
+    if variant_mapping is None:
+        variant_mapping = {variant: variant.capitalize() for variant in variants}
+
+    # Extract performance data across all horizons
     performance_data = {}
     for arch in architectures:
         performance_data[arch] = {}
         for variant in variants:
+            performance_data[arch][variant] = {}
             if arch in model_data and variant in model_data[arch]:
                 metrics_by_gauge = model_data[arch][variant]["metrics_by_gauge"]
 
-                # Extract all metric values for this horizon across all basins
-                values = []
-                for basin_data in metrics_by_gauge.values():
-                    if horizon in basin_data and metric in basin_data[horizon]:
-                        value = basin_data[horizon][metric]
-                        if not np.isnan(value):
-                            values.append(value)
+                # Extract metric values for each horizon across all basins
+                for horizon in horizons:
+                    values = []
+                    for basin_data in metrics_by_gauge.values():
+                        if horizon in basin_data and metric in basin_data[horizon]:
+                            value = basin_data[horizon][metric]
+                            if not np.isnan(value):
+                                values.append(value)
 
-                if values:
-                    performance_data[arch][variant] = values
+                    if values:
+                        performance_data[arch][variant][horizon] = values
 
-    # Create the plot
-    fig, ax = plt.subplots(figsize=figsize)
-
-    # Prepare data for boxplots
-    boxplot_data = []
-    boxplot_labels = []
-    boxplot_colors = []
-    box_positions = []
-
-    current_position = 1
-
-    # Add dummy model boxplot first if specified
+    # Extract dummy model data if specified
+    dummy_data = {}
     if dummy_model is not None and dummy_model in results:
         dummy_results = results[dummy_model]
         dummy_metrics_by_gauge = dummy_results["metrics_by_gauge"]
 
-        # Extract performance values for the dummy model
-        dummy_values = []
-        for basin_data in dummy_metrics_by_gauge.values():
-            if horizon in basin_data and metric in basin_data[horizon]:
-                value = basin_data[horizon][metric]
-                if not np.isnan(value):
-                    dummy_values.append(value)
+        for horizon in horizons:
+            dummy_values = []
+            for basin_data in dummy_metrics_by_gauge.values():
+                if horizon in basin_data and metric in basin_data[horizon]:
+                    value = basin_data[horizon][metric]
+                    if not np.isnan(value):
+                        dummy_values.append(value)
 
-        if dummy_values:
-            boxplot_data.append(dummy_values)
-            boxplot_labels.append("Dummy")
-            boxplot_colors.append("lightgray")
-            box_positions.append(current_position)
-            current_position += 1.5  # Add gap after dummy model
+            if dummy_values:
+                dummy_data[horizon] = dummy_values
 
-    # Add model boxplots grouped by architecture and variant
-    n_variants = len(variants)
-    for arch_idx, arch in enumerate(architectures):
-        arch_start_position = current_position
+    # Create the plot
+    fig, ax = plt.subplots(figsize=figsize)
 
-        for variant_idx, variant in enumerate(variants):
+    # Prepare data for seaborn-style grouped boxplots
+    plot_data = []
+
+    # Add dummy model data
+    if dummy_data:
+        for horizon in horizons:
+            if horizon in dummy_data:
+                for value in dummy_data[horizon]:
+                    plot_data.append(
+                        {"horizon": horizon, "architecture": "Dummy", "variant": "baseline", "value": value}
+                    )
+
+    # Add model data
+    for arch in architectures:
+        for variant in variants:
             if arch in performance_data and variant in performance_data[arch]:
-                boxplot_data.append(performance_data[arch][variant])
-                boxplot_labels.append(f"{arch.upper()}\n{variant.capitalize()}")
-                boxplot_colors.append(colors[arch])
-                box_positions.append(current_position)
-                current_position += 1
+                for horizon in horizons:
+                    if horizon in performance_data[arch][variant]:
+                        for value in performance_data[arch][variant][horizon]:
+                            plot_data.append(
+                                {"horizon": horizon, "architecture": arch, "variant": variant, "value": value}
+                            )
 
-        # Add gap between architectures
-        if arch_idx < len(architectures) - 1:
-            current_position += 0.5
+    # Create DataFrame for plotting
+    df = pd.DataFrame(plot_data)
+
+    if df.empty:
+        # Handle empty data case
+        ax.text(
+            0.5, 0.5, "No data available", ha="center", va="center", transform=ax.transAxes, fontsize=14, color="gray"
+        )
+        ax.set_xlabel("Forecast Horizon (days)")
+        ax.set_ylabel(f"{metric.upper()} Value")
+        return fig, ax
+
+    # Create color mapping
+    color_map = {}
+
+    # Add dummy color if present
+    if dummy_data:
+        color_map[("Dummy", "baseline")] = "lightgray"
+
+    # Add architecture-variant color combinations
+    for arch in architectures:
+        if arch in performance_data:
+            # Generate brightness gradient for this architecture
+            arch_gradients = generate_brightness_gradient(colors[arch], len(variants))
+
+            for variant_idx, variant in enumerate(variants):
+                if variant in performance_data[arch]:
+                    color_map[(arch, variant)] = arch_gradients[variant_idx]
+
+    # Create custom hue column for color mapping
+    df["hue_key"] = list(zip(df["architecture"], df["variant"], strict=False))
+    df["color"] = df["hue_key"].map(color_map)
+
+    # Calculate positions for grouped boxplots
+    n_models = len([key for key in color_map if key[0] != "Dummy"])
+    n_dummy = 1 if dummy_data else 0
+    total_models = n_models + n_dummy
+
+    # Make boxes wider and adjust spacing
+    if total_models <= 6:
+        box_width = 0.12  # Wider boxes for fewer models
+    elif total_models <= 12:
+        box_width = 0.08  # Medium boxes
+    else:
+        box_width = 0.06  # Narrower boxes for many models
+
+    # Create boxplots manually for better control
+    boxplot_data = []
+    positions = []
+    colors_list = []
+    labels = []
+
+    for h_idx, horizon in enumerate(sorted(horizons)):
+        horizon_data = df[df["horizon"] == horizon]
+
+        # Add dummy model first if present
+        if dummy_data and horizon in dummy_data:
+            dummy_horizon_data = horizon_data[horizon_data["architecture"] == "Dummy"]
+            if not dummy_horizon_data.empty:
+                pos = h_idx - (total_models - 1) * box_width / 2
+                boxplot_data.append(dummy_horizon_data["value"].values)
+                positions.append(pos)
+                colors_list.append("lightgray")
+                labels.append("Dummy")
+
+        # Add architecture-variant combinations
+        model_idx = n_dummy
+        for arch in architectures:
+            for variant in variants:
+                model_data = horizon_data[(horizon_data["architecture"] == arch) & (horizon_data["variant"] == variant)]
+
+                if not model_data.empty:
+                    pos = h_idx + (model_idx - (total_models - 1) / 2) * box_width
+                    boxplot_data.append(model_data["value"].values)
+                    positions.append(pos)
+                    colors_list.append(color_map.get((arch, variant), "gray"))
+                    labels.append(f"{arch}_{variant}")
+                    model_idx += 1
 
     # Create boxplots
     if boxplot_data:
         bp = ax.boxplot(
             boxplot_data,
-            positions=box_positions,
+            positions=positions,
             patch_artist=True,
-            notch=False,
-            widths=0.6,
+            widths=box_width * 0.9,  # Use most of the allocated width
+            showfliers=not individual_points,
         )
 
-        # Customize boxplot colors
-        for patch, color in zip(bp["boxes"], boxplot_colors, strict=False):
+        # Color the boxes
+        for patch, color in zip(bp["boxes"], colors_list, strict=False):
             patch.set_facecolor(color)
-            patch.set_alpha(0.7)
+            patch.set_alpha(0.8)
             patch.set_edgecolor("black")
-            patch.set_linewidth(1)
+            patch.set_linewidth(0.8)
 
-        # Customize other boxplot elements
+        # Customize other elements
         for element in ["whiskers", "fliers", "medians", "caps"]:
             plt.setp(bp[element], color="black", linewidth=1)
 
+        # Add median labels if requested
+        if show_median_labels and len(boxplot_data) <= 20:  # Don't overcrowd
+            for i, (data, pos) in enumerate(zip(boxplot_data, positions, strict=False)):
+                if len(data) > 0:
+                    median_val = np.median(data)
+                    ax.text(
+                        pos,
+                        median_val + ax.get_ylim()[1] * 0.02,
+                        f"{median_val:.2f}",
+                        ha="center",
+                        va="bottom",
+                        fontsize=8,
+                        fontweight="bold",
+                        color="black",
+                    )
+
+        # Add individual points if requested
+        if individual_points:
+            for i, (data, pos) in enumerate(zip(boxplot_data, positions, strict=False)):
+                if len(data) > 0:
+                    # Add small random jitter for visibility
+                    jitter = np.random.normal(0, box_width * 0.1, len(data))
+                    ax.scatter(
+                        [pos] * len(data) + jitter,
+                        data,
+                        alpha=0.4,
+                        s=15,
+                        color=colors_list[i],
+                        edgecolors="black",
+                        linewidth=0.3,
+                        zorder=10,
+                    )
+
     # Customize plot
+    ax.set_xlabel("Forecast Horizon (days)")
     ax.set_ylabel(f"{metric.upper()} Value")
 
-    # Set x-axis
-    ax.set_xticks(box_positions)
-    ax.set_xticklabels(boxplot_labels)
+    # Set x-axis with proper spacing
+    horizon_positions = list(range(len(horizons)))
+    ax.set_xticks(horizon_positions)
+    ax.set_xticklabels([str(h) for h in sorted(horizons)])
+
+    # Set x-axis limits to provide proper spacing around groups
+    if len(horizons) > 1:
+        ax.set_xlim(-0.5, len(horizons) - 0.5)
+    else:
+        ax.set_xlim(-0.8, 0.8)
+
+    # Set title
+    if title:
+        ax.set_title(title, pad=20)
+    else:
+        ax.set_title(f"{metric.upper()} Performance Across Forecast Horizons", pad=20)
 
     # Add grid
     ax.grid(True, axis="y", alpha=0.3, linestyle="--")
     ax.set_axisbelow(True)
 
-    # Set title if provided
-    if title:
-        ax.set_title(title, pad=20)
-    else:
-        ax.set_title(f"{metric.upper()} Performance at {horizon}-Day Horizon", pad=20)
+    # Create dual legend
+    from matplotlib.patches import Rectangle
 
-    # Create legend for architectures (excluding dummy)
     legend_handles = []
     legend_labels = []
 
+    # Architecture section
     for arch in architectures:
-        legend_handles.append(plt.Rectangle((0, 0), 1, 1, facecolor=colors[arch], alpha=0.7, edgecolor="black"))
+        legend_handles.append(Rectangle((0, 0), 1, 1, facecolor=colors[arch], alpha=0.8, edgecolor="black"))
         legend_labels.append(arch.upper())
 
-    if legend_handles:
-        ax.legend(
-            handles=legend_handles,
-            labels=legend_labels,
-            loc="lower center",
-            bbox_to_anchor=(0.5, -0.15),
-            ncol=len(architectures),
-            frameon=False,
-            title="Architectures",
-        )
+    # Add dummy if present
+    if dummy_data:
+        legend_handles.append(Rectangle((0, 0), 1, 1, facecolor="lightgray", alpha=0.8, edgecolor="black"))
+        legend_labels.append("Dummy Model")
+
+    # Variant section (using sample gradients)
+    sample_gradients = generate_brightness_gradient("#4682B4", len(variants))
+    for idx, variant in enumerate(variants):
+        legend_handles.append(Rectangle((0, 0), 1, 1, facecolor=sample_gradients[idx], alpha=0.8, edgecolor="black"))
+        legend_labels.append(variant_mapping.get(variant, variant.capitalize()))
+
+    # Create legend
+    ax.legend(
+        legend_handles,
+        legend_labels,
+        loc="best",
+        ncol=min(len(legend_handles), 4),
+        frameon=False,
+        fancybox=True,
+        shadow=False,
+        columnspacing=1.5,
+        handletextpad=0.8,
+    )
 
     return fig, ax
 
@@ -927,221 +1148,262 @@ def plot_rolling_forecast(
     return fig, ax
 
 
-def plot_performance_vs_test_length(
+def plot_performance_vs_static_attributes(
     results: dict[str, Any],
-    architecture: str,
+    static_df: pd.DataFrame,
+    static_attributes: list[str],
+    model_names: list[str],
     horizons: list[int],
     metric: str = "NSE",
-    variants: list[str] | None = None,
-    colors: dict[int, str] | None = None,
-    figsize: tuple[int, int] = (12, 7),
-    debug: bool = False,
-) -> tuple[plt.Figure, plt.Axes]:
+    color: str = "#4682B4",
+    alpha: float = 0.6,
+    marker_size: float = 30,
+    figsize: tuple[int, int] = (15, 12),
+    attribute_labels: dict[str, str] | None = None,
+    hue_by_model: dict[str, str] | None = None,
+) -> tuple[plt.Figure, np.ndarray]:
     """
-    Create a scatter plot showing model performance against test period length for multiple horizons and variants.
+    Create a matrix of scatter plots showing model performance vs static catchment attributes.
 
-    This function analyzes the relationship between test period duration and model performance
-    across different basins, horizons, and model variants for a single architecture.
+    Creates a grid where:
+    - Columns = static attributes
+    - Rows = forecast horizons
+    - Each subplot = all models combined
 
     Args:
         results: Dictionary from TSForecastEvaluator with model results
-        architecture: Single architecture to analyze (e.g., "lstm", "tsmixer")
-        horizons: List of forecast horizons to analyze (e.g., [1, 5, 10])
+        static_df: DataFrame with columns ["gauge_id", *static_attributes]
+        static_attributes: List of static attribute column names (max 3 recommended)
+        model_names: List of model names to include
+        horizons: List of forecast horizons to include
         metric: Performance metric to plot (e.g., "NSE", "RMSE")
-        variants: List of variants to include (auto-detected if None)
-        colors: Dictionary mapping horizon to color (default colors if None)
+        color: Color for all scatter points (ignored if hue_by_model is provided)
+        alpha: Transparency of scatter points
+        marker_size: Size of scatter points
         figsize: Figure size as (width, height)
-        debug: Whether to show gauge_id labels on scatter points
+        attribute_labels: Dictionary mapping static attribute names to custom labels (optional)
+        hue_by_model: Dictionary mapping model names to colors for model-based coloring (optional)
 
     Returns:
-        Tuple of (figure, axes) objects
-
-    Raises:
-        ValueError: If architecture not found, or if required data is missing
+        Tuple of (figure, axes_array)
     """
 
-    # Parse model names to extract variants for the specified architecture
-    model_data = {}
-    for model_name, model_result in results.items():
-        if "_" not in model_name:
-            continue
+    # Validate inputs
+    missing_attrs = [attr for attr in static_attributes if attr not in static_df.columns]
+    if missing_attrs:
+        raise ValueError(f"Static attributes not found in static_df: {missing_attrs}")
 
-        parts = model_name.split("_", 1)
-        arch = parts[0]
-        variant = parts[1]
+    if len(static_attributes) > 3:
+        print("Warning: More than 3 static attributes may result in crowded plots")
 
-        if arch == architecture:
-            model_data[variant] = model_result
+    # Filter model names to only include those that exist in results
+    available_models = [name for name in model_names if name in results]
+    if not available_models:
+        raise ValueError(f"None of the specified model names found in results. Available: {list(results.keys())}")
 
-    # Check if we have any models for this architecture
-    if not model_data:
-        available_architectures = sorted({name.split("_")[0] for name in results if "_" in name})
-        raise ValueError(
-            f"No models found for architecture '{architecture}'. Available architectures: {available_architectures}"
-        )
+    if len(available_models) < len(model_names):
+        missing_models = [name for name in model_names if name not in results]
+        print(f"Warning: Skipping missing models: {missing_models}")
 
-    # Auto-detect variants if not provided
-    if variants is None:
-        variants = sorted(model_data.keys())
+    # Pre-compute static attribute lookups for faster access
+    static_lookups = {}
+    for attr in static_attributes:
+        static_lookups[attr] = static_df.set_index("gauge_id")[attr].to_dict()
 
-    # Default colors for horizons using tab10 colormap
-    if colors is None:
-        colors = {horizon: plt.cm.tab10(i / len(horizons)) for i, horizon in enumerate(horizons)}
+    # Create figure with subplots
+    n_rows = len(horizons)
+    n_cols = len(static_attributes)
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize)
 
-    # Define markers for variants (up to 3 variants with distinct markers)
-    variant_markers = ["o", "s", "^"]  # circle, square, triangle
-    markers = {variant: variant_markers[i % len(variant_markers)] for i, variant in enumerate(variants)}
+    # Handle single row/column cases
+    if n_rows == 1 and n_cols == 1:
+        axes = np.array([[axes]])
+    elif n_rows == 1:
+        axes = axes.reshape(1, -1)
+    elif n_cols == 1:
+        axes = axes.reshape(-1, 1)
 
-    # Collect plotting data
-    plot_data = []
+    # Collect all data points for each subplot
+    subplot_data = {}
+    for row_idx, horizon in enumerate(horizons):
+        for col_idx, static_attr in enumerate(static_attributes):
+            subplot_data[(row_idx, col_idx)] = {"x": [], "y": [], "models": []}
 
-    for variant in variants:
-        if variant not in model_data:
-            continue
+    # Process each model and collect data points
+    for model_name in available_models:
+        model_results = results[model_name]
 
-        model_result = model_data[variant]
+        if "metrics_by_gauge" in model_results:
+            # FAST PATH: Use pre-computed metrics
+            metrics_by_gauge = model_results["metrics_by_gauge"]
 
-        # Check for required data structures
-        if "predictions_df" not in model_result:
-            continue
-        if "metrics_by_gauge" not in model_result:
-            continue
-
-        predictions_df = model_result["predictions_df"]
-        metrics_by_gauge = model_result["metrics_by_gauge"]
-
-        # Calculate test period length for each (gauge_id, horizon) combination
-        test_lengths = (
-            predictions_df.groupby(["gauge_id", "horizon"])["observed"]
-            .apply(lambda x: x.notna().sum() / 365.25)
-            .to_dict()
-        )
-
-        # Collect data for each horizon
-        for horizon in horizons:
-            for gauge_id, gauge_metrics in metrics_by_gauge.items():
-                # Check if we have both test length and metric data
-                if (gauge_id, horizon) not in test_lengths:
+            for gauge_id, gauge_data in metrics_by_gauge.items():
+                # Check if gauge exists in all static lookups
+                if not all(gauge_id in static_lookups[attr] for attr in static_attributes):
                     continue
 
-                if horizon not in gauge_metrics or metric not in gauge_metrics[horizon]:
-                    continue
+                for row_idx, horizon in enumerate(horizons):
+                    if horizon in gauge_data and metric.lower() in gauge_data[horizon]:
+                        metric_val = gauge_data[horizon][metric.lower()]
 
-                metric_value = gauge_metrics[horizon][metric]
-                test_length = test_lengths[(gauge_id, horizon)]
+                        # Skip NaN values
+                        if not np.isnan(metric_val):
+                            # Add data point to each column (static attribute)
+                            for col_idx, static_attr in enumerate(static_attributes):
+                                static_val = static_lookups[static_attr][gauge_id]
+                                if not np.isnan(static_val):
+                                    subplot_data[(row_idx, col_idx)]["x"].append(static_val)
+                                    subplot_data[(row_idx, col_idx)]["y"].append(metric_val)
+                                    subplot_data[(row_idx, col_idx)]["models"].append(model_name)
 
-                # Only include valid (non-NaN) metric values
-                if not np.isnan(metric_value):
-                    plot_data.append(
-                        {
-                            "gauge_id": gauge_id,
-                            "horizon": horizon,
-                            "variant": variant,
-                            "test_length_years": test_length,
-                            "metric_value": metric_value,
-                        }
-                    )
-
-    # Check if we have any valid data to plot
-    if not plot_data:
-        raise ValueError(
-            f"No valid data found for plotting architecture '{architecture}' "
-            f"with horizons {horizons} and metric '{metric}'"
-        )
-
-    # Convert to DataFrame for easier handling
-    plot_df = pd.DataFrame(plot_data)
-
-    # Create the plot
-    fig, ax = plt.subplots(figsize=figsize)
-
-    # Create scatter plot grouped by variant and horizon
-    for variant in variants:
-        if variant not in plot_df["variant"].values:
-            continue
-
-        variant_data = plot_df[plot_df["variant"] == variant]
-
-        for horizon in horizons:
-            horizon_data = variant_data[variant_data["horizon"] == horizon]
-
-            if horizon_data.empty:
+        else:
+            # SLOW PATH: Calculate metrics on the fly (fallback)
+            if "predictions_df" not in model_results:
                 continue
 
-            # Create scatter plot for this variant-horizon combination
-            scatter = ax.scatter(
-                horizon_data["test_length_years"],
-                horizon_data["metric_value"],
-                color=colors[horizon],
-                marker=markers[variant],
-                s=80,
-                alpha=0.7,
-                edgecolors="black",
-                linewidth=0.5,
+            predictions_df = model_results["predictions_df"]
+
+            # Filter for specified horizons
+            filtered_df = predictions_df[predictions_df["horizon"].isin(horizons)]
+
+            if filtered_df.empty:
+                continue
+
+            # Calculate metrics efficiently
+            for row_idx, horizon in enumerate(horizons):
+                horizon_df = filtered_df[filtered_df["horizon"] == horizon]
+
+                for gauge_id, gauge_df in horizon_df.groupby("gauge_id"):
+                    # Check if gauge exists in all static lookups
+                    if not all(gauge_id in static_lookups[attr] for attr in static_attributes):
+                        continue
+
+                    if not gauge_df.empty:
+                        observed = gauge_df["observed"].values
+                        predicted = gauge_df["predicted"].values
+
+                        # Calculate metric
+                        if metric.lower() == "nse":
+                            from .metrics import calculate_nse
+
+                            metric_val = calculate_nse(predicted, observed)
+                        elif metric.lower() == "rmse":
+                            from .metrics import calculate_rmse
+
+                            metric_val = calculate_rmse(predicted, observed)
+                        elif metric.lower() == "mae":
+                            from .metrics import calculate_mae
+
+                            metric_val = calculate_mae(predicted, observed)
+                        else:
+                            # Default to NSE
+                            from .metrics import calculate_nse
+
+                            metric_val = calculate_nse(predicted, observed)
+
+                        if not np.isnan(metric_val):
+                            # Add data point to each column (static attribute)
+                            for col_idx, static_attr in enumerate(static_attributes):
+                                static_val = static_lookups[static_attr][gauge_id]
+                                if not np.isnan(static_val):
+                                    subplot_data[(row_idx, col_idx)]["x"].append(static_val)
+                                    subplot_data[(row_idx, col_idx)]["y"].append(metric_val)
+                                    subplot_data[(row_idx, col_idx)]["models"].append(model_name)
+
+    # Create scatter plots
+    for row_idx, horizon in enumerate(horizons):
+        for col_idx, static_attr in enumerate(static_attributes):
+            ax = axes[row_idx, col_idx]
+
+            # Get data for this subplot
+            x_data = subplot_data[(row_idx, col_idx)]["x"]
+            y_data = subplot_data[(row_idx, col_idx)]["y"]
+            model_data = subplot_data[(row_idx, col_idx)]["models"]
+
+            if x_data and y_data:
+                if hue_by_model is not None:
+                    # Color by model
+                    colors_for_points = [hue_by_model.get(model, color) for model in model_data]
+                    ax.scatter(
+                        x_data,
+                        y_data,
+                        c=colors_for_points,
+                        s=marker_size,
+                        alpha=alpha,
+                        edgecolors="black",
+                        linewidth=0.3,
+                    )
+                else:
+                    # Use single color
+                    ax.scatter(
+                        x_data,
+                        y_data,
+                        c=color,
+                        s=marker_size,
+                        alpha=alpha,
+                        edgecolors="black",
+                        linewidth=0.3,
+                    )
+            else:
+                # No data message
+                ax.text(
+                    0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes, fontsize=12, color="gray"
+                )
+
+            # Add grid
+            ax.grid(True, alpha=0.3, linestyle="--")
+            ax.set_axisbelow(True)
+
+            # Set labels
+            # Get custom label or use formatted attribute name
+            if attribute_labels and static_attr in attribute_labels:
+                attr_label = attribute_labels[static_attr]
+            else:
+                attr_label = static_attr.replace("_", " ").title()
+
+            # Column headers (static attributes) only on top row
+            if row_idx == 0:
+                ax.set_title(attr_label, pad=10, fontsize=12)
+
+            # Row labels (horizons) only on leftmost column
+            if col_idx == 0:
+                ax.set_ylabel(f"{horizon}-day\n{metric.upper()}", fontsize=11)
+
+            # X-axis labels only on bottom row
+            if row_idx == len(horizons) - 1:
+                ax.set_xlabel(attr_label, fontsize=11)
+
+    # Add legend for models if hue_by_model is provided
+    if hue_by_model is not None:
+        legend_handles = []
+        legend_labels = []
+
+        for model_name in available_models:
+            if model_name in hue_by_model:
+                legend_handles.append(
+                    plt.scatter(
+                        [],
+                        [],
+                        c=hue_by_model[model_name],
+                        s=marker_size,
+                        alpha=alpha,
+                        edgecolors="black",
+                        linewidth=0.3,
+                    )
+                )
+                legend_labels.append(model_name)
+
+        if legend_handles:
+            fig.legend(
+                handles=legend_handles,
+                labels=legend_labels,
+                loc="lower center",
+                bbox_to_anchor=(0.5, -0.08),
+                ncol=min(len(legend_handles), 2),
+                frameon=False,
             )
 
-            # Add debug labels if requested
-            if debug:
-                for _, row in horizon_data.iterrows():
-                    ax.annotate(
-                        row["gauge_id"],
-                        (row["test_length_years"], row["metric_value"]),
-                        xytext=(5, 5),  # Offset in points
-                        textcoords="offset points",
-                        ha="left",
-                        va="bottom",
-                        bbox={
-                            "boxstyle": "round,pad=0.2",
-                            "facecolor": "white",
-                            "alpha": 0.7,
-                            "edgecolor": "none",
-                        },
-                        fontsize=8,
-                    )
-
-    # Customize plot aesthetics
-    ax.set_xlabel("Length of Test Period (Years)")
-    ax.set_ylabel(f"{metric.upper()}")
-    ax.set_title(
-        f"{metric.upper()} vs. Test Period Length for {architecture.upper()} Architecture",
-        pad=20,
-    )
-
-    # Add grid
-    ax.grid(True, alpha=0.3, linestyle="--")
-    ax.set_axisbelow(True)
-
-    # Create combined legend with horizons and variants
-    legend_handles = []
-    legend_labels = []
-
-    # Add horizons section
-    for horizon in horizons:
-        legend_handles.append(
-            plt.Line2D([0], [0], marker="o", color="w", markerfacecolor=colors[horizon], markersize=8)
-        )
-        legend_labels.append(f"{horizon}-day")
-
-    # Add separator line (invisible)
-    legend_handles.append(plt.Line2D([0], [0], color="w", alpha=0))
-    legend_labels.append("")
-
-    # Add variants section
-    for variant in variants:
-        legend_handles.append(
-            plt.Line2D([0], [0], marker=markers[variant], color="w", markerfacecolor="gray", markersize=8)
-        )
-        legend_labels.append(variant.capitalize())
-
-    # Create single combined legend
-    ax.legend(
-        handles=legend_handles,
-        labels=legend_labels,
-        title="Horizons & Variants",
-        loc="center left",
-        bbox_to_anchor=(1.02, 0.5),
-        frameon=True,
-    )
-
+    # Adjust layout
     plt.tight_layout()
-    return fig, ax
+
+    return fig, axes
