@@ -13,6 +13,7 @@ class BaseConfig:
         "future_input_size",
         "learning_rate",
         "group_identifier",
+        "use_rev_in",
     ]
 
     # Model-specific parameters to be defined in subclasses
@@ -27,6 +28,7 @@ class BaseConfig:
         future_input_size: int | None = None,
         learning_rate: float = 1e-5,
         group_identifier: str = "gauge_id",
+        use_rev_in: bool = True,  # Added RevIN parameter with default True
         **kwargs,
     ):
         """Initialize base configuration with standard parameters."""
@@ -38,6 +40,7 @@ class BaseConfig:
         self.future_input_size = future_input_size or max(1, input_size - 1)
         self.learning_rate = learning_rate
         self.group_identifier = group_identifier
+        self.use_rev_in = use_rev_in  # Added RevIN configuration
 
         # Set model-specific parameters
         self._set_model_params(**kwargs)

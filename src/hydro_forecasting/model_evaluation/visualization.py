@@ -856,13 +856,12 @@ def plot_horizon_performance_boxplots(
     n_dummy = 1 if dummy_data else 0
     total_models = n_models + n_dummy
 
-    # Make boxes wider and adjust spacing
     if total_models <= 6:
-        box_width = 0.12  # Wider boxes for fewer models
+        box_width = 0.12
     elif total_models <= 12:
-        box_width = 0.08  # Medium boxes
+        box_width = 0.08
     else:
-        box_width = 0.06  # Narrower boxes for many models
+        box_width = 0.06
 
     # Create boxplots manually for better control
     boxplot_data = []
@@ -993,7 +992,7 @@ def plot_horizon_performance_boxplots(
         legend_labels.append("Dummy Model")
 
     # Variant section (using sample gradients)
-    sample_gradients = generate_brightness_gradient("#4682B4", len(variants))
+    sample_gradients = generate_brightness_gradient("#000000", len(variants))
     for idx, variant in enumerate(variants):
         legend_handles.append(Rectangle((0, 0), 1, 1, facecolor=sample_gradients[idx], alpha=0.8, edgecolor="black"))
         legend_labels.append(variant_mapping.get(variant, variant.capitalize()))
@@ -1002,7 +1001,7 @@ def plot_horizon_performance_boxplots(
     ax.legend(
         legend_handles,
         legend_labels,
-        loc="lower right",
+        loc="lower left",
         ncol=min(len(legend_handles), 4),
         frameon=False,
         fancybox=True,

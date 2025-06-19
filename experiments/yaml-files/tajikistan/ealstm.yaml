@@ -2,6 +2,7 @@ learning_rate: 5.003539310373775e-05
 num_layers: 1
 hidden_size: 191
 dropout: 0.42626307127508617
+use_rev_in: false
 input_len: 264
 input_size: 10
 static_size: 10

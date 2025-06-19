@@ -7,6 +7,7 @@ attn_dropout: 0.2876825123582133
 add_relative_index: false
 context_length_ratio: 0.6308287734792882
 encoder_layers: 3
+use_rev_in: false
 input_len: 185
 input_size: 10
 static_size: 10

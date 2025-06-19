@@ -4,6 +4,7 @@ dropout: 0.12063524130700493
 num_mixing_layers: 9
 static_embedding_size: 14
 fusion_method: add
+use_rev_in: false
 input_len: 127
 input_size: 10
 static_size: 10

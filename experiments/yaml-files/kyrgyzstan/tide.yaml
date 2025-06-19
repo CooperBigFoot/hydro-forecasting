@@ -6,6 +6,7 @@ num_decoder_layers: 1
 decoder_output_size: 8
 temporal_decoder_hidden_size: 64
 use_layer_norm: false
+use_rev_in: false
 input_len: 217
 input_size: 10
 static_size: 10
