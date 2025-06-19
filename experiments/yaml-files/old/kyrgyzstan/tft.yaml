@@ -1,0 +1,16 @@
+learning_rate: 5.116785221358969e-05
+hidden_size: 56
+dropout: 0.022516038129599347
+num_attention_heads: 4
+lstm_layers: 2
+attn_dropout: 0.05396007818823121
+add_relative_index: false
+context_length_ratio: 0.5461626912502242
+encoder_layers: 1
+use_rev_in: false
+input_len: 331
+input_size: 10
+static_size: 10
+future_input_size: 9
+group_identifier: gauge_id
+output_len: 10

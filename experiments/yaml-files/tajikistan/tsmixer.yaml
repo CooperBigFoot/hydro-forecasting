@@ -1,11 +1,10 @@
-learning_rate: 0.0002597298408028594
-hidden_size: 56
-dropout: 0.12063524130700493
-num_mixing_layers: 9
-static_embedding_size: 14
+learning_rate: 0.0005568679271377877
+hidden_size: 118
+dropout: 0.128588508701509
+num_mixing_layers: 11
+static_embedding_size: 9
 fusion_method: add
-use_rev_in: false
-input_len: 127
+input_len: 249
 input_size: 10
 static_size: 10
 future_input_size: 9
