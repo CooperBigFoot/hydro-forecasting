@@ -28,7 +28,7 @@ class BaseConfig:
         future_input_size: int | None = None,
         learning_rate: float = 1e-5,
         group_identifier: str = "gauge_id",
-        use_rev_in: bool = True,  # Added RevIN parameter with default True
+        use_rev_in: bool = False,
         **kwargs,
     ):
         """Initialize base configuration with standard parameters."""

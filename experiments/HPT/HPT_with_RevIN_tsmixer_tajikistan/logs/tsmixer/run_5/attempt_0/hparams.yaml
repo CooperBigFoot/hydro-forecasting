@@ -1,15 +1,15 @@
-input_len: 217
+input_len: 224
 output_len: 10
 input_size: 10
 static_size: 10
 future_input_size: 9
-learning_rate: 5.164652275681007e-06
+learning_rate: 0.0009350698789673861
 group_identifier: gauge_id
-use_rev_in: true
-hidden_size: 81
-dropout: 0.47303949892189956
-static_embedding_size: 15
-num_mixing_layers: 9
+use_rev_in: false
+hidden_size: 83
+dropout: 0.3044474425941901
+static_embedding_size: 18
+num_mixing_layers: 12
 scheduler_patience: 2
 scheduler_factor: 0.5
 fusion_method: add
@@ -19,7 +19,7 @@ region_static_attributes_base_dirs:
   CA: /workspace/CaravanifyParquet/CA/post_processed/attributes/CA
 path_to_preprocessing_output_directory: /workspace/hydro-forecasting/experiments/HPT/data_cache/tajikistan
 batch_size: 2048
-input_length: 217
+input_length: 224
 output_length: 10
 forcing_features:
 - snow_depth_water_equivalent_mean
