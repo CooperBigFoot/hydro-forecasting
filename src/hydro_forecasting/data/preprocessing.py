@@ -31,10 +31,9 @@ from .clean_data import (
 )
 from .config_utils import save_config
 
-logger = logging.getLogger(__name__)  # Added logger
+logger = logging.getLogger(__name__)
 
 
-# --- Keep Existing Dataclasses (ProcessingConfig, ProcessingOutput) ---
 @dataclass
 class ProcessingConfig:
     required_columns: list[str]
@@ -63,12 +62,6 @@ class ProcessingOutput:
     summary_quality_report: SummaryQualityReport
 
 
-# --- Keep Existing Helper Functions ---
-# (split_data, batch_basins, _load_single_basin_lazy, load_basins_timeseries_lazy,
-# write_train_val_test_splits_to_disk, batch_process_time_series_data)
-# Make sure they use Polars and handle Results appropriately as in the provided source.
-
-
 def split_data(df: pl.DataFrame, config: ProcessingConfig) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
     """
     Split data into training, validation, and test sets based on proportions.
@@ -85,20 +78,16 @@ def split_data(df: pl.DataFrame, config: ProcessingConfig) -> tuple[pl.DataFrame
     val_list: list[pl.DataFrame] = []
     test_list: list[pl.DataFrame] = []
 
-    # Ensure preprocessing_config and target keys exist, provide default if needed
     target_cfg = config.preprocessing_config.get("target", {}) if config.preprocessing_config else {}
-    target_col = target_cfg.get("column", "streamflow")  # Default target
+    target_col = target_cfg.get("column", "streamflow")
     group_id = config.group_identifier
 
-    # iterate over each basin
     unique_basins = []
     if group_id in df.columns:
         unique_basins = df.select(pl.col(group_id)).unique().to_series().to_list()
     else:
         logger.warning(f"Group identifier '{group_id}' not found in DataFrame columns during split.")
-        # Decide how to handle this: error, or assume single group?
-        # Assuming single group for now if group_id is missing
-        unique_basins = ["single_group"]  # Placeholder
+        unique_basins = ["single_group"]
         df = df.with_columns(pl.lit("single_group").alias(group_id))
 
     for basin_id in unique_basins:
@@ -176,9 +165,8 @@ def _load_single_basin_lazy(
 
         # Add group identifier and select/sort
         lf = lf.with_columns(pl.lit(gauge_id).alias(group_identifier))
-        # Select only necessary columns including the new group identifier
         select_cols = [group_identifier, "date"] + required_columns
-        select_cols = list(dict.fromkeys(select_cols))  # Remove duplicates
+        select_cols = list(dict.fromkeys(select_cols))
         lf = lf.select(select_cols).sort("date")
 
         return Success(lf)
@@ -201,21 +189,20 @@ def load_basins_timeseries_lazy(
     for gid in gauge_ids:
         result = _load_single_basin_lazy(gid, region_time_series_base_dirs, required_columns, group_identifier)
         if isinstance(result, Failure):
-            return result  # Short-circuit on first error
+            return result
         lazy_frames.append(result.unwrap())
 
     if not lazy_frames:
         return Failure("No basins were successfully loaded.")
 
-    # concatenate and final sort
     combined = pl.concat(lazy_frames, how="vertical").sort([group_identifier, "date"])
     return Success(combined)
 
 
 def write_train_val_test_splits_to_disk(
-    train_df: pl.DataFrame,  # Changed to eager DataFrame
-    val_df: pl.DataFrame,  # Changed to eager DataFrame
-    test_df: pl.DataFrame,  # Changed to eager DataFrame
+    train_df: pl.DataFrame,
+    val_df: pl.DataFrame,
+    test_df: pl.DataFrame,
     output_dir: str | Path,
     group_identifier: str = "gauge_id",
     compression: str = "zstd",
@@ -276,13 +263,13 @@ def batch_process_time_series_data(
     target_pipeline: GroupedPipeline,
 ) -> Result[
     tuple[
-        pl.DataFrame,  # Changed to eager DataFrame
-        pl.DataFrame,  # Changed to eager DataFrame
-        pl.DataFrame,  # Changed to eager DataFrame
+        pl.DataFrame,
+        pl.DataFrame,
+        pl.DataFrame,
         dict[str, GroupedPipeline],
         dict[str, BasinQualityReport],
     ],
-    str,  # Added error type to Result
+    str,
 ]:
     """
     Clean, split, fit on train, and transform time-series data.
@@ -302,59 +289,48 @@ def batch_process_time_series_data(
             - quality_reports: Dictionary of BasinQualityReport objects for basins in this batch.
         Failure containing an error message string.
     """
-    # 1. Clean Data
     clean_result = clean_data(lf, config)
     if isinstance(clean_result, Failure):
         return Failure(f"Data cleaning failed: {clean_result.failure()}")
     cleaned_df, quality_reports = clean_result.unwrap()
 
-    # 2. Identify valid basins after cleaning
     valid_basins = [basin_id for basin_id, report in quality_reports.items() if report.passed_quality_check]
     if not valid_basins:
         return Failure("No valid basins found after quality checks in this batch.")
 
-    # Filter cleaned_df to include only valid basins before splitting
     cleaned_df_valid_basins = cleaned_df.filter(pl.col(config.group_identifier).is_in(valid_basins))
 
     if cleaned_df_valid_basins.height == 0:
         return Failure("Cleaned DataFrame is empty after filtering for valid basins.")
 
-    # 3. Split Data (using eager DataFrame)
     train_df, val_df, test_df = split_data(cleaned_df_valid_basins, config)
 
-    # 4. Fit Pipelines on Training Data (convert to pandas for scikit-learn compatibility)
     if train_df.height == 0:
         logger.warning("Training split is empty for this batch. Cannot fit pipelines.")
-        # Return empty dataframes and indicate no pipelines were fitted for this batch
         return Success((pl.DataFrame(), pl.DataFrame(), pl.DataFrame(), {}, quality_reports))
 
     train_pd_df = train_df.to_pandas()
 
-    # Clone pipelines before fitting to avoid modifying the originals shared across batches
     batch_features_pipeline = clone(features_pipeline)
     batch_target_pipeline = clone(target_pipeline)
 
     fit_result = fit_time_series_pipelines(
         train_pd_df,
-        batch_features_pipeline,  # Use cloned version
-        batch_target_pipeline,  # Use cloned version
+        batch_features_pipeline,
+        batch_target_pipeline,
     )
     if isinstance(fit_result, Failure):
         return Failure(f"Pipeline fitting failed: {fit_result.failure()}")
-    fitted_batch_pipelines = fit_result.unwrap()  # Pipelines fitted *only* on this batch's train data
+    fitted_batch_pipelines = fit_result.unwrap()
 
-    # 5. Transform All Splits (using pandas for compatibility)
-    # Convert other splits to pandas
     val_pd_df = val_df.to_pandas() if val_df.height > 0 else pd.DataFrame()
     test_pd_df = test_df.to_pandas() if test_df.height > 0 else pd.DataFrame()
 
-    # Transform train set
     train_transformed_result = transform_time_series_data(train_pd_df, fitted_batch_pipelines)
     if isinstance(train_transformed_result, Failure):
         return Failure(f"Train transform failed: {train_transformed_result.failure()}")
     train_transformed_pd = train_transformed_result.unwrap()
 
-    # Transform validation set
     val_transformed_pd = pd.DataFrame()
     if not val_pd_df.empty:
         val_transformed_result = transform_time_series_data(val_pd_df, fitted_batch_pipelines)
@@ -362,7 +338,6 @@ def batch_process_time_series_data(
             return Failure(f"Validation transform failed: {val_transformed_result.failure()}")
         val_transformed_pd = val_transformed_result.unwrap()
 
-    # Transform test set
     test_transformed_pd = pd.DataFrame()
     if not test_pd_df.empty:
         test_transformed_result = transform_time_series_data(test_pd_df, fitted_batch_pipelines)
@@ -370,7 +345,6 @@ def batch_process_time_series_data(
             return Failure(f"Test transform failed: {test_transformed_result.failure()}")
         test_transformed_pd = test_transformed_result.unwrap()
 
-    # 6. Convert back to Polars DataFrames (eager)
     final_train_df = pl.from_pandas(train_transformed_pd) if not train_transformed_pd.empty else pl.DataFrame()
     final_val_df = pl.from_pandas(val_transformed_pd) if not val_transformed_pd.empty else pl.DataFrame()
     final_test_df = pl.from_pandas(test_transformed_pd) if not test_transformed_pd.empty else pl.DataFrame()
@@ -386,7 +360,6 @@ def batch_process_time_series_data(
     )
 
 
-# --- Main Processor ---
 def run_hydro_processor(
     region_time_series_base_dirs: dict[str, Path],
     region_static_attributes_base_dirs: dict[str, Path],
@@ -451,7 +424,6 @@ def run_hydro_processor(
             return Failure(f"Failed to save config: {save_result.failure()}")
         logger.info(f"Config saved to {config_path}")
 
-        # --- 1. Process Static Data ---
         static_features_path = run_output_dir / "processed_static_features.parquet"
         fitted_static_path = run_output_dir / "fitted_static_pipeline.joblib"
         static_pipeline_fitted: Pipeline | None = None  # Store the fitted static pipeline
@@ -475,24 +447,22 @@ def run_hydro_processor(
                 logger.info(f"Static features pipeline saved to {fitted_static_path}")
             else:
                 logger.warning(f"Static data processing failed: {static_processing_results.failure()}")
-                static_features_path = None  # Mark as unavailable
+                static_features_path = None
                 fitted_static_path = None
         else:
             logger.info("Skipping static feature processing (not configured or no gauge IDs).")
             static_features_path = None
             fitted_static_path = None
 
-        # --- 2. Batch Process Time Series Data ---
         fitted_ts_pipelines_path = run_output_dir / "fitted_time_series_pipelines.joblib"
 
-        # Initialize main pipelines (cloned from config) to accumulate fitted groups
         main_pipelines: dict[str, GroupedPipeline] = {}
         if "features" in preprocessing_config and "pipeline" in preprocessing_config["features"]:
             main_pipelines["features"] = clone(preprocessing_config["features"]["pipeline"])
-            main_pipelines["features"].fitted_pipelines.clear()  # Ensure it's empty initially
+            main_pipelines["features"].fitted_pipelines.clear()
         if "target" in preprocessing_config and "pipeline" in preprocessing_config["target"]:
             main_pipelines["target"] = clone(preprocessing_config["target"]["pipeline"])
-            main_pipelines["target"].fitted_pipelines.clear()  # Ensure it's empty initially
+            main_pipelines["target"].fitted_pipelines.clear()
 
         if not main_pipelines:
             return Failure("No time series pipelines ('features' or 'target') found in preprocessing_config.")
@@ -526,8 +496,8 @@ def run_hydro_processor(
             batch_result = batch_process_time_series_data(
                 lf,
                 config=config,
-                features_pipeline=main_pipelines["features"],  # Pass the main pipeline instance
-                target_pipeline=main_pipelines["target"],  # Pass the main pipeline instance
+                features_pipeline=main_pipelines["features"],
+                target_pipeline=main_pipelines["target"],
             )
 
             if isinstance(batch_result, Failure):
@@ -582,7 +552,6 @@ def run_hydro_processor(
 
         logger.info(f"Finished processing all time series batches. Attempted {processed_basin_count} basins.")
 
-        # 3. Save the *accumulated* fitted time series pipelines
         if main_pipelines:
             save_results = save_time_series_pipelines(main_pipelines, fitted_ts_pipelines_path)
             if isinstance(save_results, Failure):
@@ -593,18 +562,15 @@ def run_hydro_processor(
             logger.warning("No main time series pipelines were fitted or saved.")
             fitted_ts_pipelines_path = None  # Mark as unavailable
 
-        # 4. Create summary quality report from all collected reports
         summary_result = summarize_quality_reports_from_folder(quality_reports_dir, summary_quality_report_path)
         if isinstance(summary_result, Failure):
             return Failure(f"Failed to create summary report: {summary_result.failure()}")
         summary_report = summary_result.unwrap()
         logger.info(f"Summary quality report saved to {summary_quality_report_path}")
 
-        # 5. Create success marker
         success_marker_path.touch(exist_ok=True)
         logger.info(f"SUCCESS: Preprocessing completed successfully. Output at {run_output_dir}")
 
-        # 6. Return processing output
         output = ProcessingOutput(
             run_output_dir=run_output_dir,
             processed_timeseries_dir=ts_output_dir,
