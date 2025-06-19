@@ -1002,7 +1002,7 @@ def plot_horizon_performance_boxplots(
     ax.legend(
         legend_handles,
         legend_labels,
-        loc="best",
+        loc="lower right",
         ncol=min(len(legend_handles), 4),
         frameon=False,
         fancybox=True,
