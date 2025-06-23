@@ -44,10 +44,20 @@ class UnifiedPipeline(BaseEstimator, TransformerMixin):
         missing_cols = [col for col in self.columns if col not in X.columns]
         if missing_cols:
             raise ValueError(f"Columns not found in data: {missing_cols}")
-
-        # Fit pipeline on all data
-        self.fitted_pipeline = clone(self.pipeline)
-        self.fitted_pipeline.fit(X[self.columns], y)
+        
+        # Handle empty data
+        if len(X) == 0 and len(self.columns) > 0:
+            # Create dummy data with one row of zeros for fitting
+            dummy_data = pd.DataFrame(0, index=[0], columns=self.columns)
+            self.fitted_pipeline = clone(self.pipeline)
+            self.fitted_pipeline.fit(dummy_data, None)
+        elif len(self.columns) == 0:
+            # Handle empty columns list - skip pipeline fitting entirely
+            self.fitted_pipeline = clone(self.pipeline)
+        else:
+            # Normal case
+            self.fitted_pipeline = clone(self.pipeline)
+            self.fitted_pipeline.fit(X[self.columns], y)
 
         return self
 
@@ -72,6 +82,11 @@ class UnifiedPipeline(BaseEstimator, TransformerMixin):
             raise ValueError(f"Columns not found in data: {missing_cols}")
 
         X_transformed = X.copy()
+        
+        # If no columns to transform, return original data
+        if len(self.columns) == 0:
+            return X_transformed
+            
         transformed_data = self.fitted_pipeline.transform(X[self.columns])
 
         # Handle the case where pipeline returns ndarray instead of DataFrame
@@ -108,6 +123,11 @@ class UnifiedPipeline(BaseEstimator, TransformerMixin):
             raise ValueError(f"Columns not found in data: {missing_cols}")
 
         X_inverse = X.copy()
+        
+        # If no columns to transform, return original data
+        if len(self.columns) == 0:
+            return X_inverse
+            
         inverse_data = self.fitted_pipeline.inverse_transform(X[self.columns])
 
         # Handle the case where pipeline returns ndarray instead of DataFrame

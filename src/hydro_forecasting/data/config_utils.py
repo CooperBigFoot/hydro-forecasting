@@ -80,7 +80,7 @@ def generate_run_uuid(config: dict[str, Any]) -> str:
     return str(run_uuid)
 
 
-def _default_serializer(obj: Any) -> str:
+def _default_serializer(obj: Any) -> Any:
     """
     Custom JSON serializer to handle non-standard JSON types.
 
@@ -88,7 +88,7 @@ def _default_serializer(obj: Any) -> str:
         obj: Object to serialize to JSON
 
     Returns:
-        String representation of the object
+        JSON-serializable representation of the object
 
     Raises:
         TypeError: If the object cannot be serialized
@@ -98,6 +98,13 @@ def _default_serializer(obj: Any) -> str:
     elif hasattr(obj, "isoformat"):
         # handles datetime, date, time, and numpy scalar types
         return obj.isoformat()
+    elif hasattr(obj, 'steps') or (hasattr(obj, 'pipeline') and hasattr(obj.pipeline, 'steps')):
+        # Handle pipeline objects (sklearn Pipeline, GroupedPipeline, UnifiedPipeline)
+        return {
+            'type': obj.__class__.__name__,
+            'transformers': extract_pipeline_metadata(obj),
+            'columns': getattr(obj, 'columns', None)
+        }
     else:
         raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 

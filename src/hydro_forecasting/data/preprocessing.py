@@ -897,6 +897,9 @@ def run_hydro_processor(
 
         return output
 
+    except (ConfigurationError, FileOperationError, DataQualityError) as e:
+        # Re-raise our custom exceptions without wrapping
+        raise
     except Exception as e:
         import traceback
 
