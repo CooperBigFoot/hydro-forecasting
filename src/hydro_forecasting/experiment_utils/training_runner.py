@@ -21,7 +21,8 @@ ModelType = TypeVar("ModelType", bound=pl.LightningModule)
 
 ModelProviderFn = Callable[[str, dict[str, Any]], ModelType]
 
-torch.set_float32_matmul_precision('medium')
+torch.set_float32_matmul_precision("medium")
+
 
 def _setup_datamodule_core(
     base_datamodule_config: dict[str, Any],

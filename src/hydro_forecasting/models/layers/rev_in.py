@@ -1,5 +1,5 @@
 """
-Adapted RevIN (Reversible Instance Normalization) implementation for hydrological time series forecasting. 
+Adapted RevIN (Reversible Instance Normalization) implementation for hydrological time series forecasting.
 Original implementation: https://github.com/ts-kim/RevIN/blob/master/RevIN.py#L4
 
 Based on the paper: "Reversible Instance Normalization for Accurate Time-Series Forecasting

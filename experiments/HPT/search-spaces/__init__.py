@@ -11,13 +11,13 @@ from .tsmixer_space import get_tsmixer_space
 def get_hyperparameter_space(model_type: str) -> dict[str, dict[str, Any]]:
     """
     Get the hyperparameter search space for the specified model type.
-    
+
     Args:
         model_type: Type of model ('tide', 'tsmixer', 'ealstm', 'tft')
-        
+
     Returns:
         Dictionary defining the hyperparameter search space
-        
+
     Raises:
         ValueError: If the model type is not supported
     """
