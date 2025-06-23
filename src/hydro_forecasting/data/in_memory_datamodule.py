@@ -23,8 +23,10 @@ from ..preprocessing.static_preprocessing import (
     load_static_pipeline,
 )
 from ..preprocessing.time_series_preprocessing import load_time_series_pipelines
+from ..preprocessing.unified import UnifiedPipeline
 from .clean_data import SummaryQualityReport
 from .config_utils import (
+    extract_pipeline_metadata,
     extract_relevant_config,
     generate_run_uuid,
     load_config,
@@ -127,7 +129,7 @@ class HydroInMemoryDataModule(LightningDataModule):
             ValueError: If configuration validation fails.
         """
         super().__init__()
-        self.preprocessing_configs = preprocessing_configs
+        self.preprocessing_configs = self._adapt_preprocessing_configs(preprocessing_configs)
 
         effective_validation_chunk_size = validation_chunk_size if validation_chunk_size is not None else chunk_size * 2
 
@@ -172,7 +174,7 @@ class HydroInMemoryDataModule(LightningDataModule):
         self._prepare_data_has_run: bool = False
         self.run_uuid: str | None = None
         self.summary_quality_report: SummaryQualityReport | None = None
-        self.fitted_pipelines: dict[str, Pipeline | GroupedPipeline] = {}
+        self.fitted_pipelines: dict[str, Pipeline | GroupedPipeline | UnifiedPipeline] = {}
         self.processed_time_series_dir: Path | None = None
         self.processed_static_attributes_path: Path | None = None
         self.static_data_cache: dict[str, torch.Tensor] = {}
@@ -198,6 +200,58 @@ class HydroInMemoryDataModule(LightningDataModule):
 
         self.future_features_ordered = sorted(set(self.hparams.forcing_features))
 
+    def _adapt_preprocessing_configs(
+        self, preprocessing_configs: dict[str, dict[str, Any]]
+    ) -> dict[str, dict[str, Any]]:
+        """
+        Adapt preprocessing configs to ensure they follow the new schema with strategy support.
+
+        Args:
+            preprocessing_configs: Original preprocessing configuration
+
+        Returns:
+            Adapted preprocessing configuration with strategy keys
+        """
+        adapted_configs = {}
+
+        for pipeline_name, config in preprocessing_configs.items():
+            if isinstance(config, dict):
+                # Check if config already has the new schema
+                if "strategy" in config:
+                    # Already in new format, validate it
+                    if config["strategy"] not in ["per_group", "unified"]:
+                        raise ConfigurationError(
+                            f"Invalid strategy '{config['strategy']}' for {pipeline_name}. Must be 'per_group' or 'unified'"
+                        )
+                    adapted_configs[pipeline_name] = config
+                else:
+                    # Old format, adapt it based on pipeline type
+                    pipeline = config.get("pipeline")
+                    if pipeline is None:
+                        raise ConfigurationError(
+                            f"Pipeline configuration for '{pipeline_name}' must include 'pipeline' key"
+                        )
+
+                    # Infer strategy from pipeline type
+                    if isinstance(pipeline, GroupedPipeline):
+                        strategy = "per_group"
+                    elif isinstance(pipeline, UnifiedPipeline):
+                        strategy = "unified"
+                    elif isinstance(pipeline, Pipeline):
+                        # sklearn Pipeline could be either - default to unified for static features
+                        strategy = "unified" if pipeline_name == "static_features" else "per_group"
+                    else:
+                        raise ConfigurationError(f"Unknown pipeline type for '{pipeline_name}': {type(pipeline)}")
+
+                    # Create adapted config with strategy
+                    adapted_config = config.copy()
+                    adapted_config["strategy"] = strategy
+                    adapted_configs[pipeline_name] = adapted_config
+            else:
+                raise ConfigurationError(f"Invalid configuration format for '{pipeline_name}'")
+
+        return adapted_configs
+
         # remove temp attribute used for validation
         if hasattr(self, "validation_chunk_size_for_validation_only"):
             delattr(self, "validation_chunk_size_for_validation_only")
@@ -217,10 +271,21 @@ class HydroInMemoryDataModule(LightningDataModule):
         current_config_dict = extract_relevant_config(self)
 
         if self.preprocessing_configs:
-            current_config_dict["preprocessing_configs"] = {
-                k: {kk: vv.__class__.__name__ if hasattr(vv, "__class__") else str(vv) for kk, vv in v.items()}
-                for k, v in self.preprocessing_configs.items()
-            }
+            serialized_configs = {}
+            for k, v in self.preprocessing_configs.items():
+                serialized_config = {}
+                for kk, vv in v.items():
+                    if kk == "pipeline":
+                        # Extract pipeline metadata instead of full serialization
+                        serialized_config["pipeline_steps"] = extract_pipeline_metadata(vv)
+                    elif kk == "columns" and isinstance(vv, list):
+                        # Preserve column lists as-is
+                        serialized_config[kk] = vv
+                    else:
+                        # For other values (strategy, etc.), convert to string
+                        serialized_config[kk] = str(vv)
+                serialized_configs[k] = serialized_config
+            current_config_dict["preprocessing_configs"] = serialized_configs
         else:
             current_config_dict["preprocessing_configs"] = None
 
@@ -783,10 +848,19 @@ class HydroInMemoryDataModule(LightningDataModule):
             current_config_dict = extract_relevant_config(self)
             # Critical: Ensure current_config_dict also serializes preprocessing_configs by name
             if self.preprocessing_configs:
-                current_config_dict["preprocessing_configs"] = {
-                    k: {kk: vv.__class__.__name__ if hasattr(vv, "__class__") else str(vv) for kk, vv in v.items()}
-                    for k, v in self.preprocessing_configs.items()
-                }
+                serialized_configs = {}
+                for k, v in self.preprocessing_configs.items():
+                    serialized_config = {}
+                    for kk, vv in v.items():
+                        if kk == "pipeline" and hasattr(vv, "get_params"):
+                            # Serialize pipeline using get_params for accurate comparison
+                            serialized_config[kk] = {"class": vv.__class__.__name__, "params": vv.get_params(deep=True)}
+                        elif hasattr(vv, "__class__"):
+                            serialized_config[kk] = vv.__class__.__name__
+                        else:
+                            serialized_config[kk] = str(vv)
+                    serialized_configs[k] = serialized_config
+                current_config_dict["preprocessing_configs"] = serialized_configs
             else:
                 current_config_dict["preprocessing_configs"] = None
 
@@ -814,16 +888,50 @@ class HydroInMemoryDataModule(LightningDataModule):
                     }
 
                 if key == "preprocessing_configs" and isinstance(current_val, dict) and isinstance(loaded_val, dict):
-                    current_pc_norm = (
-                        {k_pc: tuple(sorted(v_pc.items())) for k_pc, v_pc in current_val.items()}
-                        if current_val
-                        else None
-                    )
-                    loaded_pc_norm = (
-                        {k_pc: tuple(sorted(v_pc.items())) for k_pc, v_pc in loaded_val.items()} if loaded_val else None
-                    )
-                    if current_pc_norm != loaded_pc_norm:
-                        mismatched_keys.append(f"{key} (preprocessing_configs structure mismatch)")
+                    # Deep comparison of preprocessing configs including pipeline params
+                    configs_match = True
+
+                    # Check if both have same pipeline names
+                    if set(current_val.keys()) != set(loaded_val.keys()):
+                        configs_match = False
+                    else:
+                        # Compare each pipeline config
+                        for pipeline_name in current_val.keys():
+                            current_pipeline_config = current_val[pipeline_name]
+                            loaded_pipeline_config = loaded_val[pipeline_name]
+
+                            # Compare all non-pipeline keys
+                            for config_key in set(current_pipeline_config.keys()) | set(loaded_pipeline_config.keys()):
+                                if config_key == "pipeline":
+                                    # Special handling for pipeline comparison
+                                    current_pipeline = current_pipeline_config.get(config_key)
+                                    loaded_pipeline = loaded_pipeline_config.get(config_key)
+
+                                    # Both should be dicts with 'class' and 'params' if serialized correctly
+                                    if isinstance(current_pipeline, dict) and isinstance(loaded_pipeline, dict):
+                                        if current_pipeline.get("class") != loaded_pipeline.get("class"):
+                                            configs_match = False
+                                            break
+                                        # Compare params (deep comparison)
+                                        if current_pipeline.get("params") != loaded_pipeline.get("params"):
+                                            configs_match = False
+                                            break
+                                    elif current_pipeline != loaded_pipeline:
+                                        configs_match = False
+                                        break
+                                else:
+                                    # Compare other config values normally
+                                    if current_pipeline_config.get(config_key) != loaded_pipeline_config.get(
+                                        config_key
+                                    ):
+                                        configs_match = False
+                                        break
+
+                            if not configs_match:
+                                break
+
+                    if not configs_match:
+                        mismatched_keys.append(f"{key} (preprocessing_configs structure or params mismatch)")
 
                 elif loaded_val != current_val:
                     mismatched_keys.append(f"{key} (loaded: {loaded_val}, current: {current_val})")

@@ -66,6 +66,7 @@ class SummaryQualityReport:
 def clean_data(
     lf: pl.LazyFrame,
     config,
+    raise_on_failure: bool = True,
 ) -> tuple[pl.DataFrame, dict[str, BasinQualityReport]]:
     """
     Clean multiple basins in one LazyFrame, using window functions over group_identifier,
@@ -80,6 +81,8 @@ def clean_data(
         lf: Input LazyFrame containing hydrological data.
         config: Configuration object with required_columns, max_imputation_gap_size,
                group_identifier, min_train_years, and train_prop.
+        raise_on_failure: Whether to raise DataQualityError when basins fail quality checks.
+                         If False, returns all results without raising.
 
     Returns:
         Tuple of (cleaned_df, reports) containing the cleaned DataFrame and quality reports.
@@ -270,7 +273,7 @@ def clean_data(
         reports[basin_id] = report
 
     # Check if any basins failed quality checks and raise exception if needed
-    if failed_basins:
+    if failed_basins and raise_on_failure:
         failed_reasons = [f"{basin_id}: {reports[basin_id].failure_reason}" for basin_id in failed_basins]
         raise DataQualityError(f"Quality check failed for {len(failed_basins)} basin(s): {'; '.join(failed_reasons)}")
 

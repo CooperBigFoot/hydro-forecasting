@@ -192,6 +192,29 @@ def extract_transformer_names(
     return transformer_names
 
 
+def extract_pipeline_metadata(pipeline_obj: Any) -> Union[list[str], str]:
+    """
+    Extract just the class names and order from a pipeline.
+    
+    This function extracts metadata from pipeline objects for serialization,
+    replacing full object instances with their class name sequences.
+    
+    Args:
+        pipeline_obj: A pipeline object (sklearn Pipeline, GroupedPipeline, or UnifiedPipeline)
+        
+    Returns:
+        List of transformer class names for pipeline objects, or class name string for others
+    """
+    # Handle sklearn Pipeline
+    if hasattr(pipeline_obj, 'steps'):
+        return [step[1].__class__.__name__ for step in pipeline_obj.steps]
+    # Handle GroupedPipeline or UnifiedPipeline with internal pipeline
+    elif hasattr(pipeline_obj, 'pipeline') and hasattr(pipeline_obj.pipeline, 'steps'):
+        return [step[1].__class__.__name__ for step in pipeline_obj.pipeline.steps]
+    # For any other object, just return its class name
+    return pipeline_obj.__class__.__name__
+
+
 def extract_relevant_config(datamodule: "HydroLazyDataModule") -> dict[str, Any]:
     """
     Extract relevant configuration parameters from a HydroLazyDataModule instance.
