@@ -16,8 +16,8 @@ from returns.result import Success
 from hydro_forecasting.data.in_memory_datamodule import HydroInMemoryDataModule
 from hydro_forecasting.experiment_utils import checkpoint_manager
 from hydro_forecasting.models import model_factory
-from ..exceptions import ConfigurationError, FileOperationError, ModelTrainingError
 
+from ..exceptions import ConfigurationError, FileOperationError, ModelTrainingError
 from .training_runner import _configure_trainer_core, _finalize_model_hyperparameters, _setup_datamodule_core
 
 logger = logging.getLogger(__name__)

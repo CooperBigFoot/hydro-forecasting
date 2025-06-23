@@ -86,7 +86,7 @@ def _determine_attempt_path(base_run_path: Path, override_previous_attempt: bool
     try:
         base_run_path.mkdir(parents=True, exist_ok=True)
     except OSError as e:
-        raise FileOperationError(f"Could not create base run path directory {base_run_path}: {e}")
+        raise FileOperationError(f"Could not create base run path directory {base_run_path}: {e}") from e
 
     latest_attempt_dir = _find_latest_attempt_dir_in_run(base_run_path)
 
@@ -110,7 +110,7 @@ def _determine_attempt_path(base_run_path: Path, override_previous_attempt: bool
         attempt_path.mkdir(parents=True, exist_ok=True)
         return attempt_path
     except OSError as e:
-        raise FileOperationError(f"Could not create attempt directory {attempt_path}: {e}")
+        raise FileOperationError(f"Could not create attempt directory {attempt_path}: {e}") from e
 
 
 def determine_output_run_attempt_path(
@@ -143,9 +143,7 @@ def determine_output_run_attempt_path(
     return _determine_attempt_path(run_path, override_previous_attempts)
 
 
-def determine_log_run_attempt_path(
-    base_model_log_dir: Path, run_index: int, override_previous_attempts: bool
-) -> Path:
+def determine_log_run_attempt_path(base_model_log_dir: Path, run_index: int, override_previous_attempts: bool) -> Path:
     """
     Determines and creates the versioned output path for a specific run and attempt
     for logs.
@@ -264,7 +262,7 @@ def get_checkpoint_path_to_load(
                 )
             return checkpoint_file_path
         except OSError as e:
-            raise FileOperationError(f"Error reading {info_file_path}: {e}")
+            raise FileOperationError(f"Error reading {info_file_path}: {e}") from e
 
     if specific_run_index is None:
         raise ConfigurationError("specific_run_index must be provided if select_overall_best is False.")
@@ -281,7 +279,9 @@ def get_checkpoint_path_to_load(
             raise ConfigurationError("specific_attempt_index must be a non-negative integer.")
         attempt_dir_to_load = run_dir / f"{ATTEMPT_PREFIX}{specific_attempt_index}"
         if not attempt_dir_to_load.is_dir():
-            raise FileOperationError(f"Specific attempt directory not found or is not a directory: {attempt_dir_to_load}")
+            raise FileOperationError(
+                f"Specific attempt directory not found or is not a directory: {attempt_dir_to_load}"
+            )
     else:
         latest_attempt_dir = _find_latest_attempt_dir_in_run(run_dir)
         if not latest_attempt_dir:
@@ -297,9 +297,7 @@ def get_checkpoint_path_to_load(
     return found_ckpt.resolve()
 
 
-def update_overall_best_model_info_file(
-    model_checkpoints_output_dir: Path, best_checkpoint_relative_path: str
-) -> None:
+def update_overall_best_model_info_file(model_checkpoints_output_dir: Path, best_checkpoint_relative_path: str) -> None:
     """
     Writes or overwrites the `overall_best_model_info.txt` file for a model_type.
 
@@ -333,6 +331,8 @@ def update_overall_best_model_info_file(
             f"to point to: {best_checkpoint_relative_path}"
         )
     except OSError as e:
-        raise FileOperationError(f"Could not write to {BEST_MODEL_INFO_FILE} in {model_checkpoints_output_dir}: {e}")
+        raise FileOperationError(
+            f"Could not write to {BEST_MODEL_INFO_FILE} in {model_checkpoints_output_dir}: {e}"
+        ) from e
     except Exception as e:
-        raise FileOperationError(f"An unexpected error occurred while updating {BEST_MODEL_INFO_FILE}: {e}")
+        raise FileOperationError(f"An unexpected error occurred while updating {BEST_MODEL_INFO_FILE}: {e}") from e

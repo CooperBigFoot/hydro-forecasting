@@ -10,9 +10,8 @@ import torch
 from pytorch_lightning.callbacks import EarlyStopping, LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.loggers import TensorBoardLogger
 
-from ..exceptions import ConfigurationError, FileOperationError, DataProcessingError, ModelTrainingError
-
 from ..data.in_memory_datamodule import HydroInMemoryDataModule
+from ..exceptions import ConfigurationError, DataProcessingError, FileOperationError, ModelTrainingError
 from ..experiment_utils import checkpoint_manager
 from ..model_evaluation.hp_from_yaml import hp_from_yaml
 
@@ -33,16 +32,16 @@ def _setup_datamodule_core(
 ) -> HydroInMemoryDataModule:
     """
     Core helper to configure and set up HydroInMemoryDataModule.
-    
+
     Args:
         base_datamodule_config: Base configuration for the datamodule
         hps_for_datamodule: Hyperparameters for the datamodule
         gauge_ids: List of gauge IDs to process
         model_type: Type of model being configured
-        
+
     Returns:
         Configured HydroInMemoryDataModule instance
-        
+
     Raises:
         DataProcessingError: If datamodule setup fails
     """
@@ -90,12 +89,12 @@ def _finalize_model_hyperparameters(
 ) -> dict[str, Any]:
     """
     Enriches model HPs with datamodule-derived dimensions and other common mappings.
-    
+
     Args:
         model_hps: Base model hyperparameters
         datamodule: Configured datamodule instance
         model_type: Type of model being configured
-        
+
     Returns:
         Finalized hyperparameters dictionary with datamodule-derived properties
     """
@@ -135,7 +134,7 @@ def _configure_trainer_core(
 ) -> pl.Trainer:
     """
     Core helper to configure and create a PyTorch Lightning Trainer.
-    
+
     Args:
         training_config: Training configuration dictionary
         callbacks_config: Callbacks configuration dictionary
@@ -146,10 +145,10 @@ def _configure_trainer_core(
         log_dir_for_run: Directory for logs
         model_type_for_paths: Model type for path construction
         run_idx_for_paths: Run index for path construction
-        
+
     Returns:
         Configured PyTorch Lightning Trainer
-        
+
     Raises:
         ConfigurationError: If required path information is missing
         ModelTrainingError: If trainer creation fails
@@ -249,7 +248,7 @@ class ExperimentRunner:
     """
     Central runner class for hydrological model training experiments.
     Refactored to use centralized helper functions and exception-based error handling.
-    
+
     Raises:
         ConfigurationError: For configuration and input validation errors
         FileOperationError: For file operation errors
@@ -269,7 +268,7 @@ class ExperimentRunner:
     ):
         """
         Initialize the ExperimentRunner.
-        
+
         Args:
             output_dir: Directory for experiment outputs
             experiment_name: Name of the experiment
@@ -278,7 +277,7 @@ class ExperimentRunner:
             num_runs: Number of training runs per model
             base_seed: Base seed for reproducibility
             override_previous_attempts: Whether to override previous attempts
-            
+
         Raises:
             Exception: If main experiment directory creation fails
         """
@@ -300,13 +299,13 @@ class ExperimentRunner:
     def _setup_model_directories(self, model_type: str) -> tuple[Path, Path]:
         """
         Set up directories for model checkpoints and logs.
-        
+
         Args:
             model_type: Type of model to create directories for
-            
+
         Returns:
             Tuple of (checkpoints_dir, logs_dir)
-            
+
         Raises:
             Exception: If directory creation fails
         """
@@ -323,14 +322,14 @@ class ExperimentRunner:
     def _get_hps_from_yaml(self, model_type: str, yaml_path: str) -> dict[str, Any]:
         """
         Loads hyperparameters from YAML file.
-        
+
         Args:
             model_type: Type of model to load HPs for
             yaml_path: Path to the YAML file
-            
+
         Returns:
             Dictionary of hyperparameters
-            
+
         Raises:
             FileOperationError: If HP loading fails
         """
@@ -344,7 +343,7 @@ class ExperimentRunner:
     def set_seed(self, seed: int) -> None:
         """
         Set random seed for reproducibility across all libraries.
-        
+
         Args:
             seed: Random seed value
         """
@@ -359,16 +358,16 @@ class ExperimentRunner:
     ) -> tuple[str | None, dict[str, Any]]:
         """
         Run training for a specific model type.
-        
+
         Args:
             model_type: Type of model to train
             yaml_path: Path to YAML configuration file
             model_provider_fn: Function to provide model instance
             gauge_ids: List of gauge IDs for training
-            
+
         Returns:
             Tuple of (best_model_path, metrics_dict) or (None, error_dict)
-            
+
         Raises:
             FileOperationError: If HP loading fails
             DataProcessingError: If datamodule setup fails
@@ -502,12 +501,12 @@ class ExperimentRunner:
     ) -> tuple[str | None, dict[str, Any]]:
         """
         Process training results and determine the best model.
-        
+
         Args:
             model_type: Type of model being processed
             model_run_results: List of (model_path, metrics) tuples
             model_checkpoints_base_dir: Base directory for model checkpoints
-            
+
         Returns:
             Tuple of (best_model_path, metrics_dict) or (None, error_dict)
         """

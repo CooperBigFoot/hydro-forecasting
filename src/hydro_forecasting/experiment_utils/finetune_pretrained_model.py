@@ -93,7 +93,7 @@ def finetune_pretrained_models(
 
     Raises:
         ConfigurationError: If configuration is invalid (e.g., missing YAML files, mismatched lengths)
-        
+
     Note:
         FileOperationError exceptions from checkpoint loading are caught and logged as failed
         models in the results dictionary rather than propagated. The function is compatible
@@ -145,10 +145,12 @@ def finetune_pretrained_models(
             specific_run_index=pretrained_run_index,
             specific_attempt_index=pretrained_attempt_index,
         )
-        
+
         try:
             # Extract the checkpoint path from the result, raising FileOperationError on failure
-            if hasattr(pretrained_checkpoint_path_result, 'unwrap') and hasattr(pretrained_checkpoint_path_result, 'failure'):
+            if hasattr(pretrained_checkpoint_path_result, "unwrap") and hasattr(
+                pretrained_checkpoint_path_result, "failure"
+            ):
                 # Handle Result type - check if it's successful by trying to access the value
                 try:
                     pretrained_checkpoint_path = pretrained_checkpoint_path_result.unwrap()
@@ -159,7 +161,7 @@ def finetune_pretrained_models(
             else:
                 # Handle direct return (exception-based interface or raw value)
                 pretrained_checkpoint_path = pretrained_checkpoint_path_result
-                
+
             logger.info(f"Found pre-trained checkpoint for {model_type}: {pretrained_checkpoint_path}")
 
             provider_fn = functools.partial(

@@ -33,10 +33,10 @@ def train_model_from_scratch(
 ) -> dict[str, tuple[str | None, dict[str, Any]]]:
     """
     Train one or more hydrological forecasting models from scratch.
-    
+
     Returns:
         A dictionary mapping model types to tuples containing checkpoint paths and metrics.
-        
+
     Raises:
         FileOperationError: If required YAML files don't exist.
         ConfigurationError: If model_types and yaml_paths lengths don't match.

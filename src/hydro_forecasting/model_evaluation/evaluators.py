@@ -122,7 +122,7 @@ class TSForecastEvaluator:
         models_to_test = []
         models_to_load = []
 
-        for model_name in self.models_and_datamodules.keys():
+        for model_name in self.models_and_datamodules:
             cache_key = self._generate_cache_key(model_name, start_of_season, end_of_season)
 
             if not force_refresh and active_cache_path and cache_key in cached_models:
