@@ -11,7 +11,6 @@ import pandas as pd
 import pytorch_lightning as pl
 import torch
 import yaml
-from returns.result import Success
 
 from hydro_forecasting.data.in_memory_datamodule import HydroInMemoryDataModule
 from hydro_forecasting.experiment_utils import checkpoint_manager
@@ -402,13 +401,7 @@ def hyperparameter_tune_model(
                 override_previous_attempts=False,
             )
 
-            if not isinstance(checkpoint_trial_attempt_path_result, Success):
-                return _handle_trial_error(
-                    f"Failed to create checkpoint directory for trial: {checkpoint_trial_attempt_path_result.failure()}",
-                    trial,
-                )
-
-            checkpoint_dir_for_trial = checkpoint_trial_attempt_path_result.unwrap()
+            checkpoint_dir_for_trial = checkpoint_trial_attempt_path_result
 
             log_trial_attempt_path_result = checkpoint_manager.determine_log_run_attempt_path(
                 base_model_log_dir=study_log_dir,
@@ -416,12 +409,7 @@ def hyperparameter_tune_model(
                 override_previous_attempts=False,
             )
 
-            if not isinstance(log_trial_attempt_path_result, Success):
-                return _handle_trial_error(
-                    f"Failed to create log directory for trial: {log_trial_attempt_path_result.failure()}", trial
-                )
-
-            log_dir_for_trial = log_trial_attempt_path_result.unwrap()
+            log_dir_for_trial = log_trial_attempt_path_result
 
             # Store path information in trial attributes
             trial.set_user_attr("checkpoint_dir", str(checkpoint_dir_for_trial))
@@ -435,15 +423,12 @@ def hyperparameter_tune_model(
             # 2. Configure datamodule with trial hyperparameters using the core helper
             # trial_hparams will provide overrides for input_length, batch_size etc.
             try:
-                datamodule_result = _setup_datamodule_core(
+                datamodule = _setup_datamodule_core(
                     base_datamodule_config=datamodule_config,
                     hps_for_datamodule=trial_hparams,
                     gauge_ids=gauge_ids,
                     model_type=model_type,
                 )
-                if not isinstance(datamodule_result, Success):
-                    return _handle_trial_error(f"DataModule config error: {datamodule_result.failure()}", trial)
-                datamodule = datamodule_result.unwrap()
             except Exception as e:
                 return _handle_trial_error(f"DataModule setup error: {e}", trial)
 
@@ -471,7 +456,7 @@ def hyperparameter_tune_model(
             }
 
             try:
-                trainer_result = _configure_trainer_core(
+                trainer_pl = _configure_trainer_core(
                     training_config=training_config,
                     callbacks_config=callbacks_config_hpt,
                     is_hpt_trial=True,
@@ -482,10 +467,6 @@ def hyperparameter_tune_model(
                     model_type_for_paths=model_type,
                     run_idx_for_paths=trial.number,
                 )
-
-                if not isinstance(trainer_result, Success):
-                    return _handle_trial_error(f"Trainer config error: {trainer_result.failure()}", trial)
-                trainer_pl = trainer_result.unwrap()
             except Exception as e:
                 return _handle_trial_error(f"Trainer setup error: {e}", trial)
 
