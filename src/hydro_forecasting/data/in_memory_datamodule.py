@@ -1,6 +1,5 @@
 import gc
 import logging
-import random
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -18,6 +17,7 @@ from ..exceptions import (
     FileOperationError,
     PipelineCompatibilityError,
 )
+from ..experiment_utils.seed_manager import SeedManager
 from ..preprocessing.grouped import GroupedPipeline
 from ..preprocessing.static_preprocessing import (
     load_static_pipeline,
@@ -93,6 +93,7 @@ class HydroInMemoryDataModule(LightningDataModule):
         domain_type: str = "source",
         is_autoregressive: bool = False,
         include_input_end_date_in_batch: bool = True,
+        random_seed: int | None = None,
     ):
         """
         Initializes the HydroInMemoryDataModule.
@@ -124,6 +125,7 @@ class HydroInMemoryDataModule(LightningDataModule):
             is_autoregressive: Whether the model uses past target values as input features.
             include_input_end_date_in_batch: If True, 'input_end_date' (ms timestamp or None)
                                               will be included in the batch dictionary.
+            random_seed: Seed for reproducible random operations. If None, operations will be non-deterministic.
 
         Raises:
             ValueError: If configuration validation fails.
@@ -143,7 +145,7 @@ class HydroInMemoryDataModule(LightningDataModule):
         try:
             validate_hydro_inmemory_datamodule_config(self)
         except ConfigurationError as e:
-            raise ValueError(f"HydroInMemoryDataModule configuration error: {e}")
+            raise ValueError(f"HydroInMemoryDataModule configuration error: {e}") from e
 
         self.region_time_series_base_dirs = {k: Path(v) for k, v in self.hparams.region_time_series_base_dirs.items()}
         self.region_static_attributes_base_dirs = {
@@ -199,6 +201,13 @@ class HydroInMemoryDataModule(LightningDataModule):
             self.input_features_ordered_for_X = sorted(self.hparams.forcing_features)
 
         self.future_features_ordered = sorted(set(self.hparams.forcing_features))
+
+        self.seed_manager = SeedManager(random_seed)
+        if random_seed is not None:
+            self.seed_manager.set_global_seeds()
+            logger.info(f"Initialized SeedManager with seed: {random_seed}")
+        else:
+            logger.info("Initialized SeedManager without seed (non-deterministic mode)")
 
     def _adapt_preprocessing_configs(
         self, preprocessing_configs: dict[str, dict[str, Any]]
@@ -326,9 +335,10 @@ class HydroInMemoryDataModule(LightningDataModule):
                     test_prop=self.test_prop,
                     list_of_gauge_ids_to_process=self.list_of_gauge_ids_to_process,
                     basin_batch_size=50,  # Consider making this configurable
+                    random_seed=self.seed_manager.get_component_seed("preprocessing_unified"),
                 )
             except DataProcessingError as e:
-                raise RuntimeError(f"Hydro processor failed: {e}")
+                raise RuntimeError(f"Hydro processor failed: {e}") from e
             logger.info("Hydro processor completed successfully.")
 
             self.summary_quality_report = processing_output.summary_quality_report
@@ -368,7 +378,10 @@ class HydroInMemoryDataModule(LightningDataModule):
             if test_file.exists():
                 self._test_basin_ids.append(basin_id)
 
-        random.shuffle(self.chunkable_basin_ids)
+        with self.seed_manager.temporary_seed("basin_id_shuffle", "datamodule_setup"):
+            import random
+
+            random.shuffle(self.chunkable_basin_ids)
 
         logger.info(
             f"Found {len(self.chunkable_basin_ids)} basins for synchronized train/val chunking and validation pool selection."
@@ -391,7 +404,10 @@ class HydroInMemoryDataModule(LightningDataModule):
             # 1. Setup Validation Pool and Cache (once)
             if self._validation_gauge_id_pool is None and self.chunkable_basin_ids:
                 num_val_basins = min(cast(int, self.hparams.validation_chunk_size), len(self.chunkable_basin_ids))
-                self._validation_gauge_id_pool = random.sample(self.chunkable_basin_ids, num_val_basins)
+                with self.seed_manager.temporary_seed("validation_pool_selection", "datamodule_setup"):
+                    import random
+
+                    self._validation_gauge_id_pool = random.sample(self.chunkable_basin_ids, num_val_basins)
                 logger.info(
                     f"Created fixed validation pool with {len(self._validation_gauge_id_pool)} basins: {self._validation_gauge_id_pool[:5]}..."
                 )  # Log first 5
@@ -434,7 +450,10 @@ class HydroInMemoryDataModule(LightningDataModule):
         logger.info(f"Initializing/Re-initializing training shared chunks from {len(self.chunkable_basin_ids)} basins.")
         # It's important to shuffle the basin IDs each time we re-partition
         # to ensure different chunk compositions over full passes.
-        shuffled_training_basin_ids = random.sample(self.chunkable_basin_ids, len(self.chunkable_basin_ids))
+        with self.seed_manager.temporary_seed("training_basin_shuffle", "training_chunks"):
+            import random
+
+            shuffled_training_basin_ids = random.sample(self.chunkable_basin_ids, len(self.chunkable_basin_ids))
 
         self._shared_chunks = [
             shuffled_training_basin_ids[i : i + self.hparams.chunk_size]
@@ -631,7 +650,10 @@ class HydroInMemoryDataModule(LightningDataModule):
             )
             return DataLoader([], batch_size=self.batch_size)
 
-        random.shuffle(index_entries)  # Shuffle index_entries for training
+        with self.seed_manager.temporary_seed("training_sequence_shuffle", "sequence_operations"):
+            import random
+
+            random.shuffle(index_entries)  # Shuffle index_entries for training
 
         train_dataset = InMemoryChunkDataset(
             chunk_column_tensors=chunk_column_tensors,
@@ -660,6 +682,7 @@ class HydroInMemoryDataModule(LightningDataModule):
             num_workers=self.num_workers,
             pin_memory=True,
             persistent_workers=self.num_workers > 0,
+            worker_init_fn=self.seed_manager.worker_init_fn,
         )
 
     def val_dataloader(self) -> DataLoader:
@@ -706,6 +729,7 @@ class HydroInMemoryDataModule(LightningDataModule):
             num_workers=self.num_workers,
             pin_memory=True,
             persistent_workers=self.num_workers > 0,
+            worker_init_fn=self.seed_manager.worker_init_fn,
         )
 
     def test_dataloader(self) -> DataLoader:
@@ -749,6 +773,7 @@ class HydroInMemoryDataModule(LightningDataModule):
             num_workers=self.num_workers,
             pin_memory=True,
             persistent_workers=self.num_workers > 0,
+            worker_init_fn=self.seed_manager.worker_init_fn,
         )
 
     def _load_static_data(self) -> None:

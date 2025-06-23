@@ -192,7 +192,7 @@ def extract_transformer_names(
     return transformer_names
 
 
-def extract_pipeline_metadata(pipeline_obj: Any) -> Union[list[str], str]:
+def extract_pipeline_metadata(pipeline_obj: Any) -> list[str] | str:
     """
     Extract just the class names and order from a pipeline.
     

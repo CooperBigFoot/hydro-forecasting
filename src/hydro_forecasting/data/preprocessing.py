@@ -14,6 +14,7 @@ from ..exceptions import (
     DataQualityError,
     FileOperationError,
 )
+from ..experiment_utils.seed_manager import SeedManager
 from ..preprocessing.grouped import GroupedPipeline
 from ..preprocessing.static_preprocessing import (
     process_static_data,
@@ -486,7 +487,7 @@ def run_hydro_processor(
     test_prop: float = 0.25,
     list_of_gauge_ids_to_process: list[str] | None = None,
     basin_batch_size: int = 50,
-    random_seed: int = 42,
+    random_seed: int | None = 42,
 ) -> ProcessingOutput:
     """
     Main function to run the hydrological data processor with preprocessing pipelines.
@@ -518,7 +519,8 @@ def run_hydro_processor(
         test_prop: Proportion of data for testing
         list_of_gauge_ids_to_process: Optional list of gauge IDs to process
         basin_batch_size: Batch size for processing basins
-        random_seed: Random seed for deterministic basin selection in unified pipeline fitting
+        random_seed: Random seed for deterministic basin selection in unified pipeline fitting.
+                    If None, operations will be non-deterministic.
 
     Returns:
         ProcessingOutput: Object containing all output paths and artifacts
@@ -543,7 +545,7 @@ def run_hydro_processor(
 
         # Validate preprocessing configuration early
         from .preprocessing_validation import validate_preprocessing_config_comprehensive
-        
+
         validate_preprocessing_config_comprehensive(
             preprocessing_config=preprocessing_config,
             required_columns=required_columns,
@@ -708,8 +710,8 @@ def run_hydro_processor(
             if fit_on_n_basins is None:
                 fit_on_n_basins = len(list_of_gauge_ids_to_process)
 
-            # We already have valid basins from pre-validation
-            import random
+            # Initialize seed manager for deterministic basin selection
+            seed_manager = SeedManager(random_seed)
 
             # Determine which basins to use for fitting
             if len(list_of_gauge_ids_to_process) < fit_on_n_basins:
@@ -722,11 +724,10 @@ def run_hydro_processor(
                 # Sort the valid basins for deterministic selection
                 sorted_valid_basins = sorted(list_of_gauge_ids_to_process)
 
-                # Set random seed for deterministic sampling
-                random.seed(random_seed)
-
-                # Sample the requested number from valid basins
-                fit_basins = random.sample(sorted_valid_basins, fit_on_n_basins)
+                # Use seed manager for deterministic sampling
+                with seed_manager.temporary_seed("unified_basin_selection", "preprocessing_unified"):
+                    import random
+                    fit_basins = random.sample(sorted_valid_basins, fit_on_n_basins)
 
                 # Log selected basins with seed information
                 if len(fit_basins) > 5:

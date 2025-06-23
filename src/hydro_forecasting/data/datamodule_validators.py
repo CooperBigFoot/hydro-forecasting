@@ -273,7 +273,7 @@ def validate_preprocessing_pipelines_config(
     # Use the new comprehensive validation if required_columns is provided
     if required_columns is not None:
         from .preprocessing_validation import validate_preprocessing_config_comprehensive
-        
+
         validate_preprocessing_config_comprehensive(
             preprocessing_config=preprocessing_configs_attr,
             required_columns=required_columns,

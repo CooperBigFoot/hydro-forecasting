@@ -365,7 +365,9 @@ def hyperparameter_tune_model(
         FileOperationError: If file operations fail
         ModelTrainingError: If model training fails
     """
-    pl.seed_everything(seed, workers=True)
+    from .seed_manager import SeedManager
+    seed_manager = SeedManager(seed)
+    seed_manager.set_global_seeds()
     output_dir_study_path = Path(output_dir_study)
     study_dir = output_dir_study_path / experiment_name
     study_dir.mkdir(parents=True, exist_ok=True)

@@ -4,11 +4,9 @@ from typing import TYPE_CHECKING, Any
 
 from ..exceptions import ConfigurationError, PipelineCompatibilityError
 from ..preprocessing.grouped import GroupedPipeline
-from ..preprocessing.unified import UnifiedPipeline
 
 if TYPE_CHECKING:
-    from sklearn.base import BaseEstimator
-    from sklearn.pipeline import Pipeline
+    pass
 
 
 def validate_preprocessing_config_comprehensive(
