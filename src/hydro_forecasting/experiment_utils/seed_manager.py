@@ -131,41 +131,37 @@ class SeedManager:
         """
         Set global seeds for all available randomness libraries.
 
-        This method sets seeds for:
-        - Python's random module
-        - NumPy (if available)
-        - PyTorch (if available)
-        - PyTorch Lightning (if available)
-        - CUDA (if available and PyTorch is available)
+        Uses a hierarchical approach to avoid redundant seeding:
+        - When PyTorch Lightning is available: Use pl.seed_everything() as the primary
+          seeding mechanism since it comprehensively handles Python, NumPy, PyTorch, and CUDA
+        - When PyTorch Lightning is unavailable: Fall back to direct calls to individual
+          library seeding functions
         """
         if self.master_seed is None:
             logger.warning("Cannot set global seeds: no master seed provided")
             return
 
         with self._lock:
-            # Set Python random seed
-            random.seed(self.master_seed)
-            logger.debug(f"Set Python random seed: {self.master_seed}")
-
-            # Set NumPy seed if available
-            if HAS_NUMPY:
-                np.random.seed(self.master_seed)
-                logger.debug(f"Set NumPy random seed: {self.master_seed}")
-
-            # Set PyTorch seeds if available
-            if HAS_TORCH:
-                torch.manual_seed(self.master_seed)
-                logger.debug(f"Set PyTorch manual seed: {self.master_seed}")
-
-                # Set CUDA seed if CUDA is available
-                if torch.cuda.is_available():
-                    torch.cuda.manual_seed_all(self.master_seed)
-                    logger.debug(f"Set PyTorch CUDA seed: {self.master_seed}")
-
-            # Set PyTorch Lightning seed if available
             if HAS_PYTORCH_LIGHTNING:
+                # Use PyTorch Lightning's comprehensive seeding
                 pl.seed_everything(self.master_seed, workers=True)
-                logger.debug(f"Set PyTorch Lightning seed: {self.master_seed}")
+                logger.debug(f"Set PyTorch Lightning seed (comprehensive): {self.master_seed}")
+            else:
+                # Fall back to manual seeding for each library
+                random.seed(self.master_seed)
+                logger.debug(f"Set Python random seed: {self.master_seed}")
+
+                if HAS_NUMPY:
+                    np.random.seed(self.master_seed)
+                    logger.debug(f"Set NumPy random seed: {self.master_seed}")
+
+                if HAS_TORCH:
+                    torch.manual_seed(self.master_seed)
+                    logger.debug(f"Set PyTorch manual seed: {self.master_seed}")
+
+                    if torch.cuda.is_available():
+                        torch.cuda.manual_seed_all(self.master_seed)
+                        logger.debug(f"Set PyTorch CUDA seed: {self.master_seed}")
 
     def get_component_seed(self, component: str) -> int:
         """
