@@ -350,6 +350,19 @@ class SeedManager:
             "component_descriptions": self.COMPONENT_SEEDS.copy(),
         }
 
+    def __getstate__(self):
+        """Custom method for pickling - exclude the RLock."""
+        state = self.__dict__.copy()
+        # Remove the unpicklable RLock
+        state["_lock"] = None
+        return state
+
+    def __setstate__(self, state):
+        """Custom method for unpickling - recreate the RLock."""
+        self.__dict__.update(state)
+        # Recreate the RLock
+        self._lock = threading.RLock()
+
 
 # Global instance for convenience
 _global_seed_manager: SeedManager | None = None
