@@ -1,3 +1,4 @@
+import logging
 import math
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,6 +29,8 @@ from .index_entry_creator import create_index_entries
 from .lazy_dataset import HydroLazyDataset
 from .preprocessing import ProcessingOutput, run_hydro_processor
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass
 class LoadedData:
@@ -42,7 +45,7 @@ class LoadedData:
 def worker_init_fn(worker_id: int) -> None:
     import os
 
-    print(f"Worker {worker_id} started with PID {os.getpid()}")
+    logger.debug("Worker %d started with PID %d", worker_id, os.getpid())
     info = torch.utils.data.get_worker_info()
     if info is None:
         return
@@ -53,7 +56,7 @@ def worker_init_fn(worker_id: int) -> None:
     ds: HydroLazyDataset = info.dataset
     ds.file_cache = worker_cache
 
-    print(f"Worker {worker_id} initialized with dedicated cache")
+    logger.debug("Worker %d initialized with dedicated cache", worker_id)
 
 
 class HydroLazyDataModule(pl.LightningDataModule):
@@ -621,12 +624,12 @@ class HydroLazyDataModule(pl.LightningDataModule):
             static_pipeline_result = load_static_pipeline(static_pipeline_path)
 
             if isinstance(static_pipeline_result, Failure):
-                print(f"WARNING: Failed to load static pipeline: {static_pipeline_result.failure()}")
+                logger.warning("Failed to load static pipeline: %s", static_pipeline_result.failure())
             else:
                 # Add static pipeline to the dictionary
                 self.fitted_pipelines["static"] = static_pipeline_result.unwrap()
 
-        print(f"INFO: Successfully loaded {len(self.fitted_pipelines)} fitted pipelines.")
+        logger.info("Successfully loaded %d fitted pipelines", len(self.fitted_pipelines))
 
     def prepare_data(self) -> None:
         """
@@ -640,10 +643,10 @@ class HydroLazyDataModule(pl.LightningDataModule):
         5. Creates index entries for the processed data splits.
         """
         if self._prepare_data_has_run:
-            print("INFO: Data preparation has already run.")
+            logger.info("Data preparation has already run")
             return
 
-        print("INFO: Starting data preparation...")
+        logger.info("Starting data preparation...")
 
         required_columns = self.forcing_features + [self.target]
 
@@ -653,7 +656,7 @@ class HydroLazyDataModule(pl.LightningDataModule):
         processed_gauge_ids: list[str] = []
 
         if reuse_success and loaded_data:
-            print("INFO: Reusing existing processed data.")
+            logger.info("Reusing existing processed data")
             self.summary_quality_report = loaded_data.summary_quality_report
             self.fitted_pipelines = loaded_data.fitted_pipelines
             self.processed_time_series_dir = loaded_data.processed_ts_dir
@@ -667,16 +670,17 @@ class HydroLazyDataModule(pl.LightningDataModule):
                     gid for gid in self.list_of_gauge_ids_to_process if gid in processed_gauge_ids
                 ]
 
-            print(
-                f"INFO: Loaded {len(self.fitted_pipelines)} pipelines and data for {len(processed_gauge_ids)} basins."
+            logger.info(
+                "Loaded %d pipelines and data for %d basins",
+                len(self.fitted_pipelines), len(processed_gauge_ids)
             )
 
         else:
-            print(f"INFO: No reusable data found or reuse failed. Reason: {reuse_message}. Running preprocessing...")
+            logger.info("No reusable data found or reuse failed. Reason: %s. Running preprocessing...", reuse_message)
             # 2. Run hydro processor
             relevant_config = extract_relevant_config(self)
             run_uuid = generate_run_uuid(relevant_config)
-            print(f"INFO: Generated Run UUID: {run_uuid}")
+            logger.info("Generated Run UUID: %s", run_uuid)
 
             # Run the processor and handle the result
             processing_result = run_hydro_processor(
@@ -701,7 +705,7 @@ class HydroLazyDataModule(pl.LightningDataModule):
                 raise RuntimeError(f"Hydro processor failed: {processing_result.failure()}")
 
             processing_output = processing_result.unwrap()
-            print("INFO: Hydro processor completed successfully.")
+            logger.info("Hydro processor completed successfully")
 
             # 3. Update DataModule state
             self.summary_quality_report = processing_output.summary_quality_report
@@ -709,19 +713,19 @@ class HydroLazyDataModule(pl.LightningDataModule):
             self.processed_static_attributes_path = processing_output.processed_static_attributes_path
 
             # 4. Load fitted pipelines
-            print("INFO: Loading fitted pipelines...")
+            logger.info("Loading fitted pipelines...")
             self._load_pipelines_from_output(processing_output)
 
             # 5. Get processed gauge IDs
             processed_gauge_ids = self.summary_quality_report.retained_basins
             self.list_of_gauge_ids_to_process = processed_gauge_ids
-            print(f"INFO: {len(processed_gauge_ids)} basins retained after processing.")
+            logger.info("%d basins retained after processing", len(processed_gauge_ids))
 
             if not processed_gauge_ids:
                 raise RuntimeError("No basins remained after the preprocessing stage.")
 
         # 6. Create index entries
-        print("INFO: Creating index entries...")
+        logger.info("Creating index entries...")
         if not self.processed_time_series_dir:
             raise RuntimeError("Processed time series directory is not set before creating index.")
 
@@ -755,11 +759,11 @@ class HydroLazyDataModule(pl.LightningDataModule):
         self.val_index_path, self.val_index_meta_path = stage_to_paths.get("val", (None, None))
         self.test_index_path, self.test_index_meta_path = stage_to_paths.get("test", (None, None))
 
-        print(f"INFO: Index entries created successfully at {index_output_dir}.")
+        logger.info("Index entries created successfully at %s", index_output_dir)
 
         # 7. Set the flag
         self._prepare_data_has_run = True
-        print("INFO: Data preparation finished.")
+        logger.info("Data preparation finished")
 
     def setup(self, stage: str | None = None):
         """
@@ -822,8 +826,8 @@ class HydroLazyDataModule(pl.LightningDataModule):
                 index_meta_file_path=self.val_index_meta_path,
                 **common_args,
             )
-            print(f"INFO: Created training dataset with {len(self.train_dataset)} samples")
-            print(f"INFO: Created validation dataset with {len(self.val_dataset)} samples")
+            logger.info("Created training dataset with %d samples", len(self.train_dataset))
+            logger.info("Created validation dataset with %d samples", len(self.val_dataset))
 
         if stage == "test" or stage is None:
             self.test_dataset = HydroLazyDataset(
@@ -831,7 +835,7 @@ class HydroLazyDataModule(pl.LightningDataModule):
                 index_meta_file_path=self.test_index_meta_path,
                 **common_args,
             )
-            print(f"INFO: Created test dataset with {len(self.test_dataset)} samples")
+            logger.info("Created test dataset with %d samples", len(self.test_dataset))
 
     def train_dataloader(self) -> DataLoader:
         """

@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 
 import joblib
@@ -8,6 +9,8 @@ from returns.pointfree import bind
 from returns.result import Failure, Result, Success
 from sklearn.base import clone
 from sklearn.pipeline import Pipeline
+
+logger = logging.getLogger(__name__)
 
 
 def fit_static_pipeline(
@@ -117,7 +120,7 @@ def read_static_data_from_disk(
     for region, gauges in region_to_gauges.items():
         static_dir = region_static_attributes_base_dirs.get(region)
         if static_dir is None:
-            print(f"WARNING: No static attribute directory for region '{region}'")
+            logger.warning("No static attribute directory for region '%s'", region)
             continue
 
         region_type_dfs: list[pd.DataFrame] = []
@@ -128,21 +131,21 @@ def read_static_data_from_disk(
             try:
                 df_type = pd.read_parquet(file_path)
                 if "gauge_id" not in df_type.columns:
-                    print(f"WARNING: 'gauge_id' missing in {file_path}, skipping.")
+                    logger.warning("'gauge_id' missing in %s, skipping", file_path)
                     continue
                 df_type["gauge_id"] = df_type["gauge_id"].astype(str)
                 filtered = df_type[df_type["gauge_id"].isin(gauges)].copy()
                 if not filtered.empty:
                     region_type_dfs.append(filtered)
             except Exception as e:
-                print(f"ERROR: Error loading {file_path}: {str(e)}")
+                logger.error("Error loading %s: %s", file_path, str(e))
 
         if region_type_dfs:
             merged_region_df = region_type_dfs[0]
             for i, df_to_merge in enumerate(region_type_dfs[1:], start=1):
                 overlap = set(merged_region_df.columns) & set(df_to_merge.columns) - {"gauge_id"}
                 if overlap:
-                    print(f"INFO: Overlapping columns during merge: {', '.join(overlap)}")
+                    logger.info("Overlapping columns during merge: %s", ', '.join(overlap))
                 merged_region_df = pd.merge(
                     merged_region_df,
                     df_to_merge,
@@ -194,7 +197,7 @@ def write_static_data_to_disk(
         missing_columns = set(final_columns) - set(existing_columns)
 
         if missing_columns:
-            print(f"WARNING: Columns not found in DataFrame: {missing_columns}")
+            logger.warning("Columns not found in DataFrame: %s", missing_columns)
 
         # Save only the specified columns
         df[existing_columns].to_parquet(output_path)

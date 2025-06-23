@@ -541,6 +541,15 @@ def run_hydro_processor(
             test_prop=test_prop,
         )
 
+        # Validate preprocessing configuration early
+        from .preprocessing_validation import validate_preprocessing_config_comprehensive
+        
+        validate_preprocessing_config_comprehensive(
+            preprocessing_config=preprocessing_config,
+            required_columns=required_columns,
+            group_identifier=group_identifier
+        )
+
         # Prepare output directories
         run_output_dir = Path(path_to_preprocessing_output_directory) / run_uuid
         run_output_dir.mkdir(parents=True, exist_ok=True)

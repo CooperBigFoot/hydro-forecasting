@@ -1,4 +1,5 @@
 import json
+import logging
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -7,6 +8,8 @@ import numpy as np
 import polars as pl
 
 from ..exceptions import DataProcessingError, DataQualityError, FileOperationError
+
+logger = logging.getLogger(__name__)
 
 
 def find_gaps_bool(missing: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -289,7 +292,7 @@ def clean_data(
     except Exception as e:
         raise DataProcessingError(f"Failed to filter and clean DataFrame: {e}") from e
 
-    print(f"INFO: Processed {len(reports)} basins, {len(valid_basin_ids)} passed quality checks")
+    logger.info("Processed %d basins, %d passed quality checks", len(reports), len(valid_basin_ids))
 
     return (filtered_df, reports)
 

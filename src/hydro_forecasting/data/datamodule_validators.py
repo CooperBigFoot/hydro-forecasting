@@ -250,12 +250,16 @@ def _validate_pipeline_compatibility(pipeline_obj: Pipeline | GroupedPipeline, p
 def validate_preprocessing_pipelines_config(
     preprocessing_configs_attr: dict[str, dict[str, Any]] | None,
     datamodule_group_identifier: str,
+    required_columns: list[str] | None = None,
+    available_columns: list[str] | None = None,
 ) -> None:
     """Validate the structure and compatibility of preprocessing_configs.
 
     Args:
         preprocessing_configs_attr: Preprocessing configurations to validate.
         datamodule_group_identifier: Group identifier from the datamodule.
+        required_columns: Optional list of columns that must be covered by pipelines.
+        available_columns: Optional list of all available columns for validation.
 
     Raises:
         ConfigurationError: If preprocessing configs are invalid.
@@ -266,6 +270,20 @@ def validate_preprocessing_pipelines_config(
     if not isinstance(preprocessing_configs_attr, dict):
         raise ConfigurationError("'preprocessing_configs' must be a dictionary.")
 
+    # Use the new comprehensive validation if required_columns is provided
+    if required_columns is not None:
+        from .preprocessing_validation import validate_preprocessing_config_comprehensive
+        
+        validate_preprocessing_config_comprehensive(
+            preprocessing_config=preprocessing_configs_attr,
+            required_columns=required_columns,
+            group_identifier=datamodule_group_identifier,
+            available_columns=available_columns,
+        )
+        # The comprehensive validation covers everything below, so we can return
+        return
+
+    # Fall back to original validation for backward compatibility
     for pipeline_type, config_dict in preprocessing_configs_attr.items():
         if not isinstance(config_dict, dict):
             raise ConfigurationError(f"Config for pipeline type '{pipeline_type}' must be a dictionary.")
