@@ -580,7 +580,7 @@ def run_hydro_processor(
         if "static_features" in preprocessing_config and list_of_gauge_ids_to_process:
             logger.info("Processing static features...")
             try:
-                result = process_static_data(
+                save_path_static, static_pipeline_fitted = process_static_data(
                     region_static_attributes_base_dirs,
                     list_of_gauge_ids_to_process,
                     preprocessing_config,
@@ -588,20 +588,8 @@ def run_hydro_processor(
                     group_identifier,
                 )
 
-                # Handle the Result type
-                if hasattr(result, "unwrap"):
-                    # It's a Success Result
-                    save_path_static, static_pipeline_fitted = result.unwrap()
-                else:
-                    # Handle Failure case
-                    raise DataProcessingError(f"Static data processing failed: {result}")
-
                 # Save the fitted pipeline
-                pipeline_save_result = save_static_pipeline(static_pipeline_fitted, fitted_static_path)
-                if hasattr(pipeline_save_result, "unwrap"):
-                    pipeline_save_result.unwrap()  # Will raise if it's a Failure
-                else:
-                    raise FileOperationError(f"Failed to save static pipeline: {pipeline_save_result}")
+                save_static_pipeline(static_pipeline_fitted, fitted_static_path)
 
                 logger.info(f"Static features saved to {save_path_static}")
                 logger.info(f"Static features pipeline saved to {fitted_static_path}")

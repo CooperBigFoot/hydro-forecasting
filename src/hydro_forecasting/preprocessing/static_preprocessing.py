@@ -27,7 +27,7 @@ def fit_static_pipeline(
 
     Returns:
         Fitted Pipeline instance.
-        
+
     Raises:
         DataProcessingError: If static DataFrame is empty or columns are missing.
         ConfigurationError: If configuration is invalid.
@@ -39,7 +39,7 @@ def fit_static_pipeline(
         cols: list[str] = preprocessing_config["static_features"]["columns"]
     except KeyError as e:
         raise ConfigurationError(f"Missing configuration key: {e}")
-    
+
     missing = [c for c in cols if c not in static_df.columns]
     if missing:
         raise DataProcessingError(f"Missing columns in static df: {missing}")
@@ -67,7 +67,7 @@ def transform_static_data(
 
     Returns:
         DataFrame with transformed static features.
-        
+
     Raises:
         DataProcessingError: If static DataFrame is empty, pipeline is None, or columns are missing.
         ConfigurationError: If configuration is invalid.
@@ -82,7 +82,7 @@ def transform_static_data(
         cols: list[str] = preprocessing_config["static_features"]["columns"]
     except KeyError as e:
         raise ConfigurationError(f"Missing configuration key: {e}")
-    
+
     missing = [c for c in cols if c not in static_df.columns]
     if missing:
         raise DataProcessingError(f"Missing columns in static df for transform: {missing}")
@@ -116,7 +116,7 @@ def read_static_data_from_disk(
 
     Returns:
         DataFrame with merged static attributes.
-        
+
     Raises:
         ConfigurationError: If no gauge IDs are provided.
         FileOperationError: If file operations fail.
@@ -159,7 +159,7 @@ def read_static_data_from_disk(
             for i, df_to_merge in enumerate(region_type_dfs[1:], start=1):
                 overlap = set(merged_region_df.columns) & set(df_to_merge.columns) - {"gauge_id"}
                 if overlap:
-                    logger.info("Overlapping columns during merge: %s", ', '.join(overlap))
+                    logger.info("Overlapping columns during merge: %s", ", ".join(overlap))
                 merged_region_df = pd.merge(
                     merged_region_df,
                     df_to_merge,
@@ -194,7 +194,7 @@ def write_static_data_to_disk(
 
     Returns:
         Path to the saved Parquet file.
-        
+
     Raises:
         DataProcessingError: If group identifier is not found in DataFrame.
         FileOperationError: If file operations fail.
@@ -246,7 +246,7 @@ def process_static_data(
 
     Returns:
         Tuple of (Path to saved file, fitted Pipeline).
-        
+
     Raises:
         ConfigurationError: If configuration is invalid.
         DataProcessingError: If data processing fails.
@@ -276,7 +276,7 @@ def process_static_data(
         columns_to_save=columns_to_save,
         group_identifier=group_identifier,
     )
-    
+
     return saved_path, pipeline
 
 
@@ -290,7 +290,7 @@ def save_static_pipeline(pipeline: Pipeline, filepath: Path | str) -> Path:
 
     Returns:
         Path where the pipeline was saved.
-        
+
     Raises:
         FileOperationError: If file operations fail.
     """
@@ -314,7 +314,7 @@ def load_static_pipeline(filepath: Path | str) -> Pipeline:
 
     Returns:
         Loaded Pipeline object.
-        
+
     Raises:
         FileOperationError: If file operations fail.
     """
