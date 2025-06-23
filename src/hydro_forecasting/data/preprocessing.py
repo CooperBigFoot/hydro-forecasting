@@ -9,9 +9,14 @@ from typing import Any
 
 import pandas as pd
 import polars as pl
-from returns.result import Failure, Result, Success
 from sklearn.pipeline import Pipeline, clone
 
+from ..exceptions import (
+    ConfigurationError,
+    DataProcessingError,
+    DataQualityError,
+    FileOperationError,
+)
 from ..preprocessing.grouped import GroupedPipeline
 from ..preprocessing.static_preprocessing import (
     process_static_data,
@@ -142,17 +147,32 @@ def _load_single_basin_lazy(
     region_time_series_base_dirs: dict[str, Path],
     required_columns: list[str],
     group_identifier: str,
-) -> Result[pl.LazyFrame, str]:
-    """Helper: lazily load one basin, wrapped in a Result."""
+) -> pl.LazyFrame:
+    """
+    Helper: lazily load one basin.
+
+    Args:
+        gauge_id: The gauge ID to load
+        region_time_series_base_dirs: Dictionary mapping region prefixes to base directories
+        required_columns: List of required column names
+        group_identifier: Column name for group identification
+
+    Returns:
+        pl.LazyFrame: The loaded lazy frame
+
+    Raises:
+        FileOperationError: If file cannot be found or loaded
+        DataQualityError: If required columns are missing
+    """
     try:
         prefix = gauge_id.split("_", 1)[0]
         base_dir = region_time_series_base_dirs.get(prefix)
         if base_dir is None:
-            return Failure(f"No base directory for region prefix '{prefix}'")
+            raise FileOperationError(f"No base directory for region prefix '{prefix}'")
 
         file_path = Path(base_dir) / f"{gauge_id}.parquet"
         if not file_path.exists():
-            return Failure(f"Timeseries file not found: {file_path}")
+            raise FileOperationError(f"Timeseries file not found: {file_path}")
 
         lf = pl.scan_parquet(str(file_path))
 
@@ -161,7 +181,7 @@ def _load_single_basin_lazy(
         if "date" not in schema:
             missing.append("date")
         if missing:
-            return Failure(f"Missing required columns in basin {gauge_id}: {missing}")
+            raise DataQualityError(f"Missing required columns in basin {gauge_id}: {missing}")
 
         # Add group identifier and select/sort
         lf = lf.with_columns(pl.lit(gauge_id).alias(group_identifier))
@@ -169,10 +189,12 @@ def _load_single_basin_lazy(
         select_cols = list(dict.fromkeys(select_cols))
         lf = lf.select(select_cols).sort("date")
 
-        return Success(lf)
+        return lf
 
     except Exception as exc:
-        return Failure(f"Error loading basin {gauge_id}: {exc}")
+        if isinstance(exc, (FileOperationError, DataQualityError)):
+            raise
+        raise FileOperationError(f"Error loading basin {gauge_id}: {exc}")
 
 
 def load_basins_timeseries_lazy(
@@ -180,23 +202,41 @@ def load_basins_timeseries_lazy(
     region_time_series_base_dirs: dict[str, Path],
     required_columns: list[str],
     group_identifier: str = "gauge_id",
-) -> Result[pl.LazyFrame, str]:
-    """Lazily load & stack time-series for multiple basins."""
+) -> pl.LazyFrame:
+    """
+    Lazily load & stack time-series for multiple basins.
+
+    Args:
+        gauge_ids: List of gauge IDs to load
+        region_time_series_base_dirs: Dictionary mapping region prefixes to base directories
+        required_columns: List of required column names
+        group_identifier: Column name for group identification
+
+    Returns:
+        pl.LazyFrame: Combined lazy frame with all basins
+
+    Raises:
+        ConfigurationError: If no gauge IDs provided
+        FileOperationError: If no basins could be loaded
+        DataQualityError: If data quality issues are found
+    """
     if not gauge_ids:
-        return Failure("No gauge IDs provided for loading")
+        raise ConfigurationError("No gauge IDs provided for loading")
 
     lazy_frames: list[pl.LazyFrame] = []
     for gid in gauge_ids:
-        result = _load_single_basin_lazy(gid, region_time_series_base_dirs, required_columns, group_identifier)
-        if isinstance(result, Failure):
-            return result
-        lazy_frames.append(result.unwrap())
+        try:
+            lf = _load_single_basin_lazy(gid, region_time_series_base_dirs, required_columns, group_identifier)
+            lazy_frames.append(lf)
+        except (FileOperationError, DataQualityError) as e:
+            # Re-raise the specific error from the helper function
+            raise e
 
     if not lazy_frames:
-        return Failure("No basins were successfully loaded.")
+        raise FileOperationError("No basins were successfully loaded.")
 
     combined = pl.concat(lazy_frames, how="vertical").sort([group_identifier, "date"])
-    return Success(combined)
+    return combined
 
 
 def write_train_val_test_splits_to_disk(
@@ -207,9 +247,21 @@ def write_train_val_test_splits_to_disk(
     group_identifier: str = "gauge_id",
     compression: str = "zstd",
     basin_ids: list[str] | None = None,
-) -> Result[None, str]:
+) -> None:
     """
     Write train, validation, and test splits to disk as individual Parquet files per group.
+
+    Args:
+        train_df: Training data DataFrame
+        val_df: Validation data DataFrame
+        test_df: Test data DataFrame
+        output_dir: Output directory path
+        group_identifier: Column name for group identification
+        compression: Parquet compression type
+        basin_ids: Optional list of basin IDs to process
+
+    Raises:
+        FileOperationError: If writing to disk fails
     """
     base_path = Path(output_dir)
 
@@ -219,18 +271,18 @@ def write_train_val_test_splits_to_disk(
             basin_ids = train_df[group_identifier].unique().to_list()
         else:
             # Handle case where train_df might be empty or missing the identifier
-            # Maybe try inferring from val or test, or return Failure
+            # Maybe try inferring from val or test
             if val_df.height > 0 and group_identifier in val_df.columns:
                 basin_ids = val_df[group_identifier].unique().to_list()
             elif test_df.height > 0 and group_identifier in test_df.columns:
                 basin_ids = test_df[group_identifier].unique().to_list()
             else:
                 logger.warning("Cannot infer basin IDs, no data found in splits.")
-                basin_ids = []  # Or return Failure("Could not infer basin IDs")?
+                basin_ids = []
 
     if not basin_ids:
         logger.warning("No basin IDs to process for writing splits.")
-        return Success(None)  # Nothing to write
+        return  # Nothing to write
 
     try:
         for split_name, df in (
@@ -251,9 +303,8 @@ def write_train_val_test_splits_to_disk(
                     out_file = split_path / f"{gid}.parquet"
                     basin_split_df.write_parquet(out_file, compression=compression)
 
-        return Success(None)
     except Exception as exc:
-        return Failure(f"Error writing splits to disk: {exc}")
+        raise FileOperationError(f"Error writing splits to disk: {exc}")
 
 
 def batch_process_time_series_data(
@@ -261,15 +312,12 @@ def batch_process_time_series_data(
     config: ProcessingConfig,
     features_pipeline: GroupedPipeline,
     target_pipeline: GroupedPipeline,
-) -> Result[
-    tuple[
-        pl.DataFrame,
-        pl.DataFrame,
-        pl.DataFrame,
-        dict[str, GroupedPipeline],
-        dict[str, BasinQualityReport],
-    ],
-    str,
+) -> tuple[
+    pl.DataFrame,
+    pl.DataFrame,
+    pl.DataFrame,
+    dict[str, GroupedPipeline],
+    dict[str, BasinQualityReport],
 ]:
     """
     Clean, split, fit on train, and transform time-series data.
@@ -281,82 +329,83 @@ def batch_process_time_series_data(
         target_pipeline: GroupedPipeline for target transformation (passed for fitting).
 
     Returns:
-        Success containing a tuple:
+        tuple containing:
             - train_df: Eager Polars DataFrame for the training split.
             - val_df: Eager Polars DataFrame for the validation split.
             - test_df: Eager Polars DataFrame for the test split.
             - fitted_pipelines: Dictionary of fitted GroupedPipelines for this batch.
             - quality_reports: Dictionary of BasinQualityReport objects for basins in this batch.
-        Failure containing an error message string.
+
+    Raises:
+        DataQualityError: If data cleaning or quality checks fail
+        DataProcessingError: If pipeline fitting or transformation fails
     """
-    clean_result = clean_data(lf, config)
-    if isinstance(clean_result, Failure):
-        return Failure(f"Data cleaning failed: {clean_result.failure()}")
-    cleaned_df, quality_reports = clean_result.unwrap()
+    try:
+        cleaned_df, quality_reports = clean_data(lf, config)
+    except Exception as e:
+        raise DataQualityError(f"Data cleaning failed: {e}")
 
     valid_basins = [basin_id for basin_id, report in quality_reports.items() if report.passed_quality_check]
     if not valid_basins:
-        return Failure("No valid basins found after quality checks in this batch.")
+        raise DataQualityError("No valid basins found after quality checks in this batch.")
 
     cleaned_df_valid_basins = cleaned_df.filter(pl.col(config.group_identifier).is_in(valid_basins))
 
     if cleaned_df_valid_basins.height == 0:
-        return Failure("Cleaned DataFrame is empty after filtering for valid basins.")
+        raise DataQualityError("Cleaned DataFrame is empty after filtering for valid basins.")
 
     train_df, val_df, test_df = split_data(cleaned_df_valid_basins, config)
 
     if train_df.height == 0:
         logger.warning("Training split is empty for this batch. Cannot fit pipelines.")
-        return Success((pl.DataFrame(), pl.DataFrame(), pl.DataFrame(), {}, quality_reports))
+        return pl.DataFrame(), pl.DataFrame(), pl.DataFrame(), {}, quality_reports
 
     train_pd_df = train_df.to_pandas()
 
     batch_features_pipeline = clone(features_pipeline)
     batch_target_pipeline = clone(target_pipeline)
 
-    fit_result = fit_time_series_pipelines(
-        train_pd_df,
-        batch_features_pipeline,
-        batch_target_pipeline,
-    )
-    if isinstance(fit_result, Failure):
-        return Failure(f"Pipeline fitting failed: {fit_result.failure()}")
-    fitted_batch_pipelines = fit_result.unwrap()
+    try:
+        fitted_batch_pipelines = fit_time_series_pipelines(
+            train_pd_df,
+            batch_features_pipeline,
+            batch_target_pipeline,
+        )
+    except Exception as e:
+        raise DataProcessingError(f"Pipeline fitting failed: {e}")
 
     val_pd_df = val_df.to_pandas() if val_df.height > 0 else pd.DataFrame()
     test_pd_df = test_df.to_pandas() if test_df.height > 0 else pd.DataFrame()
 
-    train_transformed_result = transform_time_series_data(train_pd_df, fitted_batch_pipelines)
-    if isinstance(train_transformed_result, Failure):
-        return Failure(f"Train transform failed: {train_transformed_result.failure()}")
-    train_transformed_pd = train_transformed_result.unwrap()
+    try:
+        train_transformed_pd = transform_time_series_data(train_pd_df, fitted_batch_pipelines)
+    except Exception as e:
+        raise DataProcessingError(f"Train transform failed: {e}")
 
     val_transformed_pd = pd.DataFrame()
     if not val_pd_df.empty:
-        val_transformed_result = transform_time_series_data(val_pd_df, fitted_batch_pipelines)
-        if isinstance(val_transformed_result, Failure):
-            return Failure(f"Validation transform failed: {val_transformed_result.failure()}")
-        val_transformed_pd = val_transformed_result.unwrap()
+        try:
+            val_transformed_pd = transform_time_series_data(val_pd_df, fitted_batch_pipelines)
+        except Exception as e:
+            raise DataProcessingError(f"Validation transform failed: {e}")
 
     test_transformed_pd = pd.DataFrame()
     if not test_pd_df.empty:
-        test_transformed_result = transform_time_series_data(test_pd_df, fitted_batch_pipelines)
-        if isinstance(test_transformed_result, Failure):
-            return Failure(f"Test transform failed: {test_transformed_result.failure()}")
-        test_transformed_pd = test_transformed_result.unwrap()
+        try:
+            test_transformed_pd = transform_time_series_data(test_pd_df, fitted_batch_pipelines)
+        except Exception as e:
+            raise DataProcessingError(f"Test transform failed: {e}")
 
     final_train_df = pl.from_pandas(train_transformed_pd) if not train_transformed_pd.empty else pl.DataFrame()
     final_val_df = pl.from_pandas(val_transformed_pd) if not val_transformed_pd.empty else pl.DataFrame()
     final_test_df = pl.from_pandas(test_transformed_pd) if not test_transformed_pd.empty else pl.DataFrame()
 
-    return Success(
-        (
-            final_train_df,
-            final_val_df,
-            final_test_df,
-            fitted_batch_pipelines,
-            quality_reports,
-        )
+    return (
+        final_train_df,
+        final_val_df,
+        final_test_df,
+        fitted_batch_pipelines,
+        quality_reports,
     )
 
 
@@ -376,7 +425,7 @@ def run_hydro_processor(
     test_prop: float = 0.25,
     list_of_gauge_ids_to_process: list[str] | None = None,
     basin_batch_size: int = 50,
-) -> Result[ProcessingOutput, str]:
+) -> ProcessingOutput:
     """
     Main function to run the hydrological data processor with preprocessing pipelines.
 
@@ -390,6 +439,31 @@ def run_hydro_processor(
     7. Creates a success marker file if everything succeeds.
 
     **Note:** This version removes the index entry creation step.
+
+    Args:
+        region_time_series_base_dirs: Dictionary mapping region prefixes to time series base directories
+        region_static_attributes_base_dirs: Dictionary mapping region prefixes to static attributes base directories
+        path_to_preprocessing_output_directory: Path to output directory
+        required_columns: List of required column names
+        run_uuid: Unique identifier for this run
+        datamodule_config: Configuration dictionary for data module
+        preprocessing_config: Configuration dictionary for preprocessing pipelines
+        min_train_years: Minimum training years required
+        max_imputation_gap_size: Maximum gap size for imputation
+        group_identifier: Column name for group identification
+        train_prop: Proportion of data for training
+        val_prop: Proportion of data for validation
+        test_prop: Proportion of data for testing
+        list_of_gauge_ids_to_process: Optional list of gauge IDs to process
+        basin_batch_size: Batch size for processing basins
+
+    Returns:
+        ProcessingOutput: Object containing all output paths and artifacts
+
+    Raises:
+        ConfigurationError: If configuration is invalid
+        FileOperationError: If file operations fail
+        DataProcessingError: If data processing fails
     """
     try:
         # Setup processing configuration
@@ -419,9 +493,10 @@ def run_hydro_processor(
         success_marker_path = run_output_dir / "_SUCCESS"
 
         # Save DataModule config early
-        save_result = save_config(datamodule_config, config_path)
-        if isinstance(save_result, Failure):
-            return Failure(f"Failed to save config: {save_result.failure()}")
+        try:
+            save_config(datamodule_config, config_path)
+        except Exception as e:
+            raise FileOperationError(f"Failed to save config: {e}")
         logger.info(f"Config saved to {config_path}")
 
         static_features_path = run_output_dir / "processed_static_features.parquet"
@@ -430,23 +505,22 @@ def run_hydro_processor(
 
         if "static_features" in preprocessing_config and list_of_gauge_ids_to_process:
             logger.info("Processing static features...")
-            static_processing_results = process_static_data(
-                region_static_attributes_base_dirs,
-                list_of_gauge_ids_to_process,
-                preprocessing_config,
-                static_features_path,
-                group_identifier,
-            )
-
-            if isinstance(static_processing_results, Success):
-                save_path_static, static_pipeline_fitted = static_processing_results.unwrap()
-                save_results = save_static_pipeline(static_pipeline_fitted, fitted_static_path)
-                if isinstance(save_results, Failure):
-                    return Failure(f"Failed to save static pipeline: {save_results.failure()}")
+            try:
+                save_path_static, static_pipeline_fitted = process_static_data(
+                    region_static_attributes_base_dirs,
+                    list_of_gauge_ids_to_process,
+                    preprocessing_config,
+                    static_features_path,
+                    group_identifier,
+                )
+                try:
+                    save_static_pipeline(static_pipeline_fitted, fitted_static_path)
+                except Exception as e:
+                    raise FileOperationError(f"Failed to save static pipeline: {e}")
                 logger.info(f"Static features saved to {save_path_static}")
                 logger.info(f"Static features pipeline saved to {fitted_static_path}")
-            else:
-                logger.warning(f"Static data processing failed: {static_processing_results.failure()}")
+            except Exception as e:
+                logger.warning(f"Static data processing failed: {e}")
                 static_features_path = None
                 fitted_static_path = None
         else:
@@ -465,13 +539,13 @@ def run_hydro_processor(
             main_pipelines["target"].fitted_pipelines.clear()
 
         if not main_pipelines:
-            return Failure("No time series pipelines ('features' or 'target') found in preprocessing_config.")
+            raise ConfigurationError("No time series pipelines ('features' or 'target') found in preprocessing_config.")
 
         all_quality_reports: dict[str, BasinQualityReport] = {}
         processed_basin_count = 0
 
         if not list_of_gauge_ids_to_process:
-            return Failure("No gauge IDs provided for time series processing.")
+            raise ConfigurationError("No gauge IDs provided for time series processing.")
 
         logger.info(
             f"Starting time series processing for {len(list_of_gauge_ids_to_process)} basins in batches of {basin_batch_size}..."
@@ -480,40 +554,37 @@ def run_hydro_processor(
             logger.info(f"--- Processing Batch {batch_num + 1} ({len(batch_ids)} basins) ---")
 
             # Load data for the batch
-            loading_results = load_basins_timeseries_lazy(
-                batch_ids,
-                region_time_series_base_dirs,
-                required_columns,
-                group_identifier,
-            )
-            if isinstance(loading_results, Failure):
-                logger.error(f"Failed to load batch {batch_num + 1}: {loading_results.failure()}")
+            try:
+                lf = load_basins_timeseries_lazy(
+                    batch_ids,
+                    region_time_series_base_dirs,
+                    required_columns,
+                    group_identifier,
+                )
+            except Exception as e:
+                logger.error(f"Failed to load batch {batch_num + 1}: {e}")
                 continue  # Skip to next batch
-
-            lf = loading_results.unwrap()
 
             # Process the batch: clean, split, fit, transform
-            batch_result = batch_process_time_series_data(
-                lf,
-                config=config,
-                features_pipeline=main_pipelines["features"],
-                target_pipeline=main_pipelines["target"],
-            )
-
-            if isinstance(batch_result, Failure):
-                logger.error(f"Failed processing batch {batch_num + 1}: {batch_result.failure()}")
+            try:
+                train_df, val_df, test_df, batch_fitted_pipelines, quality_reports = batch_process_time_series_data(
+                    lf,
+                    config=config,
+                    features_pipeline=main_pipelines["features"],
+                    target_pipeline=main_pipelines["target"],
+                )
+            except Exception as e:
+                logger.error(f"Failed processing batch {batch_num + 1}: {e}")
                 continue  # Skip to next batch
-
-            # Unpack successful batch results
-            train_df, val_df, test_df, batch_fitted_pipelines, quality_reports = batch_result.unwrap()
 
             # Save quality reports for this batch
             for gauge_id, report in quality_reports.items():
                 report_name = f"{gauge_id}.json"
                 save_path = quality_reports_dir / report_name
-                succ_flag, _, error = save_quality_report_to_json(report=report, path=save_path)
-                if not succ_flag:
-                    logger.warning(f"Failed to save quality report for {gauge_id}: {error}")
+                try:
+                    save_quality_report_to_json(report=report, path=save_path)
+                except FileOperationError as e:
+                    logger.warning(f"Failed to save quality report for {gauge_id}: {e}")
                 all_quality_reports[gauge_id] = report  # Collect for summary
 
             # Merge fitted pipelines from this batch into the main pipelines
@@ -534,17 +605,18 @@ def run_hydro_processor(
                             )
 
             # Write processed train/val/test splits to disk for this batch
-            write_results = write_train_val_test_splits_to_disk(
-                train_df,
-                val_df,
-                test_df,
-                output_dir=ts_output_dir,  # Base directory for splits
-                group_identifier=group_identifier,
-                basin_ids=batch_ids,  # Write only for basins in this batch
-            )
-            if isinstance(write_results, Failure):
+            try:
+                write_train_val_test_splits_to_disk(
+                    train_df,
+                    val_df,
+                    test_df,
+                    output_dir=ts_output_dir,  # Base directory for splits
+                    group_identifier=group_identifier,
+                    basin_ids=batch_ids,  # Write only for basins in this batch
+                )
+            except Exception as e:
                 # Log error but continue to next batch if possible
-                logger.error(f"Failed to write processed data for batch {batch_num + 1}: {write_results.failure()}")
+                logger.error(f"Failed to write processed data for batch {batch_num + 1}: {e}")
                 continue
 
             processed_basin_count += len(batch_ids)  # Count basins attempted in the batch
@@ -553,19 +625,20 @@ def run_hydro_processor(
         logger.info(f"Finished processing all time series batches. Attempted {processed_basin_count} basins.")
 
         if main_pipelines:
-            save_results = save_time_series_pipelines(main_pipelines, fitted_ts_pipelines_path)
-            if isinstance(save_results, Failure):
-                return Failure(f"Failed to save final time series pipelines: {save_results.failure()}")
+            try:
+                save_time_series_pipelines(main_pipelines, fitted_ts_pipelines_path)
+            except Exception as e:
+                raise FileOperationError(f"Failed to save final time series pipelines: {e}")
             logger.info(f"Fitted time series pipelines saved to {fitted_ts_pipelines_path}")
         else:
             # Handle case where no time series pipelines were defined/fitted
             logger.warning("No main time series pipelines were fitted or saved.")
             fitted_ts_pipelines_path = None  # Mark as unavailable
 
-        summary_result = summarize_quality_reports_from_folder(quality_reports_dir, summary_quality_report_path)
-        if isinstance(summary_result, Failure):
-            return Failure(f"Failed to create summary report: {summary_result.failure()}")
-        summary_report = summary_result.unwrap()
+        try:
+            summary_report = summarize_quality_reports_from_folder(quality_reports_dir, summary_quality_report_path)
+        except Exception as e:
+            raise FileOperationError(f"Failed to create summary report: {e}")
         logger.info(f"Summary quality report saved to {summary_quality_report_path}")
 
         success_marker_path.touch(exist_ok=True)
@@ -584,10 +657,10 @@ def run_hydro_processor(
             summary_quality_report=summary_report,
         )
 
-        return Success(output)
+        return output
 
     except Exception as e:
         import traceback
 
         logger.error(f"ERROR in run_hydro_processor: {e}\n{traceback.format_exc()}")
-        return Failure(f"Unexpected error during hydro processing: {e}")
+        raise DataProcessingError(f"Unexpected error during hydro processing: {e}")

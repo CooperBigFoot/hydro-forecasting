@@ -4,14 +4,14 @@ import logging
 import numpy as np
 import polars as pl
 import torch
-from returns.result import Failure, Result, Success, safe
 from torch.utils.data import Dataset
+
+from ..exceptions import DataProcessingError
 
 # Configure logging
 logger = logging.getLogger(__name__)
 
 
-@safe
 def _calculate_valid_sequences(
     basin_data: pl.DataFrame,
     input_length: int,
@@ -20,7 +20,7 @@ def _calculate_valid_sequences(
     value_columns: list[str],
 ) -> tuple[np.ndarray, np.ndarray]:
     """
-    Helper function containing the core numpy logic, wrapped by @safe.
+    Helper function containing the core numpy logic.
 
     Args:
         basin_data: Polars DataFrame for a single basin.
@@ -71,9 +71,9 @@ def find_valid_sequences(
     output_length: int,
     target_col_name: str,
     forcing_cols_names: list[str],
-) -> Result[tuple[np.ndarray, np.ndarray], str]:
+) -> tuple[np.ndarray, np.ndarray]:
     """
-    Identify start indices of valid sequences within a time series DataFrame using ROP.
+    Identify start indices of valid sequences within a time series DataFrame.
 
     A sequence is valid if both the input window (length `input_length`) and
     the subsequent output window (length `output_length`) contain no null (NaN)
@@ -88,43 +88,42 @@ def find_valid_sequences(
         target_col_name: Name of the target column to check for NaNs.
         forcing_cols_names: List of forcing column names to check for NaNs.
 
-
     Returns:
-        Success containing a tuple:
+        A tuple containing:
             - np.ndarray: An array of integer start indices for valid sequences.
             - np.ndarray: An array of dates corresponding to each row in basin_data.
-        Failure containing an error message string if validation fails or calculation errors occur.
+
+    Raises:
+        DataProcessingError: If validation fails or calculation errors occur.
     """
     total_length = input_length + output_length
     value_columns_to_check = [target_col_name] + forcing_cols_names
     value_columns_to_check = sorted(list(set(value_columns_to_check)))  # Unique and sorted
 
-    initial_result: Result[pl.DataFrame, str] = Success(basin_data)
+    # Validation checks
+    if basin_data.height < total_length:
+        raise DataProcessingError(
+            f"Data height ({basin_data.height}) is less than total sequence length ({total_length})"
+        )
 
-    return (
-        initial_result.bind(
-            lambda df: Success(df)
-            if df.height >= total_length
-            else Failure(f"Data height ({df.height}) is less than total sequence length ({total_length})")
+    if "date" not in basin_data.columns:
+        raise DataProcessingError("DataFrame missing 'date' column")
+
+    if not all(col in basin_data.columns for col in value_columns_to_check):
+        raise DataProcessingError(
+            f"DataFrame missing one or more value columns for null checking. Expected: {value_columns_to_check}, Present: {basin_data.columns}"
         )
-        .bind(lambda df: Success(df) if "date" in df.columns else Failure("DataFrame missing 'date' column"))
-        .bind(
-            lambda df: Success(df)
-            if all(col in df.columns for col in value_columns_to_check)
-            else Failure(
-                f"DataFrame missing one or more value columns for null checking. Expected: {value_columns_to_check}, Present: {df.columns}"
-            )
+
+    try:
+        return _calculate_valid_sequences(
+            basin_data=basin_data,
+            input_length=input_length,
+            output_length=output_length,
+            total_length=total_length,
+            value_columns=value_columns_to_check,
         )
-        .bind(
-            lambda df: _calculate_valid_sequences(
-                basin_data=df,  # df here already only contains date + value cols for a single basin
-                input_length=input_length,
-                output_length=output_length,
-                total_length=total_length,
-                value_columns=value_columns_to_check,
-            ).alt(lambda exc: Failure(f"NumPy calculation error: {exc}"))
-        )
-    )
+    except Exception as exc:
+        raise DataProcessingError(f"NumPy calculation error: {exc}") from exc
 
 
 class InMemoryChunkDataset(Dataset):
