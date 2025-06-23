@@ -70,3 +70,15 @@ class PipelineCompatibilityError(HydroForecastingError):
     """
 
     pass
+
+
+class ModelTrainingError(HydroForecastingError):
+    """
+    Raised for errors during the model training, tuning, or fine-tuning lifecycle.
+
+    This includes training failures, hyperparameter tuning errors, model
+    convergence issues, and other problems that occur during the model
+    development and optimization process.
+    """
+
+    pass

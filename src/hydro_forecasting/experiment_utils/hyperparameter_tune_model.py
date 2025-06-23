@@ -1,5 +1,6 @@
 import gc
 import importlib
+import importlib.util
 import logging
 from pathlib import Path
 from typing import Any
@@ -10,11 +11,12 @@ import pandas as pd
 import pytorch_lightning as pl
 import torch
 import yaml
-from returns.result import Failure, Result, Success
+from returns.result import Success
 
 from hydro_forecasting.data.in_memory_datamodule import HydroInMemoryDataModule
 from hydro_forecasting.experiment_utils import checkpoint_manager
 from hydro_forecasting.models import model_factory
+from ..exceptions import ConfigurationError, FileOperationError, ModelTrainingError
 
 from .training_runner import _configure_trainer_core, _finalize_model_hyperparameters, _setup_datamodule_core
 
@@ -29,7 +31,7 @@ def _handle_trial_error(
     raise optuna.exceptions.TrialPruned(error_message)
 
 
-def _load_search_space(model_type: str, search_spaces_dir: str | Path = "search_spaces") -> Result[dict[str, Any], str]:
+def _load_search_space(model_type: str, search_spaces_dir: str | Path = "search_spaces") -> dict[str, Any]:
     """
     Get the expected parameters for a specified model type.
 
@@ -38,25 +40,29 @@ def _load_search_space(model_type: str, search_spaces_dir: str | Path = "search_
         search_spaces_dir: Directory containing search space definitions
 
     Returns:
-        Result containing the search space dictionary or an error message
+        The search space dictionary
+
+    Raises:
+        ConfigurationError: If search space file is not found or cannot be loaded
+        FileOperationError: If file operations fail
     """
     search_spaces_path = Path(search_spaces_dir)
     model_space_file = search_spaces_path / f"{model_type.lower()}_space.py"
     if not model_space_file.exists():
-        return Failure(f"Search space file not found: {model_space_file}")
+        raise FileOperationError(f"Search space file not found: {model_space_file}")
     try:
         spec = importlib.util.spec_from_file_location(f"search_spaces.{model_type.lower()}_space", model_space_file)
         if spec is None or spec.loader is None:
-            return Failure(f"Could not create module spec for {model_space_file}")
+            raise ConfigurationError(f"Could not create module spec for {model_space_file}")
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)  # type: ignore
         if not hasattr(module, "get_search_space"):
-            return Failure(f"'get_search_space' function not found in {model_space_file}")
-        return Success(module.get_search_space())
+            raise ConfigurationError(f"'get_search_space' function not found in {model_space_file}")
+        return module.get_search_space()
     except ImportError as e:
-        return Failure(f"Error importing search space for {model_type}: {e}")
+        raise ConfigurationError(f"Error importing search space for {model_type}: {e}")
     except Exception as e:
-        return Failure(f"Unexpected error loading search space for {model_type}: {e}")
+        raise ConfigurationError(f"Unexpected error loading search space for {model_type}: {e}")
 
 
 def _suggest_trial_hparams(trial: optuna.Trial, search_space: dict[str, Any]) -> dict[str, Any]:
@@ -96,7 +102,7 @@ def save_best_hp_to_yaml(
     best_config: dict[str, Any],
     output_dir: Path,
     model_type: str,
-) -> Result[Path, str]:
+) -> Path:
     """
     Save the best hyperparameters to a YAML file.
 
@@ -106,7 +112,10 @@ def save_best_hp_to_yaml(
         model_type: Type of model being tuned
 
     Returns:
-        Result containing the path to the saved YAML file or an error message
+        Path to the saved YAML file
+
+    Raises:
+        FileOperationError: If file operations fail
     """
     try:
         # Create output directory if it doesn't exist
@@ -120,18 +129,18 @@ def save_best_hp_to_yaml(
             yaml.safe_dump(best_config, f, default_flow_style=False, sort_keys=False)
 
         logger.info(f"Saved best hyperparameters to {yaml_path}")
-        return Success(yaml_path)
+        return yaml_path
 
     except Exception as e:
         logger.error(f"Error saving best HP to YAML: {e}", exc_info=True)
-        return Failure(f"Failed to save best hyperparameters to YAML: {e}")
+        raise FileOperationError(f"Failed to save best hyperparameters to YAML: {e}")
 
 
 def plot_optimization_history(
     study: optuna.Study,
     output_dir: Path,
     model_type: str,
-) -> Result[Path, str]:
+) -> Path:
     """
     Create and save optimization history plot.
 
@@ -141,7 +150,10 @@ def plot_optimization_history(
         model_type: Type of model being tuned
 
     Returns:
-        Result containing the path to the saved plot or an error message
+        Path to the saved plot
+
+    Raises:
+        FileOperationError: If file operations fail
     """
     try:
         # Create plots directory
@@ -166,18 +178,18 @@ def plot_optimization_history(
         plt.close()
 
         logger.info(f"Saved optimization history plot to {history_path}")
-        return Success(history_path)
+        return history_path
 
     except Exception as e:
         logger.error(f"Error creating optimization history plot: {e}", exc_info=True)
-        return Failure(f"Failed to create optimization history plot: {e}")
+        raise FileOperationError(f"Failed to create optimization history plot: {e}")
 
 
 def plot_parameter_importance(
     study: optuna.Study,
     output_dir: Path,
     model_type: str,
-) -> Result[Path, str]:
+) -> Path:
     """
     Create and save parameter importance plot.
 
@@ -187,12 +199,16 @@ def plot_parameter_importance(
         model_type: Type of model being tuned
 
     Returns:
-        Result containing the path to the saved plot or an error message
+        Path to the saved plot
+
+    Raises:
+        ConfigurationError: If there are not enough trials for importance analysis
+        FileOperationError: If file operations fail
     """
     try:
         # Check if there are enough trials for importance analysis
         if len(study.trials) < 5:
-            return Failure("Not enough trials (minimum 5) to calculate parameter importance")
+            raise ConfigurationError("Not enough trials (minimum 5) to calculate parameter importance")
 
         # Create plots directory
         plots_dir = output_dir / "plots"
@@ -218,11 +234,11 @@ def plot_parameter_importance(
         plt.close()
 
         logger.info(f"Saved parameter importance plot to {importance_path}")
-        return Success(importance_path)
+        return importance_path
 
     except Exception as e:
         logger.error(f"Error creating parameter importance plot: {e}", exc_info=True)
-        return Failure(f"Failed to create parameter importance plot: {e}")
+        raise FileOperationError(f"Failed to create parameter importance plot: {e}")
 
 
 def analyze_hpt_results(
@@ -231,7 +247,7 @@ def analyze_hpt_results(
     model_type: str,
     save_yaml: bool = True,
     create_plots: bool = True,
-) -> Result[dict[str, Any], str]:
+) -> dict[str, Any]:
     """
     Analyze hyperparameter tuning results, save best parameters to YAML,
     and create visualization plots.
@@ -244,11 +260,15 @@ def analyze_hpt_results(
         create_plots: Whether to create visualization plots
 
     Returns:
-        Result containing the best hyperparameters or an error message
+        The best hyperparameters configuration
+
+    Raises:
+        ConfigurationError: If no trials found in study
+        FileOperationError: If file operations fail during analysis
     """
     try:
         if not study.trials:
-            return Failure("No trials found in study.")
+            raise ConfigurationError("No trials found in study.")
 
         # Get best trial and its parameters
         best_trial = study.best_trial
@@ -270,28 +290,31 @@ def analyze_hpt_results(
 
         # Save best hyperparameters to YAML if requested
         if save_yaml:
-            yaml_result = save_best_hp_to_yaml(best_config, output_dir, model_type)
-            if not isinstance(yaml_result, Success):
-                logger.warning(f"Failed to save best HP to YAML: {yaml_result.failure()}")
+            try:
+                save_best_hp_to_yaml(best_config, output_dir, model_type)
+            except FileOperationError as e:
+                logger.warning(f"Failed to save best HP to YAML: {e}")
 
         # Create visualization plots if requested
         if create_plots and len(study.trials) > 1:
-            history_result = plot_optimization_history(study, output_dir, model_type)
-            if not isinstance(history_result, Success):
-                logger.warning(f"Failed to create optimization history plot: {history_result.failure()}")
+            try:
+                plot_optimization_history(study, output_dir, model_type)
+            except FileOperationError as e:
+                logger.warning(f"Failed to create optimization history plot: {e}")
 
             if len(study.trials) >= 5:
-                importance_result = plot_parameter_importance(study, output_dir, model_type)
-                if not isinstance(importance_result, Success):
-                    logger.warning(f"Failed to create parameter importance plot: {importance_result.failure()}")
+                try:
+                    plot_parameter_importance(study, output_dir, model_type)
+                except (ConfigurationError, FileOperationError) as e:
+                    logger.warning(f"Failed to create parameter importance plot: {e}")
             else:
                 logger.info("Not enough trials (minimum 5) to create parameter importance plot")
 
-        return Success(best_config)
+        return best_config
 
     except Exception as e:
         logger.error(f"Error analyzing HPT results: {e}", exc_info=True)
-        return Failure(f"Failed to analyze HPT results: {e}")
+        raise ConfigurationError(f"Failed to analyze HPT results: {e}")
 
 
 def hyperparameter_tune_model(
@@ -311,7 +334,7 @@ def hyperparameter_tune_model(
     seed: int = 42,
     save_best_yaml: bool = True,
     create_plots: bool = True,
-) -> tuple[optuna.Study, Result[dict[str, Any], str]]:
+) -> tuple[optuna.Study, dict[str, Any]]:
     """
     Run hyperparameter tuning for a specified model.
 
@@ -335,7 +358,12 @@ def hyperparameter_tune_model(
     Returns:
         tuple containing:
         - optuna.Study: The completed study
-        - Result: Success with best hyperparameters or Failure with error message
+        - dict[str, Any]: Best hyperparameters configuration
+
+    Raises:
+        ConfigurationError: If configuration setup fails
+        FileOperationError: If file operations fail
+        ModelTrainingError: If model training fails
     """
     pl.seed_everything(seed, workers=True)
     output_dir_study_path = Path(output_dir_study)
@@ -353,12 +381,11 @@ def hyperparameter_tune_model(
 
     logger.info(f"Optuna study storage: {optuna_storage_url}, Name: {experiment_name}")
 
-    search_space_result = _load_search_space(model_type, search_spaces_dir)
-    if not isinstance(search_space_result, Success):  # Check for Failure
-        err_msg = search_space_result.failure()
-        logger.error(f"Failed to load search space for {model_type}: {err_msg}")
-        raise ValueError(f"Failed to load search space: {err_msg}")
-    search_space = search_space_result.unwrap()
+    try:
+        search_space = _load_search_space(model_type, search_spaces_dir)
+    except (ConfigurationError, FileOperationError) as e:
+        logger.error(f"Failed to load search space for {model_type}: {e}")
+        raise ConfigurationError(f"Failed to load search space: {e}")
 
     def _objective(trial: optuna.Trial) -> float:
         model_pl: pl.LightningModule | None = None
@@ -405,15 +432,18 @@ def hyperparameter_tune_model(
 
             # 2. Configure datamodule with trial hyperparameters using the core helper
             # trial_hparams will provide overrides for input_length, batch_size etc.
-            datamodule_result = _setup_datamodule_core(
-                base_datamodule_config=datamodule_config,
-                hps_for_datamodule=trial_hparams,
-                gauge_ids=gauge_ids,
-                model_type=model_type,
-            )
-            if not isinstance(datamodule_result, Success):
-                return _handle_trial_error(f"DataModule config error: {datamodule_result.failure()}", trial)
-            datamodule = datamodule_result.unwrap()
+            try:
+                datamodule_result = _setup_datamodule_core(
+                    base_datamodule_config=datamodule_config,
+                    hps_for_datamodule=trial_hparams,
+                    gauge_ids=gauge_ids,
+                    model_type=model_type,
+                )
+                if not isinstance(datamodule_result, Success):
+                    return _handle_trial_error(f"DataModule config error: {datamodule_result.failure()}", trial)
+                datamodule = datamodule_result.unwrap()
+            except Exception as e:
+                return _handle_trial_error(f"DataModule setup error: {e}", trial)
 
             # 3. Finalize model HPs using the configured datamodule
             finalized_model_hps = _finalize_model_hyperparameters(
@@ -438,21 +468,24 @@ def hyperparameter_tune_model(
                 "with_tensorboard_logger": True,
             }
 
-            trainer_result = _configure_trainer_core(
-                training_config=training_config,
-                callbacks_config=callbacks_config_hpt,
-                is_hpt_trial=True,
-                hpt_metric_to_monitor=metric_to_optimize,
-                optuna_trial_for_pruning=None,
-                checkpoint_dir_for_run=checkpoint_dir_for_trial,
-                log_dir_for_run=log_dir_for_trial,
-                model_type_for_paths=model_type,
-                run_idx_for_paths=trial.number,
-            )
+            try:
+                trainer_result = _configure_trainer_core(
+                    training_config=training_config,
+                    callbacks_config=callbacks_config_hpt,
+                    is_hpt_trial=True,
+                    hpt_metric_to_monitor=metric_to_optimize,
+                    optuna_trial_for_pruning=None,
+                    checkpoint_dir_for_run=checkpoint_dir_for_trial,
+                    log_dir_for_run=log_dir_for_trial,
+                    model_type_for_paths=model_type,
+                    run_idx_for_paths=trial.number,
+                )
 
-            if not isinstance(trainer_result, Success):
-                return _handle_trial_error(f"Trainer config error: {trainer_result.failure()}", trial)
-            trainer_pl = trainer_result.unwrap()
+                if not isinstance(trainer_result, Success):
+                    return _handle_trial_error(f"Trainer config error: {trainer_result.failure()}", trial)
+                trainer_pl = trainer_result.unwrap()
+            except Exception as e:
+                return _handle_trial_error(f"Trainer setup error: {e}", trial)
 
             # 6. Train the model
             trainer_pl.fit(model_pl, datamodule=datamodule)
@@ -494,7 +527,7 @@ def hyperparameter_tune_model(
     )
     study.set_user_attr("model_type", model_type)
 
-    analysis_result = Failure("Study optimization not yet run")
+    best_config: dict[str, Any] = {}
 
     try:
         study.optimize(
@@ -505,7 +538,7 @@ def hyperparameter_tune_model(
         )
 
         # Analyze HPT results after study optimization
-        analysis_result = analyze_hpt_results(
+        best_config = analyze_hpt_results(
             study=study,
             output_dir=study_dir,
             model_type=model_type,
@@ -515,10 +548,13 @@ def hyperparameter_tune_model(
 
     except KeyboardInterrupt:
         logger.warning(f"Optuna optimization for study '{experiment_name}' interrupted.")
+    except (ConfigurationError, FileOperationError, ModelTrainingError) as e:
+        logger.error(f"Error during study optimization for '{experiment_name}': {e}", exc_info=True)
+        raise
     except Exception as e:
         logger.error(f"Unexpected error during study.optimize for '{experiment_name}': {e}", exc_info=True)
-        analysis_result = Failure(f"Study optimization failed: {e}")
+        raise ModelTrainingError(f"Study optimization failed: {e}")
     finally:
         logger.info(f"Optuna study '{experiment_name}' process finished or interrupted.")
 
-    return study, analysis_result
+    return study, best_config

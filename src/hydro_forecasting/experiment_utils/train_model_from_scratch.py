@@ -3,8 +3,8 @@ from pathlib import Path
 from typing import Any
 
 import pytorch_lightning as pl
-from returns.result import Failure, Result
 
+from ..exceptions import ConfigurationError, FileOperationError
 from ..models import model_factory
 from .training_runner import ExperimentRunner, ModelProviderFn
 
@@ -30,9 +30,16 @@ def train_model_from_scratch(
     num_runs: int = 1,
     base_seed: int = 42,
     override_previous_attempts: bool = False,
-) -> Result[dict[str, tuple[str | None, dict[str, Any]]], str]:
+) -> dict[str, tuple[str | None, dict[str, Any]]]:
     """
     Train one or more hydrological forecasting models from scratch.
+    
+    Returns:
+        A dictionary mapping model types to tuples containing checkpoint paths and metrics.
+        
+    Raises:
+        FileOperationError: If required YAML files don't exist.
+        ConfigurationError: If model_types and yaml_paths lengths don't match.
     """
     actual_yaml_paths: list[str]
     if isinstance(yaml_paths, str):
@@ -42,7 +49,7 @@ def train_model_from_scratch(
             for model_type in model_types:
                 yaml_path_obj = yaml_dir / f"{model_type.lower()}.yaml"
                 if not yaml_path_obj.exists():
-                    return Failure(f"YAML file for model type '{model_type}' not found at {yaml_path_obj}")
+                    raise FileOperationError(f"YAML file for model type '{model_type}' not found at {yaml_path_obj}")
                 resolved_yaml_paths.append(str(yaml_path_obj))
             actual_yaml_paths = resolved_yaml_paths
         else:
@@ -54,7 +61,7 @@ def train_model_from_scratch(
         actual_yaml_paths = yaml_paths
 
     if len(model_types) != len(actual_yaml_paths):
-        return Failure("Length of model_types must match length of resolved yaml_paths")
+        raise ConfigurationError("Length of model_types must match length of resolved yaml_paths")
 
     runner = ExperimentRunner(
         output_dir=output_dir,
