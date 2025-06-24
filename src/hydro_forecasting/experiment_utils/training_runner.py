@@ -73,7 +73,27 @@ def _setup_datamodule_core(
         current_datamodule_config["batch_size"] = hps_for_datamodule["batch_size"]
 
     try:
-        datamodule = HydroInMemoryDataModule(list_of_gauge_ids_to_process=gauge_ids, **current_datamodule_config)
+        datamodule = HydroInMemoryDataModule(
+            list_of_gauge_ids_to_process=gauge_ids,
+            region_time_series_base_dirs=current_datamodule_config["region_time_series_base_dirs"],
+            region_static_attributes_base_dirs=current_datamodule_config["region_static_attributes_base_dirs"],
+            path_to_preprocessing_output_directory=current_datamodule_config["path_to_preprocessing_output_directory"],
+            group_identifier=current_datamodule_config["group_identifier"],
+            batch_size=current_datamodule_config["batch_size"],
+            forcing_features=current_datamodule_config["forcing_features"],
+            static_features=current_datamodule_config["static_features"],
+            target=current_datamodule_config["target"],
+            num_workers=current_datamodule_config["num_workers"],
+            min_train_years=current_datamodule_config["min_train_years"],
+            train_prop=current_datamodule_config["train_prop"],
+            val_prop=current_datamodule_config["val_prop"],
+            test_prop=current_datamodule_config["test_prop"],
+            max_imputation_gap_size=current_datamodule_config["max_imputation_gap_size"],
+            chunk_size=current_datamodule_config["chunk_size"],
+            validation_chunk_size=current_datamodule_config["validation_chunk_size"],
+            is_autoregressive=current_datamodule_config["is_autoregressive"],
+            preprocessing_configs=current_datamodule_config["preprocessing_configs"],
+        )
         datamodule.prepare_data()
         datamodule.setup()
         return datamodule
