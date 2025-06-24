@@ -34,6 +34,7 @@ from hydro_forecasting.data.preprocessing import (
 )
 from hydro_forecasting.exceptions import (
     ConfigurationError,
+    DataProcessingError,
     DataQualityError,
     FileOperationError,
 )
@@ -593,13 +594,12 @@ class TestBatchProcessTimeSeriesData:
             lf=lf, config=processing_config, features_pipeline=features_pipeline, target_pipeline=target_pipeline
         )
 
-        train_df, val_df, test_df, fitted_pipelines, quality_reports = result
+        train_df, val_df, test_df, fitted_pipelines = result
 
         assert isinstance(train_df, pl.DataFrame)
         assert isinstance(val_df, pl.DataFrame)
         assert isinstance(test_df, pl.DataFrame)
         assert isinstance(fitted_pipelines, dict)
-        assert isinstance(quality_reports, dict)
 
         # Should have some data
         assert train_df.height > 0
@@ -627,7 +627,7 @@ class TestBatchProcessTimeSeriesData:
 
         target_pipeline = UnifiedPipeline(pipeline=Pipeline([("scaler", MinMaxScaler())]), columns=["streamflow"])
 
-        with pytest.raises(DataQualityError, match="No valid basins found after quality checks"):
+        with pytest.raises(DataQualityError, match="Cleaned DataFrame is empty"):
             batch_process_time_series_data(
                 lf=lf, config=processing_config, features_pipeline=features_pipeline, target_pipeline=target_pipeline
             )
@@ -644,15 +644,15 @@ class TestBatchProcessTimeSeriesData:
 
         target_pipeline = UnifiedPipeline(pipeline=Pipeline([("scaler", MinMaxScaler())]), columns=["streamflow"])
 
-        with pytest.raises(DataQualityError, match="Quality check failed"):
+        with pytest.raises(DataProcessingError, match="Pipeline must be fitted before transform"):
             batch_process_time_series_data(
                 lf=lf, config=processing_config, features_pipeline=features_pipeline, target_pipeline=target_pipeline
             )
 
-    @patch("hydro_forecasting.data.preprocessing.clean_data")
-    def test_batch_process_empty_training_data(self, mock_clean_data, processing_config):
+    @patch("hydro_forecasting.data.preprocessing.apply_cleaning_steps")
+    def test_batch_process_empty_training_data(self, mock_apply_cleaning_steps, processing_config):
         """Test handling when training split is empty."""
-        # Mock clean_data to return empty training data
+        # Mock apply_cleaning_steps to return empty training data
         mock_df = pl.DataFrame(
             {
                 "gauge_id": ["basin_001"],
@@ -663,9 +663,7 @@ class TestBatchProcessTimeSeriesData:
             }
         )
 
-        mock_reports = {"basin_001": Mock(passed_quality_check=True)}
-
-        mock_clean_data.return_value = (mock_df, mock_reports)
+        mock_apply_cleaning_steps.return_value = mock_df
 
         # Create mock LazyFrame
         mock_lf = Mock()
@@ -683,7 +681,7 @@ class TestBatchProcessTimeSeriesData:
             lf=mock_lf, config=processing_config, features_pipeline=features_pipeline, target_pipeline=target_pipeline
         )
 
-        train_df, val_df, test_df, fitted_pipelines, quality_reports = result
+        train_df, val_df, test_df, fitted_pipelines = result
 
         # Should return empty DataFrames
         assert train_df.height == 0

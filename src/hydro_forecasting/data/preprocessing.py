@@ -29,9 +29,11 @@ from ..preprocessing.unified import UnifiedPipeline
 from .clean_data import (
     BasinQualityReport,
     SummaryQualityReport,
+    apply_cleaning_steps,
     clean_data,
     save_quality_report_to_json,
     summarize_quality_reports_from_folder,
+    validate_basin_quality,
 )
 from .config_utils import save_config
 
@@ -363,10 +365,10 @@ def batch_process_time_series_data(
     pl.DataFrame,
     pl.DataFrame,
     dict[str, GroupedPipeline | UnifiedPipeline],
-    dict[str, BasinQualityReport],
 ]:
     """
     Clean, split, fit on train, and transform time-series data.
+    Assumes data has already been validated in the pre-validation stage.
 
     Args:
         lf: Polars LazyFrame containing the time-series data for a batch of basins.
@@ -380,31 +382,24 @@ def batch_process_time_series_data(
             - val_df: Eager Polars DataFrame for the validation split.
             - test_df: Eager Polars DataFrame for the test split.
             - fitted_pipelines: Dictionary of fitted pipelines for this batch.
-            - quality_reports: Dictionary of BasinQualityReport objects for basins in this batch.
 
     Raises:
-        DataQualityError: If data cleaning or quality checks fail
+        DataQualityError: If data cleaning fails
         DataProcessingError: If pipeline fitting or transformation fails
     """
     try:
-        cleaned_df, quality_reports = clean_data(lf, config)
+        cleaned_df = apply_cleaning_steps(lf, config)
     except Exception as e:
         raise DataQualityError(f"Data cleaning failed: {e}")
 
-    valid_basins = [basin_id for basin_id, report in quality_reports.items() if report.passed_quality_check]
-    if not valid_basins:
-        raise DataQualityError("No valid basins found after quality checks in this batch.")
+    if cleaned_df.height == 0:
+        raise DataQualityError("Cleaned DataFrame is empty.")
 
-    cleaned_df_valid_basins = cleaned_df.filter(pl.col(config.group_identifier).is_in(valid_basins))
-
-    if cleaned_df_valid_basins.height == 0:
-        raise DataQualityError("Cleaned DataFrame is empty after filtering for valid basins.")
-
-    train_df, val_df, test_df = split_data(cleaned_df_valid_basins, config)
+    train_df, val_df, test_df = split_data(cleaned_df, config)
 
     if train_df.height == 0:
         logger.warning("Training split is empty for this batch. Cannot fit pipelines.")
-        return pl.DataFrame(), pl.DataFrame(), pl.DataFrame(), {}, quality_reports
+        return pl.DataFrame(), pl.DataFrame(), pl.DataFrame(), {}
 
     train_pd_df = train_df.to_pandas()
 
@@ -472,7 +467,6 @@ def batch_process_time_series_data(
         final_val_df,
         final_test_df,
         fitted_batch_pipelines,
-        quality_reports,
     )
 
 
@@ -653,7 +647,7 @@ def run_hydro_processor(
                 )
 
                 # Run quality checks without raising on failure
-                _, batch_quality_reports = clean_data(val_lf, config, raise_on_failure=False)
+                _, batch_quality_reports = validate_basin_quality(val_lf, config, raise_on_failure=False)
 
                 # Track valid basins
                 for basin_id, report in batch_quality_reports.items():
@@ -741,8 +735,9 @@ def run_hydro_processor(
                     group_identifier,
                 )
 
-                # Clean and split the data (should pass quality checks now since we're using pre-validated basins)
-                cleaned_df, quality_reports = clean_data(fit_lf, config)
+                # Clean the data (should pass quality checks now since we're using pre-validated basins)
+                # Note: We skip validation since these are pre-validated basins
+                cleaned_df = apply_cleaning_steps(fit_lf, config)
                 train_df, _, _ = split_data(cleaned_df, config)
 
                 if train_df.height > 0:
@@ -799,7 +794,7 @@ def run_hydro_processor(
 
             # Process the batch: clean, split, fit, transform
             try:
-                train_df, val_df, test_df, batch_fitted_pipelines, quality_reports = batch_process_time_series_data(
+                train_df, val_df, test_df, batch_fitted_pipelines = batch_process_time_series_data(
                     lf,
                     config=config,
                     features_pipeline=main_pipelines.get("features"),
@@ -810,17 +805,7 @@ def run_hydro_processor(
                 continue  # Skip to next batch
 
             # Quality reports were already saved in pre-validation stage
-            # Just update the collection if there are any differences
-            for gauge_id, report in quality_reports.items():
-                if gauge_id not in all_quality_reports:
-                    # This shouldn't happen, but save it if it does
-                    report_name = f"{gauge_id}.json"
-                    save_path = quality_reports_dir / report_name
-                    try:
-                        save_quality_report_to_json(report=report, path=save_path)
-                    except FileOperationError as e:
-                        logger.warning(f"Failed to save quality report for {gauge_id}: {e}")
-                    all_quality_reports[gauge_id] = report
+            # No need to update them here as validation was done earlier
 
             # Merge fitted pipelines from this batch into the main pipelines
             # Only add if the pipeline was successfully fitted for this batch
