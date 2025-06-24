@@ -72,6 +72,21 @@ def _setup_datamodule_core(
     if "batch_size" in hps_for_datamodule:
         current_datamodule_config["batch_size"] = hps_for_datamodule["batch_size"]
 
+    # Ensure input_length and output_length are in the config
+    if "input_length" not in current_datamodule_config:
+        raise DataProcessingError(
+            f"'input_length' not found in datamodule config for {model_type}. "
+            f"Available keys: {list(current_datamodule_config.keys())}. "
+            "This parameter should come from the model's YAML file as 'input_len' or 'input_length'."
+        )
+    
+    if "output_length" not in current_datamodule_config:
+        raise DataProcessingError(
+            f"'output_length' not found in datamodule config for {model_type}. "
+            f"Available keys: {list(current_datamodule_config.keys())}. "
+            "This parameter should come from the model's YAML file as 'output_len' or 'output_length'."
+        )
+
     try:
         datamodule = HydroInMemoryDataModule(
             list_of_gauge_ids_to_process=gauge_ids,
@@ -80,6 +95,8 @@ def _setup_datamodule_core(
             path_to_preprocessing_output_directory=current_datamodule_config["path_to_preprocessing_output_directory"],
             group_identifier=current_datamodule_config["group_identifier"],
             batch_size=current_datamodule_config["batch_size"],
+            input_length=current_datamodule_config["input_length"],
+            output_length=current_datamodule_config["output_length"],
             forcing_features=current_datamodule_config["forcing_features"],
             static_features=current_datamodule_config["static_features"],
             target=current_datamodule_config["target"],
