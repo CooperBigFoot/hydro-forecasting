@@ -24,7 +24,6 @@ def _get_tsmixer_model() -> type[Any]:
 def _get_ealstm_config() -> type[Any]:
     return cast(type[Any], importlib.import_module("..models.ealstm", package=__package__).EALSTMConfig)
 
-
 def _get_ealstm_model() -> type[Any]:
     return cast(type[Any], importlib.import_module("..models.ealstm", package=__package__).LitEALSTM)
 
