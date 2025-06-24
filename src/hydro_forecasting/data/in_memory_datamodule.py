@@ -213,7 +213,7 @@ class HydroInMemoryDataModule(LightningDataModule):
         self, preprocessing_configs: dict[str, dict[str, Any]]
     ) -> dict[str, dict[str, Any]]:
         """
-        Adapt preprocessing configs to ensure they follow the new schema with strategy support.
+        Adapt preprocessing configs to ensure they follow the right schema with strategy support.
 
         Args:
             preprocessing_configs: Original preprocessing configuration
