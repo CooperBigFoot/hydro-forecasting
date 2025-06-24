@@ -365,6 +365,7 @@ def hyperparameter_tune_model(
         ModelTrainingError: If model training fails
     """
     from .seed_manager import SeedManager
+
     seed_manager = SeedManager(seed)
     seed_manager.set_global_seeds()
     output_dir_study_path = Path(output_dir_study)

@@ -44,7 +44,7 @@ class UnifiedPipeline(BaseEstimator, TransformerMixin):
         missing_cols = [col for col in self.columns if col not in X.columns]
         if missing_cols:
             raise ValueError(f"Columns not found in data: {missing_cols}")
-        
+
         # Handle empty data
         if len(X) == 0 and len(self.columns) > 0:
             # Create dummy data with one row of zeros for fitting
@@ -82,11 +82,11 @@ class UnifiedPipeline(BaseEstimator, TransformerMixin):
             raise ValueError(f"Columns not found in data: {missing_cols}")
 
         X_transformed = X.copy()
-        
+
         # If no columns to transform, return original data
         if len(self.columns) == 0:
             return X_transformed
-            
+
         transformed_data = self.fitted_pipeline.transform(X[self.columns])
 
         # Handle the case where pipeline returns ndarray instead of DataFrame
@@ -123,11 +123,11 @@ class UnifiedPipeline(BaseEstimator, TransformerMixin):
             raise ValueError(f"Columns not found in data: {missing_cols}")
 
         X_inverse = X.copy()
-        
+
         # If no columns to transform, return original data
         if len(self.columns) == 0:
             return X_inverse
-            
+
         inverse_data = self.fitted_pipeline.inverse_transform(X[self.columns])
 
         # Handle the case where pipeline returns ndarray instead of DataFrame

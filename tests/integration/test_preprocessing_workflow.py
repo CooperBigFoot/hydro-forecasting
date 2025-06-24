@@ -12,8 +12,6 @@ Tests cover:
 """
 
 import json
-import tempfile
-from pathlib import Path
 from unittest.mock import Mock, patch
 
 import numpy as np
@@ -34,9 +32,9 @@ from hydro_forecasting.exceptions import (
     DataQualityError,
     FileOperationError,
 )
+from hydro_forecasting.preprocessing import PipelineBuilder
 from hydro_forecasting.preprocessing.grouped import GroupedPipeline
 from hydro_forecasting.preprocessing.unified import UnifiedPipeline
-from hydro_forecasting.preprocessing import PipelineBuilder
 
 
 class TestRunHydroProcessorEndToEnd:
@@ -449,24 +447,20 @@ class TestRunHydroProcessorEndToEnd:
             static_dir.mkdir(parents=True, exist_ok=True)
 
         # Create static attributes file
-        static_data = pd.DataFrame({
-            "gauge_id": basin_ids,
-            "elevation": [100, 200, 300],
-            "area": [50, 75, 25]
-        })
+        static_data = pd.DataFrame({"gauge_id": basin_ids, "elevation": [100, 200, 300], "area": [50, 75, 25]})
         static_data.to_csv(region_static_dirs["basin"] / "attributes.csv", index=False)
 
         # Create builder-generated preprocessing config
         preprocessing_config = (
             PipelineBuilder()
             .features()
-                .transforms(["standard_scale"])
-                .strategy("unified", fit_on_n_basins=10)
-                .columns(["temperature", "precipitation"])
+            .transforms(["standard_scale"])
+            .strategy("unified", fit_on_n_basins=10)
+            .columns(["temperature", "precipitation"])
             .target()
-                .transforms(["normalize"])
-                .strategy("per_group", group_by="gauge_id")
-                .columns(["streamflow"])
+            .transforms(["normalize"])
+            .strategy("per_group", group_by="gauge_id")
+            .columns(["streamflow"])
             .build()
         )
 
@@ -549,8 +543,8 @@ class TestPreprocessingWorkflowIntegration:
 
     def test_data_loading_cleaning_splitting_integration(self, create_basin_files, basin_ids):
         """Test integration of data loading, cleaning, and splitting."""
-        from hydro_forecasting.data.preprocessing import load_basins_timeseries_lazy, split_data
         from hydro_forecasting.data.clean_data import clean_data
+        from hydro_forecasting.data.preprocessing import load_basins_timeseries_lazy, split_data
 
         region_dirs = create_basin_files
         required_columns = ["temperature", "precipitation", "streamflow"]
@@ -893,29 +887,31 @@ class TestEndToEndWorkflowScenarios:
         for static_dir in region_static_dirs.values():
             static_dir.mkdir(parents=True, exist_ok=True)
 
-        static_data = pd.DataFrame({
-            "gauge_id": basin_ids,
-            "elevation": [100, 200, 300],
-            "area": [50, 75, 25],
-            "slope": [0.01, 0.02, 0.015],
-        })
+        static_data = pd.DataFrame(
+            {
+                "gauge_id": basin_ids,
+                "elevation": [100, 200, 300],
+                "area": [50, 75, 25],
+                "slope": [0.01, 0.02, 0.015],
+            }
+        )
         static_data.to_csv(region_static_dirs["basin"] / "attributes.csv", index=False)
 
         # Create complex preprocessing config using builder
         preprocessing_config = (
             PipelineBuilder()
             .features()
-                .transforms(["standard_scale", "normalize"])
-                .strategy("unified", fit_on_n_basins=10)
-                .columns(["temperature", "precipitation"])
+            .transforms(["standard_scale", "normalize"])
+            .strategy("unified", fit_on_n_basins=10)
+            .columns(["temperature", "precipitation"])
             .target()
-                .transforms(["log_scale", "standard_scale"])
-                .strategy("per_group", group_by="gauge_id")
-                .columns(["streamflow"])
+            .transforms(["log_scale", "standard_scale"])
+            .strategy("per_group", group_by="gauge_id")
+            .columns(["streamflow"])
             .static_features()
-                .transforms(["standard_scale"])
-                .strategy("unified")
-                .columns(["elevation", "area", "slope"])
+            .transforms(["standard_scale"])
+            .strategy("unified")
+            .columns(["elevation", "area", "slope"])
             .build()
         )
 

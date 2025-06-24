@@ -348,6 +348,7 @@ class ExperimentRunner:
             seed: Random seed value
         """
         from .seed_manager import SeedManager
+
         seed_manager = SeedManager(seed)
         seed_manager.set_global_seeds()
 
@@ -410,10 +411,13 @@ class ExperimentRunner:
             for run_idx in range(self.num_runs):
                 logger.info(f"Starting run {run_idx + 1}/{self.num_runs} for {model_type}")
                 from .seed_manager import SeedManager
+
                 base_seed_manager = SeedManager(self.base_seed)
                 current_run_seed = base_seed_manager.get_operation_seed("model_training", f"run_{run_idx}")
                 self.set_seed(current_run_seed)
-                logger.info(f"Using seed: {current_run_seed} (derived from base seed: {self.base_seed}, run: {run_idx})")
+                logger.info(
+                    f"Using seed: {current_run_seed} (derived from base seed: {self.base_seed}, run: {run_idx})"
+                )
 
                 try:
                     specific_checkpoint_dir = checkpoint_manager.determine_output_run_attempt_path(

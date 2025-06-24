@@ -77,7 +77,9 @@ def create_pipeline(pipeline_config: dict[str, Any]) -> GroupedPipeline | Unifie
             # Builder-generated config - pipeline is already wrapped
             return clone(pipeline)
         else:
-            raise ConfigurationError(f"Strategy 'unified' requires sklearn Pipeline or UnifiedPipeline, got {type(pipeline)}")
+            raise ConfigurationError(
+                f"Strategy 'unified' requires sklearn Pipeline or UnifiedPipeline, got {type(pipeline)}"
+            )
 
     else:
         raise ConfigurationError(f"Unknown strategy: {strategy}. Must be 'per_group' or 'unified'")
@@ -552,7 +554,7 @@ def run_hydro_processor(
         validate_preprocessing_config_comprehensive(
             preprocessing_config=preprocessing_config,
             required_columns=required_columns,
-            group_identifier=group_identifier
+            group_identifier=group_identifier,
         )
 
         # Prepare output directories
@@ -718,6 +720,7 @@ def run_hydro_processor(
                 # Use seed manager for deterministic sampling
                 with seed_manager.temporary_seed("unified_basin_selection", "preprocessing_unified"):
                     import random
+
                     fit_basins = random.sample(sorted_valid_basins, fit_on_n_basins)
 
                 # Log selected basins with seed information
@@ -888,7 +891,7 @@ def run_hydro_processor(
 
         return output
 
-    except (ConfigurationError, FileOperationError, DataQualityError) as e:
+    except (ConfigurationError, FileOperationError, DataQualityError):
         # Re-raise our custom exceptions without wrapping
         raise
     except Exception as e:

@@ -98,12 +98,12 @@ def _default_serializer(obj: Any) -> Any:
     elif hasattr(obj, "isoformat"):
         # handles datetime, date, time, and numpy scalar types
         return obj.isoformat()
-    elif hasattr(obj, 'steps') or (hasattr(obj, 'pipeline') and hasattr(obj.pipeline, 'steps')):
+    elif hasattr(obj, "steps") or (hasattr(obj, "pipeline") and hasattr(obj.pipeline, "steps")):
         # Handle pipeline objects (sklearn Pipeline, GroupedPipeline, UnifiedPipeline)
         return {
-            'type': obj.__class__.__name__,
-            'transformers': extract_pipeline_metadata(obj),
-            'columns': getattr(obj, 'columns', None)
+            "type": obj.__class__.__name__,
+            "transformers": extract_pipeline_metadata(obj),
+            "columns": getattr(obj, "columns", None),
         }
     else:
         raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
@@ -202,21 +202,21 @@ def extract_transformer_names(
 def extract_pipeline_metadata(pipeline_obj: Any) -> list[str] | str:
     """
     Extract just the class names and order from a pipeline.
-    
+
     This function extracts metadata from pipeline objects for serialization,
     replacing full object instances with their class name sequences.
-    
+
     Args:
         pipeline_obj: A pipeline object (sklearn Pipeline, GroupedPipeline, or UnifiedPipeline)
-        
+
     Returns:
         List of transformer class names for pipeline objects, or class name string for others
     """
     # Handle sklearn Pipeline
-    if hasattr(pipeline_obj, 'steps'):
+    if hasattr(pipeline_obj, "steps"):
         return [step[1].__class__.__name__ for step in pipeline_obj.steps]
     # Handle GroupedPipeline or UnifiedPipeline with internal pipeline
-    elif hasattr(pipeline_obj, 'pipeline') and hasattr(pipeline_obj.pipeline, 'steps'):
+    elif hasattr(pipeline_obj, "pipeline") and hasattr(pipeline_obj.pipeline, "steps"):
         return [step[1].__class__.__name__ for step in pipeline_obj.pipeline.steps]
     # For any other object, just return its class name
     return pipeline_obj.__class__.__name__

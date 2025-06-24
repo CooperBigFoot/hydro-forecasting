@@ -671,8 +671,7 @@ class HydroLazyDataModule(pl.LightningDataModule):
                 ]
 
             logger.info(
-                "Loaded %d pipelines and data for %d basins",
-                len(self.fitted_pipelines), len(processed_gauge_ids)
+                "Loaded %d pipelines and data for %d basins", len(self.fitted_pipelines), len(processed_gauge_ids)
             )
 
         else:
