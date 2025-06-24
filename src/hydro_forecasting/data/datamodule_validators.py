@@ -6,6 +6,7 @@ from sklearn.pipeline import Pipeline
 
 from ..exceptions import ConfigurationError, PipelineCompatibilityError
 from ..preprocessing.grouped import GroupedPipeline
+from ..preprocessing.unified import UnifiedPipeline
 
 if TYPE_CHECKING:
     from .in_memory_datamodule import HydroInMemoryDataModule
@@ -210,7 +211,7 @@ def validate_target_in_features(
         )
 
 
-def _validate_pipeline_compatibility(pipeline_obj: Pipeline | GroupedPipeline, pipeline_name: str) -> None:
+def _validate_pipeline_compatibility(pipeline_obj: Pipeline | GroupedPipeline | UnifiedPipeline, pipeline_name: str) -> None:
     """Helper to validate steps of a single pipeline.
 
     Args:
@@ -227,10 +228,17 @@ def _validate_pipeline_compatibility(pipeline_obj: Pipeline | GroupedPipeline, p
                 f"GroupedPipeline '{pipeline_name}' does not have a valid inner sklearn.pipeline.Pipeline attribute."
             )
         p_to_check = pipeline_obj.pipeline
+    elif isinstance(pipeline_obj, UnifiedPipeline):
+        # Validate the template pipeline within UnifiedPipeline
+        if not hasattr(pipeline_obj, "pipeline") or not isinstance(pipeline_obj.pipeline, Pipeline):
+            raise PipelineCompatibilityError(
+                f"UnifiedPipeline '{pipeline_name}' does not have a valid inner sklearn.pipeline.Pipeline attribute."
+            )
+        p_to_check = pipeline_obj.pipeline
     elif isinstance(pipeline_obj, Pipeline):
         p_to_check = pipeline_obj
     else:
-        raise PipelineCompatibilityError(f"'{pipeline_name}' is not a valid Pipeline or GroupedPipeline instance.")
+        raise PipelineCompatibilityError(f"'{pipeline_name}' is not a valid Pipeline, GroupedPipeline, or UnifiedPipeline instance.")
 
     for step_name, transformer in p_to_check.steps:
         if not (hasattr(transformer, "fit") and callable(transformer.fit)):
