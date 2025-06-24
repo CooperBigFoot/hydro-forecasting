@@ -70,11 +70,14 @@ def create_pipeline(pipeline_config: dict[str, Any]) -> GroupedPipeline | Unifie
             raise ConfigurationError(f"Strategy 'per_group' requires GroupedPipeline, got {type(pipeline)}")
 
     elif strategy == "unified":
-        # For unified strategy, expect a sklearn Pipeline and wrap it in UnifiedPipeline
+        # For unified strategy, expect either a sklearn Pipeline or UnifiedPipeline
         if isinstance(pipeline, Pipeline):
             return UnifiedPipeline(pipeline=clone(pipeline), columns=columns)
+        elif isinstance(pipeline, UnifiedPipeline):
+            # Builder-generated config - pipeline is already wrapped
+            return clone(pipeline)
         else:
-            raise ConfigurationError(f"Strategy 'unified' requires sklearn Pipeline, got {type(pipeline)}")
+            raise ConfigurationError(f"Strategy 'unified' requires sklearn Pipeline or UnifiedPipeline, got {type(pipeline)}")
 
     else:
         raise ConfigurationError(f"Unknown strategy: {strategy}. Must be 'per_group' or 'unified'")

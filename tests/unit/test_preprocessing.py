@@ -42,6 +42,7 @@ from hydro_forecasting.exceptions import (
 )
 from hydro_forecasting.preprocessing.grouped import GroupedPipeline
 from hydro_forecasting.preprocessing.unified import UnifiedPipeline
+from hydro_forecasting.preprocessing import PipelineBuilder
 
 
 class TestCreatePipeline:
@@ -146,6 +147,65 @@ class TestCreatePipeline:
         
         with pytest.raises(ConfigurationError, match="Strategy 'unified' requires sklearn Pipeline"):
             create_pipeline(config)
+
+    def test_create_pipeline_from_builder_grouped(self):
+        """Test create_pipeline works with builder-generated grouped config."""
+        config = (
+            PipelineBuilder()
+            .target()
+                .transforms(["standard_scale"])
+                .strategy("per_group", group_by="gauge_id")
+                .columns(["streamflow"])
+            .build()
+        )
+        
+        result = create_pipeline(config["target"])
+        
+        assert isinstance(result, GroupedPipeline)
+        assert result.columns == ["streamflow"]
+        assert result.group_identifier == "gauge_id"
+    
+    def test_create_pipeline_from_builder_unified(self):
+        """Test create_pipeline works with builder-generated unified config."""
+        config = (
+            PipelineBuilder()
+            .features()
+                .transforms(["standard_scale", "normalize"])
+                .strategy("unified", fit_on_n_basins=100)
+                .columns(["temperature", "precipitation"])
+            .build()
+        )
+        
+        result = create_pipeline(config["features"])
+        
+        assert isinstance(result, UnifiedPipeline)
+        assert result.columns == ["temperature", "precipitation"]
+    
+    def test_create_pipeline_from_builder_mixed_strategies(self):
+        """Test create_pipeline works with builder-generated mixed strategy config."""
+        config = (
+            PipelineBuilder()
+            .features()
+                .transforms(["standard_scale"])
+                .strategy("unified", fit_on_n_basins=50)
+                .columns(["temperature", "precipitation"])
+            .target()
+                .transforms(["normalize"])
+                .strategy("per_group", group_by="gauge_id")
+                .columns(["streamflow"])
+            .build()
+        )
+        
+        # Test features (unified)
+        features_result = create_pipeline(config["features"])
+        assert isinstance(features_result, UnifiedPipeline)
+        assert features_result.columns == ["temperature", "precipitation"]
+        
+        # Test target (grouped)
+        target_result = create_pipeline(config["target"])
+        assert isinstance(target_result, GroupedPipeline)
+        assert target_result.columns == ["streamflow"]
+        assert target_result.group_identifier == "gauge_id"
 
 
 class TestProcessingConfig:

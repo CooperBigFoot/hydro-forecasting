@@ -36,6 +36,7 @@ from hydro_forecasting.exceptions import (
 )
 from hydro_forecasting.preprocessing.grouped import GroupedPipeline
 from hydro_forecasting.preprocessing.unified import UnifiedPipeline
+from hydro_forecasting.preprocessing import PipelineBuilder
 
 
 class TestRunHydroProcessorEndToEnd:
@@ -438,6 +439,71 @@ class TestRunHydroProcessorEndToEnd:
                 list_of_gauge_ids_to_process=basin_ids,
             )
 
+    def test_run_hydro_processor_with_builder_config(self, temp_dir, create_basin_files, basin_ids):
+        """Test run_hydro_processor with builder-generated configuration."""
+        # Setup directories and data
+        region_time_series_dirs = create_basin_files
+        region_static_dirs = {"basin": temp_dir / "static" / "basin", "river": temp_dir / "static" / "river"}
+
+        for static_dir in region_static_dirs.values():
+            static_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create static attributes file
+        static_data = pd.DataFrame({
+            "gauge_id": basin_ids,
+            "elevation": [100, 200, 300],
+            "area": [50, 75, 25]
+        })
+        static_data.to_csv(region_static_dirs["basin"] / "attributes.csv", index=False)
+
+        # Create builder-generated preprocessing config
+        preprocessing_config = (
+            PipelineBuilder()
+            .features()
+                .transforms(["standard_scale"])
+                .strategy("unified", fit_on_n_basins=10)
+                .columns(["temperature", "precipitation"])
+            .target()
+                .transforms(["normalize"])
+                .strategy("per_group", group_by="gauge_id")
+                .columns(["streamflow"])
+            .build()
+        )
+
+        # Setup datamodule config
+        datamodule_config = {
+            "batch_size": 2,
+            "seq_length": 5,
+            "num_past_days": 5,
+            "num_future_days": 1,
+            "static_features": ["elevation", "area"],
+            "group_var": "gauge_id",
+            "var_name": "variable",
+            "var_value": "value",
+            "return_target_only": False,
+        }
+
+        # Run the processor
+        result = run_hydro_processor(
+            region_time_series_base_dirs=region_time_series_dirs,
+            region_static_attributes_base_dirs=region_static_dirs,
+            path_to_preprocessing_output_directory=temp_dir / "output",
+            required_columns=["temperature", "precipitation", "streamflow"],
+            run_uuid="test_builder_config",
+            datamodule_config=datamodule_config,
+            preprocessing_config=preprocessing_config,
+            list_of_gauge_ids_to_process=basin_ids,
+        )
+
+        # Verify result
+        assert isinstance(result, ProcessingOutput)
+        assert result.config.run_uuid == "test_builder_config"
+        assert len(result.basins_with_quality_data) > 0
+
+        # Verify output files exist
+        output_files = list((temp_dir / "output").rglob("*.parquet"))
+        assert len(output_files) > 0
+
 
 class TestPreprocessingWorkflowIntegration:
     """Test integration between different preprocessing components."""
@@ -817,3 +883,82 @@ class TestEndToEndWorkflowScenarios:
             else:
                 # Re-raise if it's not a static processing error
                 raise
+
+    def test_complex_workflow_with_builder(self, temp_dir, create_basin_files, basin_ids):
+        """Test complex workflow using PipelineBuilder for configuration."""
+        region_time_series_dirs = create_basin_files
+        region_static_dirs = {"basin": temp_dir / "static" / "basin"}
+
+        # Create static data
+        for static_dir in region_static_dirs.values():
+            static_dir.mkdir(parents=True, exist_ok=True)
+
+        static_data = pd.DataFrame({
+            "gauge_id": basin_ids,
+            "elevation": [100, 200, 300],
+            "area": [50, 75, 25],
+            "slope": [0.01, 0.02, 0.015],
+        })
+        static_data.to_csv(region_static_dirs["basin"] / "attributes.csv", index=False)
+
+        # Create complex preprocessing config using builder
+        preprocessing_config = (
+            PipelineBuilder()
+            .features()
+                .transforms(["standard_scale", "normalize"])
+                .strategy("unified", fit_on_n_basins=10)
+                .columns(["temperature", "precipitation"])
+            .target()
+                .transforms(["log_scale", "standard_scale"])
+                .strategy("per_group", group_by="gauge_id")
+                .columns(["streamflow"])
+            .static_features()
+                .transforms(["standard_scale"])
+                .strategy("unified")
+                .columns(["elevation", "area", "slope"])
+            .build()
+        )
+
+        # Complex datamodule config
+        datamodule_config = {
+            "batch_size": 4,
+            "seq_length": 10,
+            "num_past_days": 10,
+            "num_future_days": 2,
+            "static_features": ["elevation", "area", "slope"],
+            "group_var": "gauge_id",
+            "var_name": "variable",
+            "var_value": "value",
+            "return_target_only": False,
+            "preprocessing": preprocessing_config,
+        }
+
+        # Run complex workflow
+        result = run_hydro_processor(
+            region_time_series_base_dirs=region_time_series_dirs,
+            region_static_attributes_base_dirs=region_static_dirs,
+            path_to_preprocessing_output_directory=temp_dir / "output",
+            required_columns=["temperature", "precipitation", "streamflow"],
+            run_uuid="complex_builder_workflow",
+            datamodule_config=datamodule_config,
+            preprocessing_config=preprocessing_config,
+            min_train_years=1.0,
+            list_of_gauge_ids_to_process=basin_ids,
+            basin_batch_size=2,
+            random_seed=42,
+        )
+
+        # Verify all outputs exist
+        assert result.success_marker_path.exists()
+        assert result.fitted_time_series_pipelines_path.exists()
+        assert result.fitted_static_pipeline_path.exists()
+        assert result.processed_timeseries_dir.exists()
+        assert result.processed_static_attributes_path.exists()
+
+        # Verify builder config was properly applied
+        assert result.config.run_uuid == "complex_builder_workflow"
+        assert len(result.basins_with_quality_data) > 0
+
+        # Check that files contain expected data
+        output_files = list(result.processed_timeseries_dir.rglob("*.parquet"))
+        assert len(output_files) > 0
