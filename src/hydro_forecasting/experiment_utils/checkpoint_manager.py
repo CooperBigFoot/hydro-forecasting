@@ -2,8 +2,7 @@ import logging
 import re
 from pathlib import Path
 
-from returns.pipeline import is_successful
-from returns.result import Failure, Result, Success, safe
+from ..exceptions import ConfigurationError, FileOperationError
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +33,6 @@ def _parse_attempt_number(dir_name: str) -> int:
     return int(match.group(1))
 
 
-@safe
 def _find_latest_attempt_dir_in_run(run_dir: Path) -> Path | None:
     """
     Finds the subdirectory attempt_<N> with the highest N within a run directory.
@@ -44,6 +42,9 @@ def _find_latest_attempt_dir_in_run(run_dir: Path) -> Path | None:
 
     Returns:
         Path to the latest attempt directory, or None if no attempt directories found.
+
+    Raises:
+        ValueError: If attempt directory names are malformed (handled internally).
     """
     if not run_dir.is_dir():
         logger.warning(f"Run directory {run_dir} does not exist or is not a directory.")
@@ -66,7 +67,7 @@ def _find_latest_attempt_dir_in_run(run_dir: Path) -> Path | None:
     return latest_attempt_dir
 
 
-def _determine_attempt_path(base_run_path: Path, override_previous_attempt: bool) -> Result[Path, str]:
+def _determine_attempt_path(base_run_path: Path, override_previous_attempt: bool) -> Path:
     """
     Determines the specific attempt directory path.
 
@@ -77,20 +78,17 @@ def _determine_attempt_path(base_run_path: Path, override_previous_attempt: bool
                                    If False, creates a new incremented attempt.
 
     Returns:
-        A Result containing the Path to the attempt directory or an error string.
+        The Path to the attempt directory.
+
+    Raises:
+        FileOperationError: If directory creation fails.
     """
     try:
         base_run_path.mkdir(parents=True, exist_ok=True)
     except OSError as e:
-        return Failure(f"Could not create base run path directory {base_run_path}: {e}")
+        raise FileOperationError(f"Could not create base run path directory {base_run_path}: {e}") from e
 
-    latest_attempt_dir_result = _find_latest_attempt_dir_in_run(base_run_path)
-
-    # Corrected check using is_successful
-    if not is_successful(latest_attempt_dir_result):
-        return Failure(f"Error finding latest attempt dir: {latest_attempt_dir_result.failure()}")
-
-    latest_attempt_dir = latest_attempt_dir_result.unwrap()
+    latest_attempt_dir = _find_latest_attempt_dir_in_run(base_run_path)
 
     if override_previous_attempt:
         if latest_attempt_dir:
@@ -101,11 +99,8 @@ def _determine_attempt_path(base_run_path: Path, override_previous_attempt: bool
             logger.info(f"No existing attempts to override, creating: {attempt_path}")
     else:
         if latest_attempt_dir:
-            try:
-                latest_attempt_num = _parse_attempt_number(latest_attempt_dir.name)
-                current_attempt_num = latest_attempt_num + 1
-            except ValueError as e:
-                return Failure(str(e))
+            latest_attempt_num = _parse_attempt_number(latest_attempt_dir.name)
+            current_attempt_num = latest_attempt_num + 1
         else:
             current_attempt_num = 0
         attempt_path = base_run_path / f"{ATTEMPT_PREFIX}{current_attempt_num}"
@@ -113,49 +108,79 @@ def _determine_attempt_path(base_run_path: Path, override_previous_attempt: bool
 
     try:
         attempt_path.mkdir(parents=True, exist_ok=True)
-        return Success(attempt_path)
+        return attempt_path
     except OSError as e:
-        return Failure(f"Could not create attempt directory {attempt_path}: {e}")
+        raise FileOperationError(f"Could not create attempt directory {attempt_path}: {e}") from e
 
 
 def determine_output_run_attempt_path(
     base_model_output_dir: Path,
     run_index: int,
     override_previous_attempts: bool,
-) -> Result[Path, str]:
+) -> Path:
     """
     Determines and creates the versioned output path for a specific run and attempt
     for checkpoints.
+
+    Args:
+        base_model_output_dir: The base directory for model outputs.
+        run_index: The run index (must be non-negative).
+        override_previous_attempts: Whether to override previous attempts.
+
+    Returns:
+        Path to the attempt directory.
+
+    Raises:
+        ConfigurationError: If input parameters are invalid.
+        FileOperationError: If directory creation fails.
     """
     if not isinstance(base_model_output_dir, Path):
-        return Failure("base_model_output_dir must be a Path object.")
+        raise ConfigurationError("base_model_output_dir must be a Path object.")
     if not isinstance(run_index, int) or run_index < 0:
-        return Failure("run_index must be a non-negative integer.")
+        raise ConfigurationError("run_index must be a non-negative integer.")
 
     run_path = base_model_output_dir / f"{RUN_PREFIX}{run_index}"
     return _determine_attempt_path(run_path, override_previous_attempts)
 
 
-def determine_log_run_attempt_path(
-    base_model_log_dir: Path, run_index: int, override_previous_attempts: bool
-) -> Result[Path, str]:
+def determine_log_run_attempt_path(base_model_log_dir: Path, run_index: int, override_previous_attempts: bool) -> Path:
     """
     Determines and creates the versioned output path for a specific run and attempt
     for logs.
+
+    Args:
+        base_model_log_dir: The base directory for model logs.
+        run_index: The run index (must be non-negative).
+        override_previous_attempts: Whether to override previous attempts.
+
+    Returns:
+        Path to the attempt directory.
+
+    Raises:
+        ConfigurationError: If input parameters are invalid.
+        FileOperationError: If directory creation fails.
     """
     if not isinstance(base_model_log_dir, Path):
-        return Failure("base_model_log_dir must be a Path object.")
+        raise ConfigurationError("base_model_log_dir must be a Path object.")
     if not isinstance(run_index, int) or run_index < 0:
-        return Failure("run_index must be a non-negative integer.")
+        raise ConfigurationError("run_index must be a non-negative integer.")
 
     run_path = base_model_log_dir / f"{RUN_PREFIX}{run_index}"
     return _determine_attempt_path(run_path, override_previous_attempts)
 
 
-@safe
 def _find_checkpoint_in_attempt_dir(attempt_dir: Path) -> Path | None:
     """
     Finds the .ckpt file within a specific attempt directory.
+
+    Args:
+        attempt_dir: Path to the attempt directory.
+
+    Returns:
+        Path to the checkpoint file, or None if no checkpoint files found.
+
+    Raises:
+        ValueError: If the provided path is not a directory.
     """
     if not attempt_dir.is_dir():
         raise ValueError(f"Path {attempt_dir} is not a directory.")
@@ -191,93 +216,103 @@ def get_checkpoint_path_to_load(
     select_overall_best: bool,
     specific_run_index: int | None = None,
     specific_attempt_index: int | None = None,
-) -> Result[Path, str]:
+) -> Path:
     """
     Resolves the exact .ckpt file path to load from an experiment's outputs.
+
+    Args:
+        base_checkpoint_load_dir: The base directory containing model checkpoints.
+        model_type: The type of model to load.
+        select_overall_best: Whether to select the overall best model.
+        specific_run_index: Specific run index to load from.
+        specific_attempt_index: Specific attempt index to load from.
+
+    Returns:
+        Path to the checkpoint file.
+
+    Raises:
+        ConfigurationError: If input parameters are invalid.
+        FileOperationError: If required files/directories don't exist.
     """
     if not isinstance(base_checkpoint_load_dir, Path):
-        return Failure("base_checkpoint_load_dir must be a Path object.")
+        raise ConfigurationError("base_checkpoint_load_dir must be a Path object.")
     if not base_checkpoint_load_dir.is_dir():
-        return Failure(
+        raise FileOperationError(
             f"Base checkpoint load directory does not exist or is not a directory: {base_checkpoint_load_dir}"
         )
 
     model_type_checkpoint_dir = base_checkpoint_load_dir / model_type
     if not model_type_checkpoint_dir.is_dir():
-        return Failure(f"Model type directory not found or is not a directory: {model_type_checkpoint_dir}")
+        raise FileOperationError(f"Model type directory not found or is not a directory: {model_type_checkpoint_dir}")
 
     if select_overall_best:
         info_file_path = model_type_checkpoint_dir / BEST_MODEL_INFO_FILE
         if not info_file_path.is_file():
-            return Failure(f"Overall best model info file not found or is not a file: {info_file_path}")
+            raise FileOperationError(f"Overall best model info file not found or is not a file: {info_file_path}")
         try:
             with open(info_file_path) as f:
                 relative_ckpt_path_str = f.read().strip()
             if not relative_ckpt_path_str:
-                return Failure(f"Overall best model info file is empty: {info_file_path}")
+                raise FileOperationError(f"Overall best model info file is empty: {info_file_path}")
 
             checkpoint_file_path = (model_type_checkpoint_dir / relative_ckpt_path_str).resolve()
             if not checkpoint_file_path.is_file():
-                return Failure(
+                raise FileOperationError(
                     f"Checkpoint file specified in {info_file_path} does not exist or is not a file: {checkpoint_file_path}"
                 )
-            return Success(checkpoint_file_path)
+            return checkpoint_file_path
         except OSError as e:
-            return Failure(f"Error reading {info_file_path}: {e}")
-        except Exception as e:
-            return Failure(f"An unexpected error occurred while processing {info_file_path}: {e}")
+            raise FileOperationError(f"Error reading {info_file_path}: {e}") from e
 
     if specific_run_index is None:
-        return Failure("specific_run_index must be provided if select_overall_best is False.")
+        raise ConfigurationError("specific_run_index must be provided if select_overall_best is False.")
     if not isinstance(specific_run_index, int) or specific_run_index < 0:
-        return Failure("specific_run_index must be a non-negative integer.")
+        raise ConfigurationError("specific_run_index must be a non-negative integer.")
 
     run_dir = model_type_checkpoint_dir / f"{RUN_PREFIX}{specific_run_index}"
     if not run_dir.is_dir():
-        return Failure(f"Run directory not found or is not a directory: {run_dir}")
+        raise FileOperationError(f"Run directory not found or is not a directory: {run_dir}")
 
     attempt_dir_to_load: Path | None
     if specific_attempt_index is not None:
         if not isinstance(specific_attempt_index, int) or specific_attempt_index < 0:
-            return Failure("specific_attempt_index must be a non-negative integer.")
+            raise ConfigurationError("specific_attempt_index must be a non-negative integer.")
         attempt_dir_to_load = run_dir / f"{ATTEMPT_PREFIX}{specific_attempt_index}"
         if not attempt_dir_to_load.is_dir():
-            return Failure(f"Specific attempt directory not found or is not a directory: {attempt_dir_to_load}")
+            raise FileOperationError(
+                f"Specific attempt directory not found or is not a directory: {attempt_dir_to_load}"
+            )
     else:
-        latest_attempt_dir_result = _find_latest_attempt_dir_in_run(run_dir)
-        # Corrected check using is_successful
-        if not is_successful(latest_attempt_dir_result):
-            return Failure(f"Failed to query latest attempt for {run_dir}: {latest_attempt_dir_result.failure()}")
-
-        latest_attempt_dir = latest_attempt_dir_result.unwrap()
+        latest_attempt_dir = _find_latest_attempt_dir_in_run(run_dir)
         if not latest_attempt_dir:
-            return Failure(f"No attempts found in run directory: {run_dir}")
+            raise FileOperationError(f"No attempts found in run directory: {run_dir}")
         attempt_dir_to_load = latest_attempt_dir
 
     if not attempt_dir_to_load:
-        return Failure(f"Could not determine attempt directory for run {specific_run_index}")
+        raise FileOperationError(f"Could not determine attempt directory for run {specific_run_index}")
 
-    find_ckpt_result = _find_checkpoint_in_attempt_dir(attempt_dir_to_load)
-    # Corrected check using is_successful
-    if not is_successful(find_ckpt_result):
-        return Failure(f"Failed to query checkpoint in {attempt_dir_to_load}: {find_ckpt_result.failure()}")
-
-    found_ckpt = find_ckpt_result.unwrap()
+    found_ckpt = _find_checkpoint_in_attempt_dir(attempt_dir_to_load)
     if not found_ckpt:
-        return Failure(f"No checkpoint file found in {attempt_dir_to_load}")
-    return Success(found_ckpt.resolve())
+        raise FileOperationError(f"No checkpoint file found in {attempt_dir_to_load}")
+    return found_ckpt.resolve()
 
 
-def update_overall_best_model_info_file(
-    model_checkpoints_output_dir: Path, best_checkpoint_relative_path: str
-) -> Result[None, str]:
+def update_overall_best_model_info_file(model_checkpoints_output_dir: Path, best_checkpoint_relative_path: str) -> None:
     """
     Writes or overwrites the `overall_best_model_info.txt` file for a model_type.
+
+    Args:
+        model_checkpoints_output_dir: Directory where the info file should be written.
+        best_checkpoint_relative_path: Relative path to the best checkpoint.
+
+    Raises:
+        ConfigurationError: If input parameters are invalid.
+        FileOperationError: If file operations fail.
     """
     if not isinstance(model_checkpoints_output_dir, Path):
-        return Failure("model_checkpoints_output_dir must be a Path object.")
+        raise ConfigurationError("model_checkpoints_output_dir must be a Path object.")
     if not isinstance(best_checkpoint_relative_path, str):
-        return Failure("best_checkpoint_relative_path must be a string.")
+        raise ConfigurationError("best_checkpoint_relative_path must be a string.")
 
     try:
         model_checkpoints_output_dir.mkdir(parents=True, exist_ok=True)
@@ -287,7 +322,7 @@ def update_overall_best_model_info_file(
         if not full_referred_path.is_file():
             err_msg = f"Referred best checkpoint is not a file or does not exist: {full_referred_path}"
             logger.error(err_msg)
-            return Failure(err_msg)
+            raise FileOperationError(err_msg)
 
         with open(info_file_path, "w") as f:
             f.write(best_checkpoint_relative_path)
@@ -295,8 +330,9 @@ def update_overall_best_model_info_file(
             f"Updated {BEST_MODEL_INFO_FILE} at {model_checkpoints_output_dir} "
             f"to point to: {best_checkpoint_relative_path}"
         )
-        return Success(None)
     except OSError as e:
-        return Failure(f"Could not write to {BEST_MODEL_INFO_FILE} in {model_checkpoints_output_dir}: {e}")
+        raise FileOperationError(
+            f"Could not write to {BEST_MODEL_INFO_FILE} in {model_checkpoints_output_dir}: {e}"
+        ) from e
     except Exception as e:
-        return Failure(f"An unexpected error occurred while updating {BEST_MODEL_INFO_FILE}: {e}")
+        raise FileOperationError(f"An unexpected error occurred while updating {BEST_MODEL_INFO_FILE}: {e}") from e

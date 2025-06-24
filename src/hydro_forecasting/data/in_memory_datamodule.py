@@ -1,6 +1,5 @@
 import gc
 import logging
-import random
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -9,17 +8,25 @@ import numpy as np
 import polars as pl
 import torch
 from pytorch_lightning import LightningDataModule
-from returns.result import Failure, Success
 from sklearn.pipeline import Pipeline
 from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
 
+from ..exceptions import (
+    ConfigurationError,
+    DataProcessingError,
+    FileOperationError,
+    PipelineCompatibilityError,
+)
+from ..experiment_utils.seed_manager import SeedManager
 from ..preprocessing.grouped import GroupedPipeline
 from ..preprocessing.static_preprocessing import (
     load_static_pipeline,
 )
 from ..preprocessing.time_series_preprocessing import load_time_series_pipelines
+from ..preprocessing.unified import UnifiedPipeline
 from .clean_data import SummaryQualityReport
 from .config_utils import (
+    extract_pipeline_metadata,
     extract_relevant_config,
     generate_run_uuid,
     load_config,
@@ -52,6 +59,12 @@ class HydroInMemoryDataModule(LightningDataModule):
     Validation data is loaded once into a fixed, cached pool.
     Training chunks are recomputed (reshuffled and re-partitioned) every time the
     current set of training chunks is exhausted.
+
+    Raises:
+        ValueError: If configuration validation fails.
+        RuntimeError: If data processing operations fail.
+        FileOperationError: If file operations fail.
+        DataQualityError: If data quality checks fail.
     """
 
     def __init__(
@@ -80,6 +93,7 @@ class HydroInMemoryDataModule(LightningDataModule):
         domain_type: str = "source",
         is_autoregressive: bool = False,
         include_input_end_date_in_batch: bool = True,
+        random_seed: int | None = None,
     ):
         """
         Initializes the HydroInMemoryDataModule.
@@ -111,9 +125,13 @@ class HydroInMemoryDataModule(LightningDataModule):
             is_autoregressive: Whether the model uses past target values as input features.
             include_input_end_date_in_batch: If True, 'input_end_date' (ms timestamp or None)
                                               will be included in the batch dictionary.
+            random_seed: Seed for reproducible random operations. If None, operations will be non-deterministic.
+
+        Raises:
+            ValueError: If configuration validation fails.
         """
         super().__init__()
-        self.preprocessing_configs = preprocessing_configs
+        self.preprocessing_configs = self._adapt_preprocessing_configs(preprocessing_configs)
 
         effective_validation_chunk_size = validation_chunk_size if validation_chunk_size is not None else chunk_size * 2
 
@@ -124,9 +142,10 @@ class HydroInMemoryDataModule(LightningDataModule):
         if self.hparams.validation_chunk_size is None:
             self.hparams.validation_chunk_size = effective_validation_chunk_size
 
-        validation_result = validate_hydro_inmemory_datamodule_config(self)
-        if isinstance(validation_result, Failure):
-            raise ValueError(f"HydroInMemoryDataModule configuration error: {validation_result.failure()}")
+        try:
+            validate_hydro_inmemory_datamodule_config(self)
+        except ConfigurationError as e:
+            raise ValueError(f"HydroInMemoryDataModule configuration error: {e}") from e
 
         self.region_time_series_base_dirs = {k: Path(v) for k, v in self.hparams.region_time_series_base_dirs.items()}
         self.region_static_attributes_base_dirs = {
@@ -157,7 +176,7 @@ class HydroInMemoryDataModule(LightningDataModule):
         self._prepare_data_has_run: bool = False
         self.run_uuid: str | None = None
         self.summary_quality_report: SummaryQualityReport | None = None
-        self.fitted_pipelines: dict[str, Pipeline | GroupedPipeline] = {}
+        self.fitted_pipelines: dict[str, Pipeline | GroupedPipeline | UnifiedPipeline] = {}
         self.processed_time_series_dir: Path | None = None
         self.processed_static_attributes_path: Path | None = None
         self.static_data_cache: dict[str, torch.Tensor] = {}
@@ -183,11 +202,76 @@ class HydroInMemoryDataModule(LightningDataModule):
 
         self.future_features_ordered = sorted(set(self.hparams.forcing_features))
 
+        self.seed_manager = SeedManager(random_seed)
+        if random_seed is not None:
+            self.seed_manager.set_global_seeds()
+            logger.info(f"Initialized SeedManager with seed: {random_seed}")
+        else:
+            logger.info("Initialized SeedManager without seed (non-deterministic mode)")
+
+    def _adapt_preprocessing_configs(
+        self, preprocessing_configs: dict[str, dict[str, Any]]
+    ) -> dict[str, dict[str, Any]]:
+        """
+        Adapt preprocessing configs to ensure they follow the right schema with strategy support.
+
+        Args:
+            preprocessing_configs: Original preprocessing configuration
+
+        Returns:
+            Adapted preprocessing configuration with strategy keys
+        """
+        adapted_configs = {}
+
+        for pipeline_name, config in preprocessing_configs.items():
+            if isinstance(config, dict):
+                # Check if config already has the new schema
+                if "strategy" in config:
+                    # Already in new format, validate it
+                    if config["strategy"] not in ["per_group", "unified"]:
+                        raise ConfigurationError(
+                            f"Invalid strategy '{config['strategy']}' for {pipeline_name}. Must be 'per_group' or 'unified'"
+                        )
+                    adapted_configs[pipeline_name] = config
+                else:
+                    # Old format, adapt it based on pipeline type
+                    pipeline = config.get("pipeline")
+                    if pipeline is None:
+                        raise ConfigurationError(
+                            f"Pipeline configuration for '{pipeline_name}' must include 'pipeline' key"
+                        )
+
+                    # Infer strategy from pipeline type
+                    if isinstance(pipeline, GroupedPipeline):
+                        strategy = "per_group"
+                    elif isinstance(pipeline, UnifiedPipeline):
+                        strategy = "unified"
+                    elif isinstance(pipeline, Pipeline):
+                        # sklearn Pipeline could be either - default to unified for static features
+                        strategy = "unified" if pipeline_name == "static_features" else "per_group"
+                    else:
+                        raise ConfigurationError(f"Unknown pipeline type for '{pipeline_name}': {type(pipeline)}")
+
+                    # Create adapted config with strategy
+                    adapted_config = config.copy()
+                    adapted_config["strategy"] = strategy
+                    adapted_configs[pipeline_name] = adapted_config
+            else:
+                raise ConfigurationError(f"Invalid configuration format for '{pipeline_name}'")
+
+        return adapted_configs
+
         # remove temp attribute used for validation
         if hasattr(self, "validation_chunk_size_for_validation_only"):
             delattr(self, "validation_chunk_size_for_validation_only")
 
     def prepare_data(self) -> None:
+        """
+        Prepares data for training by running preprocessing or loading existing processed data.
+
+        Raises:
+            RuntimeError: If data processing fails or no basins remain after preprocessing.
+        """
         if self._prepare_data_has_run:
             logger.info("Data preparation has already run.")
             return
@@ -196,10 +280,21 @@ class HydroInMemoryDataModule(LightningDataModule):
         current_config_dict = extract_relevant_config(self)
 
         if self.preprocessing_configs:
-            current_config_dict["preprocessing_configs"] = {
-                k: {kk: vv.__class__.__name__ if hasattr(vv, "__class__") else str(vv) for kk, vv in v.items()}
-                for k, v in self.preprocessing_configs.items()
-            }
+            serialized_configs = {}
+            for k, v in self.preprocessing_configs.items():
+                serialized_config = {}
+                for kk, vv in v.items():
+                    if kk == "pipeline":
+                        # Extract pipeline metadata instead of full serialization
+                        serialized_config["pipeline_steps"] = extract_pipeline_metadata(vv)
+                    elif kk == "columns" and isinstance(vv, list):
+                        # Preserve column lists as-is
+                        serialized_config[kk] = vv
+                    else:
+                        # For other values (strategy, etc.), convert to string
+                        serialized_config[kk] = str(vv)
+                serialized_configs[k] = serialized_config
+            current_config_dict["preprocessing_configs"] = serialized_configs
         else:
             current_config_dict["preprocessing_configs"] = None
 
@@ -223,27 +318,27 @@ class HydroInMemoryDataModule(LightningDataModule):
             logger.info(
                 f"No reusable data found or reuse failed for UUID {self.run_uuid}. Reason: {reuse_message}. Running preprocessing..."
             )
-            processing_result = run_hydro_processor(
-                region_time_series_base_dirs=self.region_time_series_base_dirs,
-                region_static_attributes_base_dirs=self.region_static_attributes_base_dirs,
-                path_to_preprocessing_output_directory=self.path_to_preprocessing_output_directory,
-                required_columns=list(set(self.forcing_features + [self.target])),
-                run_uuid=self.run_uuid,
-                datamodule_config=current_config_dict,
-                preprocessing_config=self.preprocessing_configs,
-                min_train_years=self.min_train_years,
-                max_imputation_gap_size=self.max_imputation_gap_size,
-                group_identifier=self.group_identifier,
-                train_prop=self.train_prop,
-                val_prop=self.val_prop,
-                test_prop=self.test_prop,
-                list_of_gauge_ids_to_process=self.list_of_gauge_ids_to_process,
-                basin_batch_size=50,  # Consider making this configurable
-            )
-
-            if isinstance(processing_result, Failure):
-                raise RuntimeError(f"Hydro processor failed: {processing_result.failure()}")
-            processing_output = processing_result.unwrap()
+            try:
+                processing_output = run_hydro_processor(
+                    region_time_series_base_dirs=self.region_time_series_base_dirs,
+                    region_static_attributes_base_dirs=self.region_static_attributes_base_dirs,
+                    path_to_preprocessing_output_directory=self.path_to_preprocessing_output_directory,
+                    required_columns=list(set(self.forcing_features + [self.target])),
+                    run_uuid=self.run_uuid,
+                    datamodule_config=current_config_dict,
+                    preprocessing_config=self.preprocessing_configs,
+                    min_train_years=self.min_train_years,
+                    max_imputation_gap_size=self.max_imputation_gap_size,
+                    group_identifier=self.group_identifier,
+                    train_prop=self.train_prop,
+                    val_prop=self.val_prop,
+                    test_prop=self.test_prop,
+                    list_of_gauge_ids_to_process=self.list_of_gauge_ids_to_process,
+                    basin_batch_size=50,  # Consider making this configurable
+                    random_seed=self.seed_manager.get_component_seed("preprocessing_unified"),
+                )
+            except DataProcessingError as e:
+                raise RuntimeError(f"Hydro processor failed: {e}") from e
             logger.info("Hydro processor completed successfully.")
 
             self.summary_quality_report = processing_output.summary_quality_report
@@ -283,7 +378,10 @@ class HydroInMemoryDataModule(LightningDataModule):
             if test_file.exists():
                 self._test_basin_ids.append(basin_id)
 
-        random.shuffle(self.chunkable_basin_ids)
+        with self.seed_manager.temporary_seed("basin_id_shuffle", "datamodule_setup"):
+            import random
+
+            random.shuffle(self.chunkable_basin_ids)
 
         logger.info(
             f"Found {len(self.chunkable_basin_ids)} basins for synchronized train/val chunking and validation pool selection."
@@ -306,7 +404,10 @@ class HydroInMemoryDataModule(LightningDataModule):
             # 1. Setup Validation Pool and Cache (once)
             if self._validation_gauge_id_pool is None and self.chunkable_basin_ids:
                 num_val_basins = min(cast(int, self.hparams.validation_chunk_size), len(self.chunkable_basin_ids))
-                self._validation_gauge_id_pool = random.sample(self.chunkable_basin_ids, num_val_basins)
+                with self.seed_manager.temporary_seed("validation_pool_selection", "datamodule_setup"):
+                    import random
+
+                    self._validation_gauge_id_pool = random.sample(self.chunkable_basin_ids, num_val_basins)
                 logger.info(
                     f"Created fixed validation pool with {len(self._validation_gauge_id_pool)} basins: {self._validation_gauge_id_pool[:5]}..."
                 )  # Log first 5
@@ -349,7 +450,10 @@ class HydroInMemoryDataModule(LightningDataModule):
         logger.info(f"Initializing/Re-initializing training shared chunks from {len(self.chunkable_basin_ids)} basins.")
         # It's important to shuffle the basin IDs each time we re-partition
         # to ensure different chunk compositions over full passes.
-        shuffled_training_basin_ids = random.sample(self.chunkable_basin_ids, len(self.chunkable_basin_ids))
+        with self.seed_manager.temporary_seed("training_basin_shuffle", "training_chunks"):
+            import random
+
+            shuffled_training_basin_ids = random.sample(self.chunkable_basin_ids, len(self.chunkable_basin_ids))
 
         self._shared_chunks = [
             shuffled_training_basin_ids[i : i + self.hparams.chunk_size]
@@ -455,16 +559,14 @@ class HydroInMemoryDataModule(LightningDataModule):
                 [col for col in ["date"] + cols_for_valid_seq if col in basin_specific_df_from_concat.columns]
             )
 
-            find_result = find_valid_sequences(
-                basin_df_for_indexing,
-                self.input_length,
-                self.output_length,
-                self.target,
-                self.forcing_features,
-            )
-
-            if isinstance(find_result, Success):
-                positions, _ = find_result.unwrap()
+            try:
+                positions, _ = find_valid_sequences(
+                    basin_df_for_indexing,
+                    self.input_length,
+                    self.output_length,
+                    self.target,
+                    self.forcing_features,
+                )
                 for start_idx_relative_to_basin in positions:
                     index_entries.append(
                         (
@@ -473,10 +575,8 @@ class HydroInMemoryDataModule(LightningDataModule):
                             int(start_idx_relative_to_basin + self.input_length + self.output_length),
                         )
                     )
-            else:
-                logger.warning(
-                    f"Could not find valid sequences for basin {basin_id_in_order} in stage '{stage}': {find_result.failure()}"
-                )
+            except DataProcessingError as e:
+                logger.warning(f"Could not find valid sequences for basin {basin_id_in_order} in stage '{stage}': {e}")
             current_absolute_start_row += basin_specific_df_from_concat.height
 
         if not index_entries:
@@ -550,7 +650,10 @@ class HydroInMemoryDataModule(LightningDataModule):
             )
             return DataLoader([], batch_size=self.batch_size)
 
-        random.shuffle(index_entries)  # Shuffle index_entries for training
+        with self.seed_manager.temporary_seed("training_sequence_shuffle", "sequence_operations"):
+            import random
+
+            random.shuffle(index_entries)  # Shuffle index_entries for training
 
         train_dataset = InMemoryChunkDataset(
             chunk_column_tensors=chunk_column_tensors,
@@ -579,6 +682,7 @@ class HydroInMemoryDataModule(LightningDataModule):
             num_workers=self.num_workers,
             pin_memory=True,
             persistent_workers=self.num_workers > 0,
+            worker_init_fn=self.seed_manager.worker_init_fn,
         )
 
     def val_dataloader(self) -> DataLoader:
@@ -625,6 +729,7 @@ class HydroInMemoryDataModule(LightningDataModule):
             num_workers=self.num_workers,
             pin_memory=True,
             persistent_workers=self.num_workers > 0,
+            worker_init_fn=self.seed_manager.worker_init_fn,
         )
 
     def test_dataloader(self) -> DataLoader:
@@ -668,6 +773,7 @@ class HydroInMemoryDataModule(LightningDataModule):
             num_workers=self.num_workers,
             pin_memory=True,
             persistent_workers=self.num_workers > 0,
+            worker_init_fn=self.seed_manager.worker_init_fn,
         )
 
     def _load_static_data(self) -> None:
@@ -713,6 +819,11 @@ class HydroInMemoryDataModule(LightningDataModule):
     def _check_and_reuse_existing_processed_data(self, run_uuid: str) -> tuple[bool, LoadedData | None, str | None]:
         """
         Check if processed data exists for the given run_uuid and load it if valid.
+
+        Returns:
+            Tuple of (success, loaded_data, error_message) where success indicates
+            if data can be reused, loaded_data contains the artifacts if successful,
+            and error_message explains any failure.
         """
         try:
             run_dir = self.path_to_preprocessing_output_directory / run_uuid
@@ -750,22 +861,31 @@ class HydroInMemoryDataModule(LightningDataModule):
                 )
 
             config_path = run_dir / "config.json"
-            config_result = load_config(config_path)
-            if isinstance(config_result, Failure):
+            try:
+                loaded_config_dict = load_config(config_path)
+            except FileOperationError as e:
                 return (
                     False,
                     None,
-                    f"Failed to load stored configuration: {config_result.failure()}",
+                    f"Failed to load stored configuration: {e}",
                 )
 
-            loaded_config_dict = config_result.unwrap()
             current_config_dict = extract_relevant_config(self)
             # Critical: Ensure current_config_dict also serializes preprocessing_configs by name
             if self.preprocessing_configs:
-                current_config_dict["preprocessing_configs"] = {
-                    k: {kk: vv.__class__.__name__ if hasattr(vv, "__class__") else str(vv) for kk, vv in v.items()}
-                    for k, v in self.preprocessing_configs.items()
-                }
+                serialized_configs = {}
+                for k, v in self.preprocessing_configs.items():
+                    serialized_config = {}
+                    for kk, vv in v.items():
+                        if kk == "pipeline" and hasattr(vv, "get_params"):
+                            # Serialize pipeline using get_params for accurate comparison
+                            serialized_config[kk] = {"class": vv.__class__.__name__, "params": vv.get_params(deep=True)}
+                        elif hasattr(vv, "__class__"):
+                            serialized_config[kk] = vv.__class__.__name__
+                        else:
+                            serialized_config[kk] = str(vv)
+                    serialized_configs[k] = serialized_config
+                current_config_dict["preprocessing_configs"] = serialized_configs
             else:
                 current_config_dict["preprocessing_configs"] = None
 
@@ -793,16 +913,50 @@ class HydroInMemoryDataModule(LightningDataModule):
                     }
 
                 if key == "preprocessing_configs" and isinstance(current_val, dict) and isinstance(loaded_val, dict):
-                    current_pc_norm = (
-                        {k_pc: tuple(sorted(v_pc.items())) for k_pc, v_pc in current_val.items()}
-                        if current_val
-                        else None
-                    )
-                    loaded_pc_norm = (
-                        {k_pc: tuple(sorted(v_pc.items())) for k_pc, v_pc in loaded_val.items()} if loaded_val else None
-                    )
-                    if current_pc_norm != loaded_pc_norm:
-                        mismatched_keys.append(f"{key} (preprocessing_configs structure mismatch)")
+                    # Deep comparison of preprocessing configs including pipeline params
+                    configs_match = True
+
+                    # Check if both have same pipeline names
+                    if set(current_val.keys()) != set(loaded_val.keys()):
+                        configs_match = False
+                    else:
+                        # Compare each pipeline config
+                        for pipeline_name in current_val.keys():
+                            current_pipeline_config = current_val[pipeline_name]
+                            loaded_pipeline_config = loaded_val[pipeline_name]
+
+                            # Compare all non-pipeline keys
+                            for config_key in set(current_pipeline_config.keys()) | set(loaded_pipeline_config.keys()):
+                                if config_key == "pipeline":
+                                    # Special handling for pipeline comparison
+                                    current_pipeline = current_pipeline_config.get(config_key)
+                                    loaded_pipeline = loaded_pipeline_config.get(config_key)
+
+                                    # Both should be dicts with 'class' and 'params' if serialized correctly
+                                    if isinstance(current_pipeline, dict) and isinstance(loaded_pipeline, dict):
+                                        if current_pipeline.get("class") != loaded_pipeline.get("class"):
+                                            configs_match = False
+                                            break
+                                        # Compare params (deep comparison)
+                                        if current_pipeline.get("params") != loaded_pipeline.get("params"):
+                                            configs_match = False
+                                            break
+                                    elif current_pipeline != loaded_pipeline:
+                                        configs_match = False
+                                        break
+                                else:
+                                    # Compare other config values normally
+                                    if current_pipeline_config.get(config_key) != loaded_pipeline_config.get(
+                                        config_key
+                                    ):
+                                        configs_match = False
+                                        break
+
+                            if not configs_match:
+                                break
+
+                    if not configs_match:
+                        mismatched_keys.append(f"{key} (preprocessing_configs structure or params mismatch)")
 
                 elif loaded_val != current_val:
                     mismatched_keys.append(f"{key} (loaded: {loaded_val}, current: {current_val})")
@@ -825,24 +979,25 @@ class HydroInMemoryDataModule(LightningDataModule):
 
             fitted_pipelines_dict = {}
             ts_pipelines_path = run_dir / "fitted_time_series_pipelines.joblib"
-            ts_pipelines_result = load_time_series_pipelines(ts_pipelines_path)
-            if isinstance(ts_pipelines_result, Failure):
+            try:
+                ts_pipelines = load_time_series_pipelines(ts_pipelines_path)
+                fitted_pipelines_dict.update(ts_pipelines)
+            except (FileOperationError, PipelineCompatibilityError) as e:
                 return (
                     False,
                     None,
-                    f"Failed to load time series pipelines: {ts_pipelines_result.failure()}",
+                    f"Failed to load time series pipelines: {e}",
                 )
-            fitted_pipelines_dict.update(ts_pipelines_result.unwrap())
 
             static_pipeline_path = run_dir / "fitted_static_pipeline.joblib"
             processed_static_path = run_dir / "processed_static_features.parquet"
             if static_pipeline_path.exists() and processed_static_path.exists():
-                static_pipeline_result = load_static_pipeline(static_pipeline_path)
-                if isinstance(static_pipeline_result, Failure):
-                    logger.warning(f"Found static pipeline file but failed to load: {static_pipeline_result.failure()}")
+                try:
+                    static_pipeline = load_static_pipeline(static_pipeline_path)
+                    fitted_pipelines_dict["static"] = static_pipeline
+                except (FileOperationError, PipelineCompatibilityError) as e:
+                    logger.warning(f"Found static pipeline file but failed to load: {e}")
                     processed_static_path = None
-                else:
-                    fitted_pipelines_dict["static"] = static_pipeline_result.unwrap()
             else:
                 processed_static_path = None
 
@@ -863,25 +1018,30 @@ class HydroInMemoryDataModule(LightningDataModule):
             return False, None, f"Unexpected error during reuse check: {e}"
 
     def _load_pipelines_from_output(self, processing_output: ProcessingOutput) -> None:
-        """Loads fitted pipelines from the paths specified in ProcessingOutput."""
+        """
+        Loads fitted pipelines from the paths specified in ProcessingOutput.
+
+        Raises:
+            RuntimeError: If loading time series pipelines fails.
+        """
         self.fitted_pipelines = {}
         ts_pipelines_path = processing_output.fitted_time_series_pipelines_path
         if ts_pipelines_path and ts_pipelines_path.exists():
-            ts_pipelines_result = load_time_series_pipelines(ts_pipelines_path)
-            if isinstance(ts_pipelines_result, Success):
-                self.fitted_pipelines.update(ts_pipelines_result.unwrap())
-            else:
-                raise RuntimeError(f"Failed to load time series pipelines: {ts_pipelines_result.failure()}")
+            try:
+                ts_pipelines = load_time_series_pipelines(ts_pipelines_path)
+                self.fitted_pipelines.update(ts_pipelines)
+            except (FileOperationError, PipelineCompatibilityError) as e:
+                raise RuntimeError(f"Failed to load time series pipelines: {e}")
         else:
             logger.warning("Fitted time series pipelines file not found.")
 
         if processing_output.fitted_static_pipeline_path and processing_output.fitted_static_pipeline_path.exists():
             static_pipeline_path = processing_output.fitted_static_pipeline_path
-            static_pipeline_result = load_static_pipeline(static_pipeline_path)
-            if isinstance(static_pipeline_result, Success):
-                self.fitted_pipelines["static"] = static_pipeline_result.unwrap()
-            else:
-                logger.warning(f"Failed to load static pipeline: {static_pipeline_result.failure()}")
+            try:
+                static_pipeline = load_static_pipeline(static_pipeline_path)
+                self.fitted_pipelines["static"] = static_pipeline
+            except (FileOperationError, PipelineCompatibilityError) as e:
+                logger.warning(f"Failed to load static pipeline: {e}")
         else:
             logger.info("No fitted static pipeline found or specified in processing output.")
         logger.info(f"Successfully loaded {len(self.fitted_pipelines)} categories of fitted pipelines.")

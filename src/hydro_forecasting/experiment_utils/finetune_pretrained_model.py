@@ -4,8 +4,8 @@ from pathlib import Path
 from typing import Any
 
 import pytorch_lightning as pl
-from returns.result import Failure, Result, Success
 
+from ..exceptions import ConfigurationError, FileOperationError
 from ..experiment_utils import checkpoint_manager
 from ..models import model_factory
 from .training_runner import ExperimentRunner, ModelProviderFn
@@ -62,7 +62,43 @@ def finetune_pretrained_models(
     num_runs: int = 1,
     base_seed: int = 42,
     override_previous_attempts: bool = False,
-) -> Result[dict[str, tuple[str | None, dict[str, Any]]], str]:
+) -> dict[str, tuple[str | None, dict[str, Any]]]:
+    """
+    Fine-tune pre-trained models on specified gauge data.
+
+    This function loads pre-trained model checkpoints and fine-tunes them using the provided
+    configuration. It handles multiple model types and automatically resolves YAML configuration
+    files for each model type.
+
+    Args:
+        gauge_ids: List of gauge identifiers for training data
+        pretrained_checkpoint_dir: Directory containing pre-trained model checkpoints
+        model_types: List of model type names to fine-tune
+        pretrained_yaml_paths: Either a directory path containing YAML files or a list of paths
+        datamodule_config: Configuration for the data module
+        training_config: Configuration for the training process
+        output_dir: Directory to save fine-tuned models and results
+        experiment_name: Name for this fine-tuning experiment
+        select_best_from_pretrained: Whether to select the best checkpoint from pre-training
+        pretrained_run_index: Specific run index to load from pre-training (optional)
+        pretrained_attempt_index: Specific attempt index to load from pre-training (optional)
+        lr_reduction_factor: Factor to reduce learning rate for fine-tuning
+        num_runs: Number of training runs to perform
+        base_seed: Base random seed for reproducibility
+        override_previous_attempts: Whether to override existing fine-tuning attempts
+
+    Returns:
+        Dictionary mapping model types to tuples of (checkpoint_path, metrics_dict).
+        For failed models, checkpoint_path is None and metrics_dict contains error information.
+
+    Raises:
+        ConfigurationError: If configuration is invalid (e.g., missing YAML files, mismatched lengths)
+
+    Note:
+        FileOperationError exceptions from checkpoint loading are caught and logged as failed
+        models in the results dictionary rather than propagated. The function is compatible
+        with both Result-based and exception-based checkpoint_manager implementations.
+    """
     actual_pretrained_yaml_paths: list[str]
     if isinstance(pretrained_yaml_paths, str | Path):
         yaml_dir = Path(pretrained_yaml_paths)
@@ -71,7 +107,7 @@ def finetune_pretrained_models(
             for model_type in model_types:
                 yaml_path_obj = yaml_dir / f"{model_type.lower()}.yaml"
                 if not yaml_path_obj.exists():
-                    return Failure(f"YAML file for model type '{model_type}' not found at {yaml_path_obj}")
+                    raise ConfigurationError(f"YAML file for model type '{model_type}' not found at {yaml_path_obj}")
                 resolved_yaml_paths.append(str(yaml_path_obj))
             actual_pretrained_yaml_paths = resolved_yaml_paths
         else:
@@ -83,7 +119,7 @@ def finetune_pretrained_models(
         actual_pretrained_yaml_paths = [str(p) for p in pretrained_yaml_paths]
 
     if len(model_types) != len(actual_pretrained_yaml_paths):
-        return Failure("Length of model_types must match length of resolved pretrained_yaml_paths")
+        raise ConfigurationError("Length of model_types must match length of resolved pretrained_yaml_paths")
 
     runner = ExperimentRunner(
         output_dir=output_dir,
@@ -110,12 +146,22 @@ def finetune_pretrained_models(
             specific_attempt_index=pretrained_attempt_index,
         )
 
-        if not isinstance(pretrained_checkpoint_path_result, Success):
-            error_msg = pretrained_checkpoint_path_result.failure()
-            logger.warning(f"Could not find pre-trained checkpoint for {model_type}: {error_msg}")
-            accumulated_error_results[model_type] = (None, {"error": f"Checkpoint not found: {error_msg}"})
-        else:
-            pretrained_checkpoint_path = pretrained_checkpoint_path_result.unwrap()
+        try:
+            # Extract the checkpoint path from the result, raising FileOperationError on failure
+            if hasattr(pretrained_checkpoint_path_result, "unwrap") and hasattr(
+                pretrained_checkpoint_path_result, "failure"
+            ):
+                # Handle Result type - check if it's successful by trying to access the value
+                try:
+                    pretrained_checkpoint_path = pretrained_checkpoint_path_result.unwrap()
+                except:
+                    # If unwrap fails, this is a Failure result
+                    error_msg = pretrained_checkpoint_path_result.failure()
+                    raise FileOperationError(error_msg)
+            else:
+                # Handle direct return (exception-based interface or raw value)
+                pretrained_checkpoint_path = pretrained_checkpoint_path_result
+
             logger.info(f"Found pre-trained checkpoint for {model_type}: {pretrained_checkpoint_path}")
 
             provider_fn = functools.partial(
@@ -126,29 +172,21 @@ def finetune_pretrained_models(
             model_provider_fns_for_exp.append(provider_fn)
             valid_model_types_for_exp.append(model_type)
             valid_yaml_paths_for_exp.append(initial_yaml_path_str)
+        except FileOperationError as e:
+            logger.warning(f"Could not find pre-trained checkpoint for {model_type}: {e}")
+            accumulated_error_results[model_type] = (None, {"error": f"Checkpoint not found: {e}"})
 
     if not valid_model_types_for_exp:
         if accumulated_error_results:
-            return Success(accumulated_error_results)
-        return Failure("No models with valid pre-trained checkpoints found and no prior errors.")
+            return accumulated_error_results
+        raise ConfigurationError("No models with valid pre-trained checkpoints found and no prior errors.")
 
-    experiment_run_result = runner.run_experiment(
+    final_results = runner.run_experiment(
         model_types=valid_model_types_for_exp,
         yaml_paths=valid_yaml_paths_for_exp,
         model_provider_fns=model_provider_fns_for_exp,
         gauge_ids=gauge_ids,
     )
 
-    if isinstance(experiment_run_result, Success):
-        final_results = experiment_run_result.unwrap()
-        final_results.update(accumulated_error_results)
-        return Success(final_results)
-    else:
-        if accumulated_error_results:
-            logger.warning(
-                f"ExperimentRunner failed but returning partial error results: {experiment_run_result.failure()}"
-            )
-            return Failure(
-                f"ExperimentRunner failed: {experiment_run_result.failure()}. Prior errors: {accumulated_error_results}"
-            )
-        return experiment_run_result
+    final_results.update(accumulated_error_results)
+    return final_results

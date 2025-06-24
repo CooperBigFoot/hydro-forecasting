@@ -1,19 +1,21 @@
+import logging
 from pathlib import Path
 
 import joblib
 import numpy as np
 import pandas as pd
-from returns.pipeline import pipe
-from returns.pointfree import bind
-from returns.result import Failure, Result, Success
 from sklearn.base import clone
 from sklearn.pipeline import Pipeline
+
+from ..exceptions import ConfigurationError, DataProcessingError, FileOperationError
+
+logger = logging.getLogger(__name__)
 
 
 def fit_static_pipeline(
     static_df: pd.DataFrame,
     preprocessing_config: dict[str, dict[str, Pipeline | str]],
-) -> Result[Pipeline, str]:
+) -> Pipeline:
     """
     Fit and return the static features pipeline.
 
@@ -24,32 +26,37 @@ def fit_static_pipeline(
             - "columns": list of column names to fit on
 
     Returns:
-        Result containing fitted Pipeline instance or error message.
+        Fitted Pipeline instance.
+
+    Raises:
+        DataProcessingError: If static DataFrame is empty or columns are missing.
+        ConfigurationError: If configuration is invalid.
     """
     if static_df is None or static_df.empty:
-        return Failure("Static DataFrame is empty or None")
+        raise DataProcessingError("Static DataFrame is empty or None")
 
     try:
         cols: list[str] = preprocessing_config["static_features"]["columns"]
-        missing = [c for c in cols if c not in static_df.columns]
+    except KeyError as e:
+        raise ConfigurationError(f"Missing configuration key: {e}")
 
-        if missing:
-            return Failure(f"Missing columns in static df: {missing}")
+    missing = [c for c in cols if c not in static_df.columns]
+    if missing:
+        raise DataProcessingError(f"Missing columns in static df: {missing}")
 
+    try:
         pipeline: Pipeline = clone(preprocessing_config["static_features"]["pipeline"])
         pipeline.fit(static_df[cols])
-
-        return Success(pipeline)
-
+        return pipeline
     except Exception as e:
-        return Failure(f"Error fitting static pipeline: {e}")
+        raise DataProcessingError(f"Error fitting static pipeline: {e}") from e
 
 
 def transform_static_data(
     static_df: pd.DataFrame,
     preprocessing_config: dict[str, dict[str, Pipeline | str]],
     fitted_pipeline: Pipeline,
-) -> Result[pd.DataFrame, str]:
+) -> pd.DataFrame:
     """
     Transform static data using a fitted static features pipeline.
 
@@ -59,23 +66,29 @@ def transform_static_data(
         fitted_pipeline: Fitted sklearn Pipeline for static features.
 
     Returns:
-        Result containing DataFrame with transformed static features or error message.
+        DataFrame with transformed static features.
+
+    Raises:
+        DataProcessingError: If static DataFrame is empty, pipeline is None, or columns are missing.
+        ConfigurationError: If configuration is invalid.
     """
     if static_df is None or static_df.empty:
-        return Failure("Static DataFrame is empty or None")
+        raise DataProcessingError("Static DataFrame is empty or None")
 
     if fitted_pipeline is None:
-        return Failure("Fitted static pipeline is required for transformation")
+        raise DataProcessingError("Fitted static pipeline is required for transformation")
 
     try:
         cols: list[str] = preprocessing_config["static_features"]["columns"]
-        missing = [c for c in cols if c not in static_df.columns]
+    except KeyError as e:
+        raise ConfigurationError(f"Missing configuration key: {e}")
 
-        if missing:
-            return Failure(f"Missing columns in static df for transform: {missing}")
+    missing = [c for c in cols if c not in static_df.columns]
+    if missing:
+        raise DataProcessingError(f"Missing columns in static df for transform: {missing}")
 
+    try:
         transformed_df = static_df.copy()
-
         transformed = fitted_pipeline.transform(static_df[cols])
 
         if isinstance(transformed, np.ndarray):
@@ -85,16 +98,15 @@ def transform_static_data(
             for col in cols:
                 transformed_df[col] = transformed[col]
 
-        return Success(transformed_df)
-
+        return transformed_df
     except Exception as e:
-        return Failure(f"Error transforming static data: {e}")
+        raise DataProcessingError(f"Error transforming static data: {e}") from e
 
 
 def read_static_data_from_disk(
     region_static_attributes_base_dirs: dict[str, Path],
     list_of_gauge_ids: list[str],
-) -> Result[pd.DataFrame, str]:
+) -> pd.DataFrame:
     """
     Load and merge static attribute data from multiple regions on disk.
 
@@ -103,10 +115,15 @@ def read_static_data_from_disk(
         list_of_gauge_ids: List of gauge IDs to load
 
     Returns:
-        Result containing DataFrame with merged static attributes or error message.
+        DataFrame with merged static attributes.
+
+    Raises:
+        ConfigurationError: If no gauge IDs are provided.
+        FileOperationError: If file operations fail.
+        DataProcessingError: If no static attribute files are found.
     """
     if not list_of_gauge_ids:
-        return Failure("No gauge IDs provided for static attribute loading")
+        raise ConfigurationError("No gauge IDs provided for static attribute loading")
 
     region_to_gauges: dict[str, list[str]] = {}
     for gid in list_of_gauge_ids:
@@ -117,7 +134,7 @@ def read_static_data_from_disk(
     for region, gauges in region_to_gauges.items():
         static_dir = region_static_attributes_base_dirs.get(region)
         if static_dir is None:
-            print(f"WARNING: No static attribute directory for region '{region}'")
+            logger.warning("No static attribute directory for region '%s'", region)
             continue
 
         region_type_dfs: list[pd.DataFrame] = []
@@ -128,21 +145,21 @@ def read_static_data_from_disk(
             try:
                 df_type = pd.read_parquet(file_path)
                 if "gauge_id" not in df_type.columns:
-                    print(f"WARNING: 'gauge_id' missing in {file_path}, skipping.")
+                    logger.warning("'gauge_id' missing in %s, skipping", file_path)
                     continue
                 df_type["gauge_id"] = df_type["gauge_id"].astype(str)
                 filtered = df_type[df_type["gauge_id"].isin(gauges)].copy()
                 if not filtered.empty:
                     region_type_dfs.append(filtered)
             except Exception as e:
-                print(f"ERROR: Error loading {file_path}: {str(e)}")
+                logger.error("Error loading %s: %s", file_path, str(e))
 
         if region_type_dfs:
             merged_region_df = region_type_dfs[0]
             for i, df_to_merge in enumerate(region_type_dfs[1:], start=1):
                 overlap = set(merged_region_df.columns) & set(df_to_merge.columns) - {"gauge_id"}
                 if overlap:
-                    print(f"INFO: Overlapping columns during merge: {', '.join(overlap)}")
+                    logger.info("Overlapping columns during merge: %s", ", ".join(overlap))
                 merged_region_df = pd.merge(
                     merged_region_df,
                     df_to_merge,
@@ -155,9 +172,9 @@ def read_static_data_from_disk(
     if region_merged_dfs:
         final_df = pd.concat(region_merged_dfs, ignore_index=True, join="outer")
         final_df = final_df.drop_duplicates(subset=["gauge_id"]).reset_index(drop=True)
-        return Success(final_df)
+        return final_df
 
-    return Failure("No static attribute files found or loaded for any region")
+    raise DataProcessingError("No static attribute files found or loaded for any region")
 
 
 def write_static_data_to_disk(
@@ -165,7 +182,7 @@ def write_static_data_to_disk(
     output_path: Path,
     columns_to_save: list[str],
     group_identifier: str = "gauge_id",
-) -> Result[Path, str]:
+) -> Path:
     """
     Save specified columns of the static attribute DataFrame to disk as a Parquet file.
 
@@ -176,32 +193,38 @@ def write_static_data_to_disk(
         group_identifier: Name of the column that identifies the gauges (default: "gauge_id").
 
     Returns:
-        Result containing Path to the saved Parquet file or error message.
+        Path to the saved Parquet file.
+
+    Raises:
+        DataProcessingError: If group identifier is not found in DataFrame.
+        FileOperationError: If file operations fail.
     """
     try:
         # Ensure output directory exists
         output_path.parent.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        raise FileOperationError(f"Failed to create output directory: {e}") from e
 
-        # Verify group identifier is in the DataFrame
-        if group_identifier not in df.columns:
-            return Failure(f"Group identifier '{group_identifier}' not found in DataFrame")
+    # Verify group identifier is in the DataFrame
+    if group_identifier not in df.columns:
+        raise DataProcessingError(f"Group identifier '{group_identifier}' not found in DataFrame")
 
-        # Create list of columns to keep
-        final_columns = [group_identifier] + [col for col in columns_to_save if col != group_identifier]
+    # Create list of columns to keep
+    final_columns = [group_identifier] + [col for col in columns_to_save if col != group_identifier]
 
-        # Filter columns that exist in the DataFrame
-        existing_columns = [col for col in final_columns if col in df.columns]
-        missing_columns = set(final_columns) - set(existing_columns)
+    # Filter columns that exist in the DataFrame
+    existing_columns = [col for col in final_columns if col in df.columns]
+    missing_columns = set(final_columns) - set(existing_columns)
 
-        if missing_columns:
-            print(f"WARNING: Columns not found in DataFrame: {missing_columns}")
+    if missing_columns:
+        logger.warning("Columns not found in DataFrame: %s", missing_columns)
 
+    try:
         # Save only the specified columns
         df[existing_columns].to_parquet(output_path)
-
-        return Success(output_path)
+        return output_path
     except Exception as e:
-        return Failure(f"Failed to write static data to disk: {e}")
+        raise FileOperationError(f"Failed to write static data to disk: {e}") from e
 
 
 def process_static_data(
@@ -210,7 +233,7 @@ def process_static_data(
     preprocessing_config: dict[str, dict[str, Pipeline | str]],
     output_path: Path | str,
     group_identifier: str = "gauge_id",
-) -> Result[tuple[Path, Pipeline], str]:
+) -> tuple[Path, Pipeline]:
     """
     Complete static data processing pipeline: read, fit, transform, and write.
 
@@ -222,8 +245,12 @@ def process_static_data(
         group_identifier: Name of the column that identifies the gauges (default: "gauge_id").
 
     Returns:
-        Result container with tuple of (Path to saved file, fitted Pipeline) on success,
-        or error message on failure.
+        Tuple of (Path to saved file, fitted Pipeline).
+
+    Raises:
+        ConfigurationError: If configuration is invalid.
+        DataProcessingError: If data processing fails.
+        FileOperationError: If file operations fail.
     """
     # Cast all paths to Path objects
     region_static_attributes_base_dirs = {
@@ -233,59 +260,27 @@ def process_static_data(
     if isinstance(output_path, str):
         output_path = Path(output_path)
 
-    # Get columns to transform from config
-    columns_to_save = preprocessing_config["static_features"]["columns"]
+    try:
+        # Get columns to transform from config
+        columns_to_save = preprocessing_config["static_features"]["columns"]
+    except KeyError as e:
+        raise ConfigurationError(f"Missing configuration key: {e}")
 
-    # Helper functions for pipeline
-    def _read(_: object) -> Result[pd.DataFrame, str]:
-        return read_static_data_from_disk(region_static_attributes_base_dirs, list_of_gauge_ids)
+    # Process data step by step
+    static_df = read_static_data_from_disk(region_static_attributes_base_dirs, list_of_gauge_ids)
+    pipeline = fit_static_pipeline(static_df, preprocessing_config)
+    transformed_df = transform_static_data(static_df, preprocessing_config, pipeline)
+    saved_path = write_static_data_to_disk(
+        transformed_df,
+        output_path,
+        columns_to_save=columns_to_save,
+        group_identifier=group_identifier,
+    )
 
-    def _fit(static_df: pd.DataFrame) -> Result[tuple[pd.DataFrame, Pipeline], str]:
-        pipeline_result = fit_static_pipeline(static_df, preprocessing_config)
-        if isinstance(pipeline_result, Failure):
-            return pipeline_result
-
-        # Keep the original dataframe and return it along with the fitted pipeline
-        pipeline = pipeline_result.unwrap()
-        return Success((static_df, pipeline))
-
-    def _transform(
-        data_and_pipeline: tuple[pd.DataFrame, Pipeline],
-    ) -> Result[tuple[pd.DataFrame, Pipeline], str]:
-        # Unpack the input
-        static_df, pipeline = data_and_pipeline
-
-        # Transform data using the fitted pipeline
-        transform_result = transform_static_data(static_df, preprocessing_config, pipeline)
-        if isinstance(transform_result, Failure):
-            return transform_result
-
-        transformed_df = transform_result.unwrap()
-        return Success((transformed_df, pipeline))
-
-    def _write(
-        data_and_pipeline: tuple[pd.DataFrame, Pipeline],
-    ) -> Result[tuple[Path, Pipeline], str]:
-        # Unpack the input
-        transformed_df, pipeline = data_and_pipeline
-
-        # Write the data to disk
-        write_result = write_static_data_to_disk(
-            transformed_df,
-            output_path,
-            columns_to_save=columns_to_save,
-            group_identifier=group_identifier,
-        )
-
-        if isinstance(write_result, Success):
-            return Success((write_result.unwrap(), pipeline))
-        else:
-            return Failure(write_result.failure())
-
-    return pipe(_read, bind(_fit), bind(_transform), bind(_write))(None)
+    return saved_path, pipeline
 
 
-def save_static_pipeline(pipeline: Pipeline, filepath: Path | str) -> Result[Path, str]:
+def save_static_pipeline(pipeline: Pipeline, filepath: Path | str) -> Path:
     """
     Save a fitted static features Pipeline object to disk.
 
@@ -294,21 +289,23 @@ def save_static_pipeline(pipeline: Pipeline, filepath: Path | str) -> Result[Pat
         filepath: Path where the pipeline will be saved
 
     Returns:
-        Success with the save path if successful, or Failure with error message
+        Path where the pipeline was saved.
+
+    Raises:
+        FileOperationError: If file operations fail.
     """
     filepath = Path(filepath)
     try:
         # Ensure parent directory exists
         filepath.parent.mkdir(parents=True, exist_ok=True)
-
         # Save pipeline using joblib
         joblib.dump(pipeline, filepath)
-        return Success(filepath)
+        return filepath
     except Exception as e:
-        return Failure(f"Failed to save static pipeline: {e}")
+        raise FileOperationError(f"Failed to save static pipeline: {e}") from e
 
 
-def load_static_pipeline(filepath: Path | str) -> Result[Pipeline, str]:
+def load_static_pipeline(filepath: Path | str) -> Pipeline:
     """
     Load a fitted static features Pipeline object from disk.
 
@@ -316,12 +313,15 @@ def load_static_pipeline(filepath: Path | str) -> Result[Pipeline, str]:
         filepath: Path where the pipeline is saved
 
     Returns:
-        Success with the loaded Pipeline object if successful, or Failure with error message
+        Loaded Pipeline object.
+
+    Raises:
+        FileOperationError: If file operations fail.
     """
     filepath = Path(filepath)
     try:
         # Load pipeline using joblib
         pipeline = joblib.load(filepath)
-        return Success(pipeline)
+        return pipeline
     except Exception as e:
-        return Failure(f"Failed to load static pipeline: {e}")
+        raise FileOperationError(f"Failed to load static pipeline: {e}") from e

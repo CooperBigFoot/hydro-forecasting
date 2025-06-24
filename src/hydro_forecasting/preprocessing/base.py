@@ -1,8 +1,38 @@
+import re
 from typing import Any
 
 import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator, TransformerMixin
+
+# Global registry for transformers
+TRANSFORMER_REGISTRY: dict[str, type["HydroTransformer"]] = {}
+
+
+def register_transformer(name: str):
+    """Decorator to register transformers with snake_case names.
+
+    Args:
+        name: Snake_case name for the transformer
+
+    Returns:
+        Decorator function
+
+    Raises:
+        ValueError: If name is not valid snake_case
+    """
+    # Validate snake_case convention
+    if not re.match(r"^[a-z]+(_[a-z]+)*$", name):
+        raise ValueError(f"Transformer name '{name}' must be snake_case (lowercase letters and underscores only)")
+
+    def decorator(cls: type["HydroTransformer"]) -> type["HydroTransformer"]:
+        if not issubclass(cls, HydroTransformer):
+            raise ValueError(f"Class {cls.__name__} must inherit from HydroTransformer")
+
+        TRANSFORMER_REGISTRY[name] = cls
+        return cls
+
+    return decorator
 
 
 class HydroTransformer(BaseEstimator, TransformerMixin):

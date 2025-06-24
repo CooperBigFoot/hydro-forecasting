@@ -1,9 +1,10 @@
 import pandas as pd
 from sklearn.preprocessing import PowerTransformer
 
-from .base import HydroTransformer
+from .base import HydroTransformer, register_transformer
 
 
+@register_transformer("normalize")
 class NormalizeTransformer(HydroTransformer):
     """Transformer that attempts to transform features toward a normal distribution.
 

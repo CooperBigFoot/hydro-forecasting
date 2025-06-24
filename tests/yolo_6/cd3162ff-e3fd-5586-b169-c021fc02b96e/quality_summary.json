@@ -1,0 +1,29 @@
+{
+  "original_basins": 20,
+  "passed_basins": 19,
+  "failed_basins": 1,
+  "excluded_basins": {
+    "CA_15030": "Insufficient training data (1.77 years available).                          Minimum required training years: 5"
+  },
+  "retained_basins": [
+    "CA_15013",
+    "CA_15016",
+    "CA_15020",
+    "CA_15022",
+    "CA_15025",
+    "CA_15034",
+    "CA_15039",
+    "CA_15040",
+    "CA_15044",
+    "USA_01013500",
+    "USA_01022500",
+    "USA_01030500",
+    "USA_01031500",
+    "USA_01047000",
+    "USA_01052500",
+    "USA_01054200",
+    "USA_01055000",
+    "USA_01057000",
+    "USA_01073000"
+  ]
+}

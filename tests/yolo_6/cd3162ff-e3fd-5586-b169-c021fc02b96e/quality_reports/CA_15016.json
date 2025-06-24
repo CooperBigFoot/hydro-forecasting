@@ -1,0 +1,94 @@
+{
+  "valid_period": {
+    "snow_depth_water_equivalent_mean": {
+      "start": "2002-01-02",
+      "end": "2024-12-31"
+    },
+    "surface_net_solar_radiation_mean": {
+      "start": "2002-01-02",
+      "end": "2024-12-31"
+    },
+    "surface_net_thermal_radiation_mean": {
+      "start": "2002-01-02",
+      "end": "2024-12-31"
+    },
+    "potential_evaporation_sum_ERA5_LAND": {
+      "start": "2002-01-02",
+      "end": "2024-12-31"
+    },
+    "potential_evaporation_sum_FAO_PENMAN_MONTEITH": {
+      "start": "2002-01-02",
+      "end": "2024-12-31"
+    },
+    "temperature_2m_mean": {
+      "start": "2002-01-02",
+      "end": "2024-12-31"
+    },
+    "temperature_2m_min": {
+      "start": "2002-01-02",
+      "end": "2024-12-31"
+    },
+    "temperature_2m_max": {
+      "start": "2002-01-02",
+      "end": "2024-12-31"
+    },
+    "total_precipitation_sum": {
+      "start": "2002-01-02",
+      "end": "2024-12-31"
+    },
+    "streamflow": {
+      "start": "2002-01-02",
+      "end": "2023-01-05"
+    }
+  },
+  "processing_steps": [
+    "sorted_by_gauge_and_date",
+    "trimmed_nulls",
+    "imputed_short_gaps_forward_only",
+    "data_sufficiency_check_passed"
+  ],
+  "imputation_info": {
+    "snow_depth_water_equivalent_mean": {
+      "short_gaps_count": 0,
+      "imputed_values_count": 0
+    },
+    "surface_net_solar_radiation_mean": {
+      "short_gaps_count": 0,
+      "imputed_values_count": 0
+    },
+    "surface_net_thermal_radiation_mean": {
+      "short_gaps_count": 0,
+      "imputed_values_count": 0
+    },
+    "potential_evaporation_sum_ERA5_LAND": {
+      "short_gaps_count": 0,
+      "imputed_values_count": 0
+    },
+    "potential_evaporation_sum_FAO_PENMAN_MONTEITH": {
+      "short_gaps_count": 0,
+      "imputed_values_count": 0
+    },
+    "temperature_2m_mean": {
+      "short_gaps_count": 0,
+      "imputed_values_count": 0
+    },
+    "temperature_2m_min": {
+      "short_gaps_count": 0,
+      "imputed_values_count": 0
+    },
+    "temperature_2m_max": {
+      "short_gaps_count": 0,
+      "imputed_values_count": 0
+    },
+    "total_precipitation_sum": {
+      "short_gaps_count": 0,
+      "imputed_values_count": 0
+    },
+    "streamflow": {
+      "short_gaps_count": 0,
+      "imputed_values_count": 10
+    }
+  },
+  "passed_quality_check": true,
+  "failure_reason": null
+}

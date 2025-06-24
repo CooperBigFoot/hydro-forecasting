@@ -9,9 +9,9 @@ import pytorch_lightning as pl
 import torch
 from pytorch_lightning.callbacks import EarlyStopping, LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.loggers import TensorBoardLogger
-from returns.result import Failure, Result, Success
 
 from ..data.in_memory_datamodule import HydroInMemoryDataModule
+from ..exceptions import ConfigurationError, DataProcessingError, FileOperationError, ModelTrainingError
 from ..experiment_utils import checkpoint_manager
 from ..model_evaluation.hp_from_yaml import hp_from_yaml
 
@@ -21,16 +21,29 @@ ModelType = TypeVar("ModelType", bound=pl.LightningModule)
 
 ModelProviderFn = Callable[[str, dict[str, Any]], ModelType]
 
-torch.set_float32_matmul_precision('medium')
+torch.set_float32_matmul_precision("medium")
+
 
 def _setup_datamodule_core(
     base_datamodule_config: dict[str, Any],
     hps_for_datamodule: dict[str, Any],
     gauge_ids: list[str],
     model_type: str,  # Added for clarity in case of missing HPs
-) -> Result[HydroInMemoryDataModule, str]:
+) -> HydroInMemoryDataModule:
     """
     Core helper to configure and set up HydroInMemoryDataModule.
+
+    Args:
+        base_datamodule_config: Base configuration for the datamodule
+        hps_for_datamodule: Hyperparameters for the datamodule
+        gauge_ids: List of gauge IDs to process
+        model_type: Type of model being configured
+
+    Returns:
+        Configured HydroInMemoryDataModule instance
+
+    Raises:
+        DataProcessingError: If datamodule setup fails
     """
     current_datamodule_config = copy.deepcopy(base_datamodule_config)
 
@@ -63,10 +76,10 @@ def _setup_datamodule_core(
         datamodule = HydroInMemoryDataModule(list_of_gauge_ids_to_process=gauge_ids, **current_datamodule_config)
         datamodule.prepare_data()
         datamodule.setup()
-        return Success(datamodule)
+        return datamodule
     except Exception as e:
         logger.error(f"Failed to setup datamodule for {model_type}: {e}", exc_info=True)
-        return Failure(f"Datamodule setup failed for {model_type}: {e}")
+        raise DataProcessingError(f"Datamodule setup failed for {model_type}: {e}") from e
 
 
 def _finalize_model_hyperparameters(
@@ -76,6 +89,14 @@ def _finalize_model_hyperparameters(
 ) -> dict[str, Any]:
     """
     Enriches model HPs with datamodule-derived dimensions and other common mappings.
+
+    Args:
+        model_hps: Base model hyperparameters
+        datamodule: Configured datamodule instance
+        model_type: Type of model being configured
+
+    Returns:
+        Finalized hyperparameters dictionary with datamodule-derived properties
     """
     final_hps = copy.deepcopy(model_hps)
 
@@ -110,9 +131,27 @@ def _configure_trainer_core(
     log_dir_for_run: Path | None = None,
     model_type_for_paths: str | None = None,
     run_idx_for_paths: int | None = None,
-) -> Result[pl.Trainer, str]:
+) -> pl.Trainer:
     """
     Core helper to configure and create a PyTorch Lightning Trainer.
+
+    Args:
+        training_config: Training configuration dictionary
+        callbacks_config: Callbacks configuration dictionary
+        is_hpt_trial: Whether this is a hyperparameter tuning trial
+        hpt_metric_to_monitor: Metric to monitor for HPT trials
+        optuna_trial_for_pruning: Optuna trial for pruning (kept for compatibility)
+        checkpoint_dir_for_run: Directory for checkpoints
+        log_dir_for_run: Directory for logs
+        model_type_for_paths: Model type for path construction
+        run_idx_for_paths: Run index for path construction
+
+    Returns:
+        Configured PyTorch Lightning Trainer
+
+    Raises:
+        ConfigurationError: If required path information is missing
+        ModelTrainingError: If trainer creation fails
     """
     callbacks_list = []
     tb_logger = None  # type: ignore
@@ -138,7 +177,7 @@ def _configure_trainer_core(
 
     # Check paths for both regular training and HPT trials
     if not checkpoint_dir_for_run or not log_dir_for_run or model_type_for_paths is None or run_idx_for_paths is None:
-        return Failure("Missing path information for trainer configuration.")
+        raise ConfigurationError("Missing path information for trainer configuration.")
 
     attempt_name = log_dir_for_run.name  # Assumes log_dir_for_run is the specific attempt path
 
@@ -174,7 +213,7 @@ def _configure_trainer_core(
                 default_hp_metric=False,
             )
         except Exception as e:
-            return Failure(f"Error setting up TensorBoardLogger paths: {e}")
+            raise ConfigurationError(f"Error setting up TensorBoardLogger paths: {e}") from e
 
     try:
         # Configure trainer arguments
@@ -199,16 +238,22 @@ def _configure_trainer_core(
             )
         # Create trainer
         trainer = pl.Trainer(**trainer_kwargs)
-        return Success(trainer)
+        return trainer
     except Exception as e:
         logger.error(f"Failed to create pl.Trainer: {e}", exc_info=True)
-        return Failure(f"Trainer creation failed: {e}")
+        raise ModelTrainingError(f"Trainer creation failed: {e}") from e
 
 
 class ExperimentRunner:
     """
     Central runner class for hydrological model training experiments.
-    Refactored to use centralized helper functions.
+    Refactored to use centralized helper functions and exception-based error handling.
+
+    Raises:
+        ConfigurationError: For configuration and input validation errors
+        FileOperationError: For file operation errors
+        DataProcessingError: For data processing and datamodule setup errors
+        ModelTrainingError: For model training and trainer configuration errors
     """
 
     def __init__(
@@ -221,6 +266,21 @@ class ExperimentRunner:
         base_seed: int = 42,
         override_previous_attempts: bool = False,
     ):
+        """
+        Initialize the ExperimentRunner.
+
+        Args:
+            output_dir: Directory for experiment outputs
+            experiment_name: Name of the experiment
+            datamodule_config: Configuration for the datamodule
+            training_config: Configuration for training
+            num_runs: Number of training runs per model
+            base_seed: Base seed for reproducibility
+            override_previous_attempts: Whether to override previous attempts
+
+        Raises:
+            Exception: If main experiment directory creation fails
+        """
         self.output_dir = Path(output_dir)
         self.experiment_name = experiment_name
         self.datamodule_config = datamodule_config
@@ -237,6 +297,18 @@ class ExperimentRunner:
             raise
 
     def _setup_model_directories(self, model_type: str) -> tuple[Path, Path]:
+        """
+        Set up directories for model checkpoints and logs.
+
+        Args:
+            model_type: Type of model to create directories for
+
+        Returns:
+            Tuple of (checkpoints_dir, logs_dir)
+
+        Raises:
+            Exception: If directory creation fails
+        """
         model_checkpoints_base_dir = self.main_experiment_dir / checkpoint_manager.CHECKPOINTS_DIR_NAME / model_type
         model_logs_base_dir = self.main_experiment_dir / checkpoint_manager.LOGS_DIR_NAME / model_type
         try:
@@ -247,18 +319,38 @@ class ExperimentRunner:
             raise
         return model_checkpoints_base_dir, model_logs_base_dir
 
-    def _get_hps_from_yaml(self, model_type: str, yaml_path: str) -> Result[dict[str, Any], str]:
-        """Loads HPs from YAML, returns as Result."""
+    def _get_hps_from_yaml(self, model_type: str, yaml_path: str) -> dict[str, Any]:
+        """
+        Loads hyperparameters from YAML file.
+
+        Args:
+            model_type: Type of model to load HPs for
+            yaml_path: Path to the YAML file
+
+        Returns:
+            Dictionary of hyperparameters
+
+        Raises:
+            FileOperationError: If HP loading fails
+        """
         try:
             model_hp = hp_from_yaml(model_type, yaml_path)
-            return Success(model_hp)
+            return model_hp
         except Exception as e:
             logger.error(f"Failed to load hyperparameters from {yaml_path} for {model_type}: {e}")
-            return Failure(f"HP loading failed for {model_type} from {yaml_path}: {e}")
+            raise FileOperationError(f"HP loading failed for {model_type} from {yaml_path}: {e}") from e
 
     def set_seed(self, seed: int) -> None:
-        """Set random seed for reproducibility across all libraries."""
-        pl.seed_everything(seed, workers=True)
+        """
+        Set random seed for reproducibility across all libraries.
+
+        Args:
+            seed: Random seed value
+        """
+        from .seed_manager import SeedManager
+
+        seed_manager = SeedManager(seed)
+        seed_manager.set_global_seeds()
 
     def run_training_for_model(
         self,
@@ -267,29 +359,47 @@ class ExperimentRunner:
         model_provider_fn: ModelProviderFn,
         gauge_ids: list[str],
     ) -> tuple[str | None, dict[str, Any]]:
+        """
+        Run training for a specific model type.
+
+        Args:
+            model_type: Type of model to train
+            yaml_path: Path to YAML configuration file
+            model_provider_fn: Function to provide model instance
+            gauge_ids: List of gauge IDs for training
+
+        Returns:
+            Tuple of (best_model_path, metrics_dict) or (None, error_dict)
+
+        Raises:
+            FileOperationError: If HP loading fails
+            DataProcessingError: If datamodule setup fails
+            ConfigurationError: If trainer configuration fails
+            ModelTrainingError: If training fails
+        """
         logger.info(f"Processing model: {model_type} using HPs from {yaml_path}")
 
         try:
             model_checkpoints_base_dir, model_logs_base_dir = self._setup_model_directories(model_type)
 
             # Load initial HPs from YAML
-            initial_hps_result = self._get_hps_from_yaml(model_type, yaml_path)
-            if isinstance(initial_hps_result, Failure):
-                logger.error(initial_hps_result.failure())
-                return None, {"error": initial_hps_result.failure()}
-            initial_model_hps = initial_hps_result.unwrap()
+            try:
+                initial_model_hps = self._get_hps_from_yaml(model_type, yaml_path)
+            except FileOperationError as e:
+                logger.error(str(e))
+                return None, {"error": str(e)}
 
             # Setup datamodule using core helper (HPs for datamodule come from initial_model_hps)
-            datamodule_result = _setup_datamodule_core(
-                base_datamodule_config=self.datamodule_config,
-                hps_for_datamodule=initial_model_hps,  # YAML HPs guide DM config
-                gauge_ids=gauge_ids,
-                model_type=model_type,
-            )
-            if isinstance(datamodule_result, Failure):
-                logger.error(datamodule_result.failure())
-                return None, {"error": datamodule_result.failure()}
-            datamodule = datamodule_result.unwrap()
+            try:
+                datamodule = _setup_datamodule_core(
+                    base_datamodule_config=self.datamodule_config,
+                    hps_for_datamodule=initial_model_hps,  # YAML HPs guide DM config
+                    gauge_ids=gauge_ids,
+                    model_type=model_type,
+                )
+            except DataProcessingError as e:
+                logger.error(str(e))
+                return None, {"error": str(e)}
 
             # Finalize model HPs using the now-configured datamodule
             finalized_model_hps = _finalize_model_hyperparameters(
@@ -300,51 +410,52 @@ class ExperimentRunner:
             current_model_run_results = []
             for run_idx in range(self.num_runs):
                 logger.info(f"Starting run {run_idx + 1}/{self.num_runs} for {model_type}")
-                current_run_seed = self.base_seed + run_idx
+                from .seed_manager import SeedManager
+
+                base_seed_manager = SeedManager(self.base_seed)
+                current_run_seed = base_seed_manager.get_operation_seed("model_training", f"run_{run_idx}")
                 self.set_seed(current_run_seed)
-                logger.info(f"Using seed: {current_run_seed}")
-
-                checkpoint_run_attempt_path_result = checkpoint_manager.determine_output_run_attempt_path(
-                    base_model_output_dir=model_checkpoints_base_dir,
-                    run_index=run_idx,
-                    override_previous_attempts=self.override_previous_attempts,
+                logger.info(
+                    f"Using seed: {current_run_seed} (derived from base seed: {self.base_seed}, run: {run_idx})"
                 )
-                if not isinstance(checkpoint_run_attempt_path_result, Success):
-                    logger.error(f"Failed to determine checkpoint path: {checkpoint_run_attempt_path_result.failure()}")
-                    continue
-                specific_checkpoint_dir = checkpoint_run_attempt_path_result.unwrap()
 
-                log_run_attempt_path_result = checkpoint_manager.determine_log_run_attempt_path(
-                    base_model_log_dir=model_logs_base_dir,
-                    run_index=run_idx,
-                    override_previous_attempts=self.override_previous_attempts,
-                )
-                if not isinstance(log_run_attempt_path_result, Success):
-                    logger.error(f"Failed to determine log path: {log_run_attempt_path_result.failure()}")
+                try:
+                    specific_checkpoint_dir = checkpoint_manager.determine_output_run_attempt_path(
+                        base_model_output_dir=model_checkpoints_base_dir,
+                        run_index=run_idx,
+                        override_previous_attempts=self.override_previous_attempts,
+                    )
+
+                    specific_log_dir = checkpoint_manager.determine_log_run_attempt_path(
+                        base_model_log_dir=model_logs_base_dir,
+                        run_index=run_idx,
+                        override_previous_attempts=self.override_previous_attempts,
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to determine paths for run {run_idx}: {e}")
                     continue
-                specific_log_dir = log_run_attempt_path_result.unwrap()
 
                 # Configure trainer using core helper
-                callbacks_config_full_run = {
-                    "with_early_stopping": True,
-                    "with_model_checkpoint": True,
-                    "with_lr_monitor": True,
-                    "with_tensorboard_logger": True,
-                    "with_optuna_pruning": False,  # Not an HPT trial
-                }
-                trainer_result = _configure_trainer_core(
-                    training_config=self.training_config,
-                    callbacks_config=callbacks_config_full_run,
-                    is_hpt_trial=False,
-                    checkpoint_dir_for_run=specific_checkpoint_dir,
-                    log_dir_for_run=specific_log_dir,
-                    model_type_for_paths=model_type,
-                    run_idx_for_paths=run_idx,
-                )
-                if isinstance(trainer_result, Failure):
-                    logger.error(f"Trainer config error for {model_type}, run {run_idx}: {trainer_result.failure()}")
+                try:
+                    callbacks_config_full_run = {
+                        "with_early_stopping": True,
+                        "with_model_checkpoint": True,
+                        "with_lr_monitor": True,
+                        "with_tensorboard_logger": True,
+                        "with_optuna_pruning": False,  # Not an HPT trial
+                    }
+                    trainer = _configure_trainer_core(
+                        training_config=self.training_config,
+                        callbacks_config=callbacks_config_full_run,
+                        is_hpt_trial=False,
+                        checkpoint_dir_for_run=specific_checkpoint_dir,
+                        log_dir_for_run=specific_log_dir,
+                        model_type_for_paths=model_type,
+                        run_idx_for_paths=run_idx,
+                    )
+                except (ConfigurationError, ModelTrainingError) as e:
+                    logger.error(f"Trainer config error for {model_type}, run {run_idx}: {e}")
                     continue
-                trainer = trainer_result.unwrap()
 
                 try:
                     # Model provider function now receives the finalized HPs
@@ -396,6 +507,17 @@ class ExperimentRunner:
         model_run_results: list[tuple[str, dict[str, Any]]],
         model_checkpoints_base_dir: Path,
     ) -> tuple[str | None, dict[str, Any]]:
+        """
+        Process training results and determine the best model.
+
+        Args:
+            model_type: Type of model being processed
+            model_run_results: List of (model_path, metrics) tuples
+            model_checkpoints_base_dir: Base directory for model checkpoints
+
+        Returns:
+            Tuple of (best_model_path, metrics_dict) or (None, error_dict)
+        """
         if not model_run_results:
             logger.warning(f"No successful runs for {model_type}")
             return None, {"error": "No successful runs"}
@@ -405,12 +527,10 @@ class ExperimentRunner:
 
         try:
             relative_best_path = Path(overall_best_model_path).relative_to(model_checkpoints_base_dir)
-            update_result = checkpoint_manager.update_overall_best_model_info_file(
+            checkpoint_manager.update_overall_best_model_info_file(
                 model_checkpoints_output_dir=model_checkpoints_base_dir,
                 best_checkpoint_relative_path=str(relative_best_path),
             )
-            if not isinstance(update_result, Success):
-                logger.error(f"Failed to update best model info for {model_type}: {update_result.failure()}")
             logger.info(f"Overall best model for {model_type}: {relative_best_path}, Metrics: {overall_best_metrics}")
             return overall_best_model_path, overall_best_metrics
         except Exception as e:
@@ -423,11 +543,26 @@ class ExperimentRunner:
         yaml_paths: list[str],
         model_provider_fns: list[ModelProviderFn],
         gauge_ids: list[str],
-    ) -> Result[dict[str, tuple[str | None, dict[str, Any]]], str]:
+    ) -> dict[str, tuple[str | None, dict[str, Any]]]:
+        """
+        Run training experiment for multiple model types.
+
+        Args:
+            model_types: List of model types to train
+            yaml_paths: List of YAML configuration file paths
+            model_provider_fns: List of model provider functions
+            gauge_ids: List of gauge IDs for training
+
+        Returns:
+            Dictionary mapping model types to (best_model_path, metrics_dict) tuples
+
+        Raises:
+            ConfigurationError: If input validation fails
+        """
         if not gauge_ids:
-            return Failure("No gauge IDs provided for training")
+            raise ConfigurationError("No gauge IDs provided for training")
         if len(model_types) != len(yaml_paths) or len(model_types) != len(model_provider_fns):
-            return Failure("Length mismatch: model_types, yaml_paths, model_provider_fns")
+            raise ConfigurationError("Length mismatch: model_types, yaml_paths, model_provider_fns")
 
         logger.info(f"Starting experiment '{self.experiment_name}' from ExperimentRunner.")
         all_models_results = {}
@@ -448,5 +583,5 @@ class ExperimentRunner:
                 all_models_results[current_model_type] = (None, {"error": str(e)})
 
         if not all_models_results:
-            return Failure("No models were successfully processed in experiment.")
-        return Success(all_models_results)
+            raise ConfigurationError("No models were successfully processed in experiment.")
+        return all_models_results

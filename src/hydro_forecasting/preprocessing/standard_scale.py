@@ -1,9 +1,10 @@
 import numpy as np
 import pandas as pd
 
-from .base import HydroTransformer
+from .base import HydroTransformer, register_transformer
 
 
+@register_transformer("standard_scale")
 class StandardScaleTransformer(HydroTransformer):
     """Standardizes features by removing the mean and scaling to unit variance."""
 

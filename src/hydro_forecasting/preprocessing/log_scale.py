@@ -1,9 +1,10 @@
 import numpy as np
 import pandas as pd
 
-from .base import HydroTransformer
+from .base import HydroTransformer, register_transformer
 
 
+@register_transformer("log_scale")
 class LogTransformer(HydroTransformer):
     """Transformer for applying log transformation to data.
 

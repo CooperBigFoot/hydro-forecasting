@@ -4,7 +4,7 @@ import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Union
 
-from returns.result import Failure, Result, Success  # ROP import
+from ..exceptions import ConfigurationError, FileOperationError
 
 if TYPE_CHECKING:
     from sklearn.pipeline import Pipeline
@@ -80,7 +80,7 @@ def generate_run_uuid(config: dict[str, Any]) -> str:
     return str(run_uuid)
 
 
-def _default_serializer(obj: Any) -> str:
+def _default_serializer(obj: Any) -> Any:
     """
     Custom JSON serializer to handle non-standard JSON types.
 
@@ -88,7 +88,7 @@ def _default_serializer(obj: Any) -> str:
         obj: Object to serialize to JSON
 
     Returns:
-        String representation of the object
+        JSON-serializable representation of the object
 
     Raises:
         TypeError: If the object cannot be serialized
@@ -98,57 +98,72 @@ def _default_serializer(obj: Any) -> str:
     elif hasattr(obj, "isoformat"):
         # handles datetime, date, time, and numpy scalar types
         return obj.isoformat()
+    elif hasattr(obj, "steps") or (hasattr(obj, "pipeline") and hasattr(obj.pipeline, "steps")):
+        # Handle pipeline objects (sklearn Pipeline, GroupedPipeline, UnifiedPipeline)
+        return {
+            "type": obj.__class__.__name__,
+            "transformers": extract_pipeline_metadata(obj),
+            "columns": getattr(obj, "columns", None),
+        }
     else:
         raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
 
-def save_config(config: dict[str, Any], filepath: Path) -> Result[None, str]:
+def save_config(config: dict[str, Any], filepath: Path) -> None:
     """
     Save a configuration dictionary to a JSON file.
-
-    Uses the Result monad for error handling to provide a functional approach
-    to dealing with IO operations that might fail.
 
     Args:
         config: Dictionary containing configuration parameters
         filepath: Path where the configuration will be saved
 
-    Returns:
-        Success with None if saving was successful, or Failure with error message
+    Raises:
+        FileOperationError: If there's an error creating directories or writing the file
+        ConfigurationError: If there's an error serializing the configuration
     """
     try:
         filepath.parent.mkdir(parents=True, exist_ok=True)
         with open(filepath, "w", encoding="utf-8") as f:
             json.dump(config, f, indent=4, sort_keys=True, default=_default_serializer)
-        return Success(None)
+    except (OSError, PermissionError) as e:
+        raise FileOperationError(f"Failed to save configuration to {filepath}: {e}") from e
+    except (TypeError, ValueError) as e:
+        raise ConfigurationError(f"Failed to serialize configuration: {e}") from e
     except Exception as e:
-        return Failure(str(e))
+        raise FileOperationError(f"Unexpected error saving configuration: {e}") from e
 
 
-def load_config(filepath: Path) -> Result[dict[str, Any], str]:
+def load_config(filepath: Path) -> dict[str, Any]:
     """
     Load a configuration dictionary from a JSON file.
-
-    Uses the Result monad for error handling to provide a functional approach
-    to dealing with IO operations that might fail.
 
     Args:
         filepath: Path to the saved configuration file
 
     Returns:
-        Success with the loaded configuration dictionary if successful,
-        or Failure with error message
+        The loaded configuration dictionary
+
+    Raises:
+        FileOperationError: If the file doesn't exist or can't be read
+        ConfigurationError: If the file content is invalid or not a dictionary
     """
     try:
         if not filepath.is_file():
-            return Failure(f"Configuration file not found: {filepath}")
+            raise FileOperationError(f"Configuration file not found: {filepath}")
         with open(filepath, encoding="utf-8") as f:
             loaded_config = json.load(f)
         if not isinstance(loaded_config, dict):
-            return Failure(f"Loaded object is not a dict, got {type(loaded_config)}")
-        return Success(loaded_config)
+            raise ConfigurationError(f"Loaded object is not a dict, got {type(loaded_config)}")
+        return loaded_config
+    except (OSError, PermissionError) as e:
+        raise FileOperationError(f"Failed to read configuration from {filepath}: {e}") from e
+    except json.JSONDecodeError as e:
+        raise ConfigurationError(f"Invalid JSON in configuration file {filepath}: {e}") from e
+    except (FileOperationError, ConfigurationError):
+        # Re-raise our custom exceptions without wrapping
+        raise
     except Exception as e:
-        return Failure(str(e))
+        raise FileOperationError(f"Unexpected error loading configuration: {e}") from e
 
 
 def extract_transformer_names(
@@ -182,6 +197,29 @@ def extract_transformer_names(
         transformer_names.append(transformer.__class__.__name__)
 
     return transformer_names
+
+
+def extract_pipeline_metadata(pipeline_obj: Any) -> list[str] | str:
+    """
+    Extract just the class names and order from a pipeline.
+
+    This function extracts metadata from pipeline objects for serialization,
+    replacing full object instances with their class name sequences.
+
+    Args:
+        pipeline_obj: A pipeline object (sklearn Pipeline, GroupedPipeline, or UnifiedPipeline)
+
+    Returns:
+        List of transformer class names for pipeline objects, or class name string for others
+    """
+    # Handle sklearn Pipeline
+    if hasattr(pipeline_obj, "steps"):
+        return [step[1].__class__.__name__ for step in pipeline_obj.steps]
+    # Handle GroupedPipeline or UnifiedPipeline with internal pipeline
+    elif hasattr(pipeline_obj, "pipeline") and hasattr(pipeline_obj.pipeline, "steps"):
+        return [step[1].__class__.__name__ for step in pipeline_obj.pipeline.steps]
+    # For any other object, just return its class name
+    return pipeline_obj.__class__.__name__
 
 
 def extract_relevant_config(datamodule: "HydroLazyDataModule") -> dict[str, Any]:
