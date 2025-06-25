@@ -782,6 +782,13 @@ class HydroInMemoryDataModule(LightningDataModule):
         if self.processed_static_attributes_path and self.processed_static_attributes_path.exists():
             try:
                 static_df = pl.read_parquet(self.processed_static_attributes_path)
+
+                # Filter to only include basins that passed quality validation
+                valid_basin_ids = set(self.chunkable_basin_ids + self._test_basin_ids)
+                static_df = static_df.filter(
+                    pl.col(self.hparams.group_identifier).is_in(valid_basin_ids)
+                )
+
                 required_static_cols = [self.hparams.group_identifier] + self.hparams.static_features
                 missing_cols = [col for col in required_static_cols if col not in static_df.columns]
                 if missing_cols:
