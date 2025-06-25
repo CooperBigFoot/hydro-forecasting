@@ -97,7 +97,6 @@ def validate_basin_quality(
     min_train_years = config.min_train_years
     train_prop = config.train_prop
     val_prop = config.val_prop
-    test_prop = config.test_prop
 
     # Convert minimum training years to minimum data points needed
     # Assuming daily data: 1 year ≈ 365.25 days
@@ -355,10 +354,12 @@ def clean_data(
     """
     # Apply cleaning first to get cleaned data with imputation info
     cleaned_df_with_helpers = _apply_cleaning_steps_with_imputation_tracking(lf, config)
-    
+
     # Then validate and build reports with imputation info
-    cleaned_df, quality_reports = _validate_and_build_reports_with_imputation(cleaned_df_with_helpers, config, raise_on_failure)
-    
+    cleaned_df, quality_reports = _validate_and_build_reports_with_imputation(
+        cleaned_df_with_helpers, config, raise_on_failure
+    )
+
     return cleaned_df, quality_reports
 
 
