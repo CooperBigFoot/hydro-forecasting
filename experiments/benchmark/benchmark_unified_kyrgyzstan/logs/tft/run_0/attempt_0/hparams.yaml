@@ -5,7 +5,7 @@ static_size: 10
 future_input_size: 9
 learning_rate: 0.00015996162179839556
 group_identifier: gauge_id
-use_rev_in: true
+use_rev_in: false
 hidden_size: 120
 lstm_layers: 1
 num_attention_heads: 3

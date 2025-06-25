@@ -1,1 +1,1 @@
-run_0/attempt_0/ealstm-run0-attempt_0-epoch=08-val_loss=0.1274.ckpt
+run_0/attempt_0/ealstm-run0-attempt_0-epoch=09-val_loss=0.0646.ckpt

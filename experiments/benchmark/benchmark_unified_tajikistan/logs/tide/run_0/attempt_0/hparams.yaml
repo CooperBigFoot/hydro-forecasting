@@ -5,7 +5,7 @@ static_size: 10
 future_input_size: 9
 learning_rate: 0.00018159850484411317
 group_identifier: gauge_id
-use_rev_in: true
+use_rev_in: false
 hidden_size: 76
 dropout: 0.3078685206868833
 past_feature_projection_size: 0

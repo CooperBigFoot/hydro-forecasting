@@ -16,3 +16,4 @@ scheduler_patience: 5
 static_size: 10
 temporal_decoder_hidden_size: 51
 use_layer_norm: false
+use_rev_in: false
