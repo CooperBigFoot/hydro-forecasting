@@ -34,3 +34,6 @@ images
 experiments/*/deprecated
 
 data_cache
+
+GEMINI.md
+CLAUDE.md
