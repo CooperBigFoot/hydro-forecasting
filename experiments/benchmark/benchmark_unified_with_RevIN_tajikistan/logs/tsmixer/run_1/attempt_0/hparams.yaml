@@ -1,0 +1,75 @@
+input_len: 124
+output_len: 10
+input_size: 10
+static_size: 10
+future_input_size: 9
+learning_rate: 0.0004021554526690286
+group_identifier: gauge_id
+use_rev_in: false
+hidden_size: 84
+dropout: 0.07046211248738132
+static_embedding_size: 20
+num_mixing_layers: 3
+scheduler_patience: 5
+scheduler_factor: 0.5
+fusion_method: add
+region_time_series_base_dirs:
+  CA: /workspace/CaravanifyParquet/CA/post_processed/timeseries/csv/CA
+region_static_attributes_base_dirs:
+  CA: /workspace/CaravanifyParquet/CA/post_processed/attributes/CA
+path_to_preprocessing_output_directory: /workspace/hydro-forecasting/experiments/benchmark/data_cache/tajikistan
+batch_size: 2048
+input_length: 124
+output_length: 10
+forcing_features:
+- snow_depth_water_equivalent_mean
+- surface_net_solar_radiation_mean
+- surface_net_thermal_radiation_mean
+- potential_evaporation_sum_ERA5_LAND
+- potential_evaporation_sum_FAO_PENMAN_MONTEITH
+- temperature_2m_mean
+- temperature_2m_min
+- temperature_2m_max
+- total_precipitation_sum
+static_features:
+- p_mean
+- area
+- ele_mt_sav
+- high_prec_dur
+- frac_snow
+- high_prec_freq
+- slp_dg_sav
+- cly_pc_sav
+- aridity_ERA5_LAND
+- aridity_FAO_PM
+target: streamflow
+num_workers: 4
+min_train_years: 5
+train_prop: 0.5
+val_prop: 0.25
+test_prop: 0.25
+max_imputation_gap_size: 5
+chunk_size: 100
+validation_chunk_size: 100
+list_of_gauge_ids_to_process:
+- CA_16205
+- CA_17050
+- CA_17077
+- CA_17082
+- CA_17100
+- CA_17110
+- CA_17137
+- CA_17147
+- CA_17150
+- CA_17202
+- CA_17288
+- CA_17325
+- CA_17329
+- CA_17338
+- CA_17344
+- CA_17453
+domain_id: source
+domain_type: source
+is_autoregressive: true
+include_input_end_date_in_batch: true
+random_seed: null
