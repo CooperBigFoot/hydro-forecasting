@@ -8,7 +8,7 @@ https://hess.copernicus.org/articles/23/5089/2019/
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+import torch.nn.functional as functional
 
 from .config import EALSTMConfig
 
@@ -175,7 +175,7 @@ class EALSTM(nn.Module):
 
                     # Apply dropout if configured - respect training mode
                     if self.dropout_rate > 0:
-                        h_t = F.dropout(h_t, p=self.dropout_rate, training=self.training)
+                        h_t = functional.dropout(h_t, p=self.dropout_rate, training=self.training)
 
                     # Project hidden state to match expected input size for next layer
                     layer_input = self.hidden_to_input_projections[layer - 1](h_t)
@@ -318,7 +318,7 @@ class BiEALSTM(nn.Module):
             combined = torch.cat([past_hidden, future_hidden], dim=1)
 
         # Apply nonlinearity for better feature integration
-        combined = F.relu(combined)
+        combined = functional.relu(combined)
 
         # Project to output sequence
         output = self.projection(combined)  # [batch_size, output_len]

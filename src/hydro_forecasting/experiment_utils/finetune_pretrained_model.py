@@ -154,7 +154,7 @@ def finetune_pretrained_models(
                 # Handle Result type - check if it's successful by trying to access the value
                 try:
                     pretrained_checkpoint_path = pretrained_checkpoint_path_result.unwrap()
-                except:
+                except Exception:
                     # If unwrap fails, this is a Failure result
                     error_msg = pretrained_checkpoint_path_result.failure()
                     raise FileOperationError(error_msg) from None

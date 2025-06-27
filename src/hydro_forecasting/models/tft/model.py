@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+import torch.nn.functional as functional
 
 from .config import TFTConfig
 
@@ -119,7 +119,7 @@ class GatedResidualNetwork(nn.Module):
 
         # Second dense layer with dropout
         hidden = self.fc2(hidden)
-        hidden = F.dropout(hidden, p=self.dropout_rate, training=self.training)
+        hidden = functional.dropout(hidden, p=self.dropout_rate, training=self.training)
 
         # Gating
         gated_hidden = self.gate(hidden)
@@ -397,7 +397,7 @@ class InterpretableMultiHeadAttention(nn.Module):
 
             # Apply softmax to get attention weights
             attn_weights = torch.softmax(attn_scores, dim=-1)  # [batch_size, target_len, source_len]
-            attn_weights = F.dropout(attn_weights, p=self.attn_dropout_rate, training=self.training)
+            attn_weights = functional.dropout(attn_weights, p=self.attn_dropout_rate, training=self.training)
 
             attn_weights_per_head.append(attn_weights)
 

@@ -180,7 +180,7 @@ class TimeSeriesClusterer:
             distances = np.zeros((self.X.shape[0], self.n_clusters))
 
             # Compute distances in parallel
-            def compute_distances_to_centers(i):
+            def compute_distances_to_centers(i, centers=centers):
                 series_distances = np.zeros(self.n_clusters)
                 for k in range(self.n_clusters):
                     series_distances[k] = self._compute_dtw_distance(self.X[i], centers[k])
