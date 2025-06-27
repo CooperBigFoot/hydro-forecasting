@@ -1,6 +1,4 @@
-# CLAUDE.md
-
-## Project: streamflow-mapper
+# Project: streamflow-mapper
 
 This file helps Claude Code understand our project setup and workflows.
 
