@@ -11,7 +11,11 @@ import random
 import threading
 from collections.abc import Generator
 from contextlib import contextmanager
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    import numpy as np
+    import torch
 
 try:
     import numpy as np
@@ -19,6 +23,7 @@ try:
     HAS_NUMPY = True
 except ImportError:
     HAS_NUMPY = False
+    np = None  # type: ignore[assignment]
 
 try:
     import torch
@@ -26,6 +31,7 @@ try:
     HAS_TORCH = True
 except ImportError:
     HAS_TORCH = False
+    torch = None  # type: ignore[assignment]
 
 try:
     import pytorch_lightning as pl

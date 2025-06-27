@@ -2,6 +2,9 @@
 
 from typing import Any
 
+# type: ignore[import-untyped]
+# Note: This directory uses hyphen in its name (search-spaces) and is not meant
+# to be imported as a Python package. The imports below are for local use only.
 from .ealstm_space import get_ealstm_space
 from .tft_space import get_tft_space
 from .tide_space import get_tide_space
