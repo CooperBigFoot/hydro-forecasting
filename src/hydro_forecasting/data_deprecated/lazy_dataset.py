@@ -85,10 +85,7 @@ class HydroLazyDataset(Dataset):
                 print(f"Skipping static file {path}: {e}")
                 continue
             dfs.append(df_static)
-        if dfs:
-            combined = pl.concat(dfs).unique(subset=self.group_identifier)
-        else:
-            combined = pl.DataFrame()
+        combined = pl.concat(dfs).unique(subset=self.group_identifier) if dfs else pl.DataFrame()
         self.static_data_cache = {
             row[self.group_identifier]: np.array([row.get(f, 0.0) for f in self.static_features], dtype=np.float32)
             for row in combined.iter_rows(named=True)
@@ -111,10 +108,7 @@ class HydroLazyDataset(Dataset):
         """
         try:
             result = con.execute(query).fetchone()
-            if result is None or len(result) == 0:
-                calculated_length = 0
-            else:
-                calculated_length = result[0]
+            calculated_length = 0 if result is None or len(result) == 0 else result[0]
         except Exception as e:
             print(f"Error querying metadata file {path_to_metadata_file}: {e}")
             raise

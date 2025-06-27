@@ -65,7 +65,7 @@ def create_index_entries(
             meta_writer: pq.ParquetWriter | None = None
             row_counter = 0
 
-            total_seq = input_length + output_length
+            input_length + output_length
 
             for i in tqdm(range(0, len(gauge_ids), BATCH_SIZE), desc=f"Indexing {stage}"):
                 batch = gauge_ids[i : i + BATCH_SIZE]

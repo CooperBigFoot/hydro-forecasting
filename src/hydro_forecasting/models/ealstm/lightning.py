@@ -27,10 +27,7 @@ class LitEALSTM(BaseLitModel):
             config: EA-LSTM configuration as an EALSTMConfig instance or dict
         """
         # Convert dict config to EALSTMConfig if needed
-        if isinstance(config, dict):
-            ealstm_config = EALSTMConfig.from_dict(config)
-        else:
-            ealstm_config = config
+        ealstm_config = EALSTMConfig.from_dict(config) if isinstance(config, dict) else config
 
         # Initialize base lightning model with the config
         super().__init__(ealstm_config)

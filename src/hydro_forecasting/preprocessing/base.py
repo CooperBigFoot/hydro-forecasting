@@ -114,10 +114,7 @@ class HydroTransformer(BaseEstimator, TransformerMixin):
             self.feature_names_in_ = np.array([f"feature_{i}" for i in range(X.shape[1])])
 
         # Original code
-        if isinstance(X, pd.DataFrame):
-            all_columns = X.columns.tolist()
-        else:
-            all_columns = [f"feature_{i}" for i in range(X.shape[1])]
+        all_columns = X.columns.tolist() if isinstance(X, pd.DataFrame) else [f"feature_{i}" for i in range(X.shape[1])]
 
         self._feature_names = all_columns
         self._fitted = True

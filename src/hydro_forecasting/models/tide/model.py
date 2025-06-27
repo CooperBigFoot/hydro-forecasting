@@ -249,10 +249,7 @@ class TiDEModel(nn.Module):
 
         # Process future covariates if provided
         if future is not None and future.shape[-1] > 0:
-            if self.future_projection is not None:
-                future_proj = self.future_projection(future)  # [B, H, future_forcing_projection_size]
-            else:
-                future_proj = future  # [B, H, future_input_size]
+            future_proj = self.future_projection(future) if self.future_projection is not None else future
         else:
             future_proj = None
 
@@ -276,10 +273,7 @@ class TiDEModel(nn.Module):
         dec_out = decoded.reshape(B, H, -1)  # [B, H, decoder_output_size]
 
         # Temporal decoding: fuse decoder output with (projected) future forcing if available
-        if future_proj is not None:
-            temporal_input = torch.cat([dec_out, future_proj], dim=-1)  # [B, H, decoder_output_size + future_proj_dim]
-        else:
-            temporal_input = dec_out
+        temporal_input = torch.cat([dec_out, future_proj], dim=-1) if future_proj is not None else dec_out
         temporal_decoded = self.temporal_decoder(temporal_input)  # [B, H, output_size]
 
         # Lookback skip: project the target history from length L to H

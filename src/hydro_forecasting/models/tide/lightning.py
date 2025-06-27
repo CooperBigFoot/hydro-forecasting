@@ -27,10 +27,7 @@ class LitTiDE(BaseLitModel):
             config: TiDE configuration as a TiDEConfig instance or dict
         """
         # Convert dict config to TiDEConfig if needed
-        if isinstance(config, dict):
-            tide_config = TiDEConfig.from_dict(config)
-        else:
-            tide_config = config
+        tide_config = TiDEConfig.from_dict(config) if isinstance(config, dict) else config
 
         # Initialize base lightning model with the config
         super().__init__(tide_config)

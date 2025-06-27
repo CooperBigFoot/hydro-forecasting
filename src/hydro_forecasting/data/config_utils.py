@@ -36,13 +36,13 @@ def _make_hashable(obj: Any) -> Any:
     """
     if isinstance(obj, dict):
         return tuple(sorted((k, _make_hashable(v)) for k, v in obj.items()))
-    elif isinstance(obj, (list, tuple)):
+    elif isinstance(obj, list | tuple):
         return tuple(_make_hashable(x) for x in obj)
     elif isinstance(obj, set):
         return tuple(sorted(_make_hashable(x) for x in obj))
     elif isinstance(obj, Path):
         return str(obj)
-    elif isinstance(obj, (str, int, float, bool)) or obj is None:
+    elif isinstance(obj, str | int | float | bool) or obj is None:
         return obj
     else:
         # For other objects, use their string representation

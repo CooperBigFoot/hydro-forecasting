@@ -49,7 +49,14 @@ where = ["src"]
 line-length = 120
 target-version = "py310"
 fix = false
-exclude = ["notebooks/"]
+exclude = [
+    "notebooks/",
+    "**/*.ipynb",
+    "**/deprecated/**",
+    "**/*deprecated*/**",
+    "experiments/",
+    "src/hydro_forecasting/data_deprecated/",
+]
 
 [tool.ruff.lint]
 # Essential rules: errors, warnings, naming, imports, modern Python, bugs, comprehensions, simplifications
@@ -66,7 +73,8 @@ indent-style = "space"
 
 # TY Configuration  
 [tool.ty]
-# Add any ty-specific configuration here as needed
+# Ty doesn't support exclude in pyproject.toml yet
+# Files are excluded via .gitignore or command line args
 
 [tool.ty.rules]
 # Example: Set some rules to warn instead of error for gradual adoption
@@ -83,4 +91,6 @@ addopts = [
   "--strict-markers",
   "--strict-config",
   "-ra",              # Show all test results
+  "--ignore=notebooks/",
+  "--ignore=src/hydro_forecasting/data_deprecated/",
 ]

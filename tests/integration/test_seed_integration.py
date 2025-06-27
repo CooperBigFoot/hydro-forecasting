@@ -250,7 +250,7 @@ class TestSeedManagerIntegration:
         """Test that global state is preserved across different operations."""
         # Set a specific global state
         random.seed(999)
-        initial_value = random.random()
+        random.random()
 
         # Use temporary seeds for various operations
         with seed_manager.temporary_seed("operation1", "datamodule_setup"):

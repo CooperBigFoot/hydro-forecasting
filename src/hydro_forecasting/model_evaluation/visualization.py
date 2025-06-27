@@ -161,7 +161,7 @@ def plot_horizon_performance_bars(
     n_architectures = len(architectures)
     n_variants = len(variants)
     bar_width = 0.18
-    group_width = n_variants * bar_width
+    n_variants * bar_width
     x_positions = np.arange(n_architectures)
 
     # Plot bars
@@ -174,7 +174,7 @@ def plot_horizon_performance_bars(
         stds = []
         colors_list = []
 
-        for arch_idx, arch in enumerate(architectures):
+        for _arch_idx, arch in enumerate(architectures):
             if arch in performance_data and variant in performance_data[arch]:
                 median_val = performance_data[arch][variant]["median"]
                 medians.append(median_val)
@@ -206,7 +206,7 @@ def plot_horizon_performance_bars(
 
         # Add percentage difference annotations when whiskers are disabled
         if not with_whiskers and variant != "benchmark":
-            for arch_idx, (arch, bar) in enumerate(zip(architectures, bars, strict=False)):
+            for _arch_idx, (arch, bar) in enumerate(zip(architectures, bars, strict=False)):
                 if (
                     arch in performance_data
                     and variant in performance_data[arch]
@@ -587,7 +587,7 @@ def plot_model_cdf_grid(
                 # Get the metrics by gauge for this model
                 metrics_by_gauge = model_data[arch][variant]["metrics_by_gauge"]
 
-                for basin_id, basin_data in metrics_by_gauge.items():
+                for _basin_id, basin_data in metrics_by_gauge.items():
                     if horizon in basin_data and metric in basin_data[horizon]:
                         val = basin_data[horizon][metric]
                         # Convert numpy types to Python float if needed
@@ -919,7 +919,7 @@ def plot_horizon_performance_boxplots(
 
         # Add median labels if requested
         if show_median_labels and len(boxplot_data) <= 20:  # Don't overcrowd
-            for i, (data, pos) in enumerate(zip(boxplot_data, positions, strict=False)):
+            for _i, (data, pos) in enumerate(zip(boxplot_data, positions, strict=False)):
                 if len(data) > 0:
                     median_val = np.median(data)
                     ax.text(
@@ -1224,8 +1224,8 @@ def plot_performance_vs_static_attributes(
 
     # Collect all data points for each subplot
     subplot_data = {}
-    for row_idx, horizon in enumerate(horizons):
-        for col_idx, static_attr in enumerate(static_attributes):
+    for row_idx, _horizon in enumerate(horizons):
+        for col_idx, _static_attr in enumerate(static_attributes):
             subplot_data[(row_idx, col_idx)] = {"x": [], "y": [], "models": []}
 
     # Process each model and collect data points

@@ -98,7 +98,7 @@ def find_valid_sequences(
     """
     total_length = input_length + output_length
     value_columns_to_check = [target_col_name] + forcing_cols_names
-    value_columns_to_check = sorted(list(set(value_columns_to_check)))  # Unique and sorted
+    value_columns_to_check = sorted(set(value_columns_to_check))  # Unique and sorted
 
     # Validation checks
     if basin_data.height < total_length:
@@ -177,13 +177,13 @@ class InMemoryChunkDataset(Dataset):
         self.input_length = input_length
         self.output_length = output_length
         self.target_name = target_name
-        self.forcing_features_names = sorted(list(set(forcing_features_names)))
+        self.forcing_features_names = sorted(set(forcing_features_names))
         self.group_identifier_name = group_identifier_name
         self.is_autoregressive = is_autoregressive
         self.input_features_ordered_for_X = input_features_ordered
         self.future_features_ordered = future_features_ordered
         self.include_input_end_date = include_input_end_date
-        self.static_features_names = sorted(list(set(static_features_names)))
+        self.static_features_names = sorted(set(static_features_names))
 
         if self.include_input_end_date and "date" not in self.chunk_column_tensors:
             logger.warning(

@@ -368,7 +368,7 @@ class InterpretableMultiHeadAttention(nn.Module):
                 attention_weights: Attention weights [batch_size, target_len, source_len]
         """
         batch_size, target_len, _ = q.size()
-        source_len = k.size(1)
+        k.size(1)
 
         # Project values once (shared across heads)
         v_proj = self.v_projection(v)  # [batch_size, source_len, head_dim]

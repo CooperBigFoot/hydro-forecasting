@@ -371,13 +371,13 @@ class TestRunHydroProcessorEndToEnd:
         assert result.success_marker_path.exists()
         assert result.fitted_time_series_pipelines_path.exists()
 
-    @patch("hydro_forecasting.data.preprocessing.clean_data")
+    @patch("hydro_forecasting.data.preprocessing.validate_basin_quality")
     def test_run_hydro_processor_quality_validation_failure(
-        self, mock_clean_data, temp_dir, create_basin_files, basin_ids
+        self, mock_validate_basin_quality, temp_dir, create_basin_files, basin_ids
     ):
         """Test handling when all basins fail quality validation."""
-        # Mock clean_data to return no valid basins
-        mock_clean_data.return_value = (
+        # Mock validate_basin_quality to return no valid basins
+        mock_validate_basin_quality.return_value = (
             pl.DataFrame(),
             {basin_id: Mock(passed_quality_check=False, failure_reason="Mock failure") for basin_id in basin_ids},
         )
@@ -534,7 +534,7 @@ class TestPreprocessingWorkflowIntegration:
             lf=lf, config=config, features_pipeline=features_pipeline, target_pipeline=target_pipeline
         )
 
-        train_df, val_df, test_df, fitted_pipelines, quality_reports = result
+        train_df, val_df, test_df, fitted_pipelines = result
 
         # Verify results
         assert train_df.height > 0
@@ -1135,5 +1135,5 @@ class TestEndToEndWorkflowScenarios:
             assert basin_id in test_dm.static_data_cache
 
         # Verify the shape of static data tensors
-        for basin_id, static_tensor in test_dm.static_data_cache.items():
+        for _basin_id, static_tensor in test_dm.static_data_cache.items():
             assert static_tensor.shape[0] == 2  # elevation and area

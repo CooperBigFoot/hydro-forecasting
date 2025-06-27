@@ -71,7 +71,7 @@ class TestTransformerRegistry:
         assert isinstance(pipeline.steps[1][1], NormalizeTransformer)
 
         # Check columns passed to both transformers
-        for step_name, transformer in pipeline.steps:
+        for _step_name, transformer in pipeline.steps:
             assert transformer.columns == ["feature1", "feature2"]
 
     def test_create_sklearn_pipeline_no_columns(self):

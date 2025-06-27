@@ -148,7 +148,7 @@ def plot_standardized_hydrographs(
     # Generate colors from a colormap for distinct lines
     colors = plt.cm.tab10(np.linspace(0, 1, len(indices)))
 
-    for i, (idx, basin, color) in enumerate(zip(indices, selected_basins, colors, strict=False)):
+    for _i, (idx, basin, color) in enumerate(zip(indices, selected_basins, colors, strict=False)):
         plt.plot(weeks, ts_data[idx], label=f"Basin {basin}", color=color, linewidth=2)
 
     plt.axhline(y=0, color="black", linestyle="--", alpha=0.3)
