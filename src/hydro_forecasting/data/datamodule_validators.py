@@ -211,7 +211,9 @@ def validate_target_in_features(
         )
 
 
-def _validate_pipeline_compatibility(pipeline_obj: Pipeline | GroupedPipeline | UnifiedPipeline, pipeline_name: str) -> None:
+def _validate_pipeline_compatibility(
+    pipeline_obj: Pipeline | GroupedPipeline | UnifiedPipeline, pipeline_name: str
+) -> None:
     """Helper to validate steps of a single pipeline.
 
     Args:
@@ -238,7 +240,9 @@ def _validate_pipeline_compatibility(pipeline_obj: Pipeline | GroupedPipeline | 
     elif isinstance(pipeline_obj, Pipeline):
         p_to_check = pipeline_obj
     else:
-        raise PipelineCompatibilityError(f"'{pipeline_name}' is not a valid Pipeline, GroupedPipeline, or UnifiedPipeline instance.")
+        raise PipelineCompatibilityError(
+            f"'{pipeline_name}' is not a valid Pipeline, GroupedPipeline, or UnifiedPipeline instance."
+        )
 
     for step_name, transformer in p_to_check.steps:
         if not (hasattr(transformer, "fit") and callable(transformer.fit)):
