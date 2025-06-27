@@ -447,7 +447,9 @@ class TestRunHydroProcessorEndToEnd:
             static_dir.mkdir(parents=True, exist_ok=True)
 
         # Create static attributes file
-        static_data = pd.DataFrame({"gauge_id": basin_ids, "elevation": [100, 200, 300, 150, 250], "area": [50, 75, 25, 60, 80]})
+        static_data = pd.DataFrame(
+            {"gauge_id": basin_ids, "elevation": [100, 200, 300, 150, 250], "area": [50, 75, 25, 60, 80]}
+        )
         static_data.to_csv(region_static_dirs["basin"] / "attributes.csv", index=False)
 
         # Create builder-generated preprocessing config
@@ -948,7 +950,7 @@ class TestEndToEndWorkflowScenarios:
         assert result.success_marker_path.exists()
         assert result.fitted_time_series_pipelines_path.exists()
         assert result.processed_timeseries_dir.exists()
-        
+
         # Static processing might fail - check if it was successful
         if result.fitted_static_pipeline_path is not None:
             assert result.fitted_static_pipeline_path.exists()
@@ -965,15 +967,14 @@ class TestEndToEndWorkflowScenarios:
 
     def test_static_data_filtered_after_quality_validation(self, temp_dir, create_basin_files, basin_ids):
         """Test that static data is correctly filtered to match basins that passed quality validation."""
-        from hydro_forecasting.data.in_memory_datamodule import HydroInMemoryDataModule
-        
+
         region_time_series_dirs = create_basin_files
         region_static_dirs = {"basin": temp_dir / "static" / "basin"}
-        
+
         # Create static data directory
         for static_dir in region_static_dirs.values():
             static_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # Create static data for all basins (including one that will fail quality validation)
         static_data = pd.DataFrame(
             {
@@ -984,18 +985,20 @@ class TestEndToEndWorkflowScenarios:
         )
         static_file = region_static_dirs["basin"] / "attributes_caravan_basin.parquet"
         pl.from_pandas(static_data).write_parquet(static_file)
-        
+
         # Create time series file for basin_999 with insufficient data to fail quality validation
-        basin_999_data = pd.DataFrame({
-            "date": pd.date_range("2023-01-01", periods=10),  # Only 10 days - too short
-            "gauge_id": ["basin_999"] * 10,
-            "temperature": [15.0] * 10,
-            "precipitation": [5.0] * 10,
-            "streamflow": [100.0] * 10,
-        })
+        basin_999_data = pd.DataFrame(
+            {
+                "date": pd.date_range("2023-01-01", periods=10),  # Only 10 days - too short
+                "gauge_id": ["basin_999"] * 10,
+                "temperature": [15.0] * 10,
+                "precipitation": [5.0] * 10,
+                "streamflow": [100.0] * 10,
+            }
+        )
         basin_999_file = region_time_series_dirs["basin"] / "basin_999.parquet"
         pl.from_pandas(basin_999_data).write_parquet(basin_999_file)
-        
+
         # Configuration with static features
         preprocessing_config = {
             "features": {
@@ -1004,7 +1007,7 @@ class TestEndToEndWorkflowScenarios:
                 "columns": ["temperature", "precipitation"],
             },
             "target": {
-                "strategy": "unified", 
+                "strategy": "unified",
                 "pipeline": Pipeline([("scaler", MinMaxScaler())]),
                 "columns": ["streamflow"],
                 "column": "streamflow",
@@ -1015,13 +1018,13 @@ class TestEndToEndWorkflowScenarios:
                 "columns": ["elevation", "area"],
             },
         }
-        
+
         datamodule_config = {
             "preprocessing": preprocessing_config,
             "batch_size": 32,
             "static_features": ["elevation", "area"],
         }
-        
+
         # Run preprocessing with all basins including the one that will fail
         result = run_hydro_processor(
             region_time_series_base_dirs=region_time_series_dirs,
@@ -1035,55 +1038,53 @@ class TestEndToEndWorkflowScenarios:
             list_of_gauge_ids_to_process=basin_ids + ["basin_999"],
             random_seed=42,
         )
-        
+
         # Verify that basin_999 failed quality validation
         assert "basin_999" not in result.summary_quality_report.retained_basins
         assert len(result.summary_quality_report.retained_basins) == len(basin_ids)
-        
+
         # Verify the static features file was created and contains all basins (including failed ones)
         # This shows the bug - static data contains basins that failed quality validation
         static_features_file = temp_dir / "output" / "test_static_filter" / "processed_static_features.parquet"
         assert static_features_file.exists()
-        
+
         static_df = pl.read_parquet(static_features_file)
         # The bug is that this file contains all 6 basins, not just the 5 that passed
         assert len(static_df) == 6  # Contains all basins including basin_999
         assert "basin_999" in static_df["gauge_id"].to_list()
-        
+
         # Now create a minimal test to verify our fix works
         # Simulate loading static data with our fix
-        from hydro_forecasting.data.in_memory_datamodule import HydroInMemoryDataModule
-        
+
         # Create a simple instance just to test the _load_static_data method
         class TestDataModule:
             def __init__(self):
                 self.chunkable_basin_ids = basin_ids  # Only valid basins
                 self._test_basin_ids = []
                 self.processed_static_attributes_path = static_features_file
-                self.hparams = type('obj', (object,), {
-                    'group_identifier': 'gauge_id',
-                    'static_features': ['elevation', 'area']
-                })
+                self.hparams = type(
+                    "obj", (object,), {"group_identifier": "gauge_id", "static_features": ["elevation", "area"]}
+                )
                 self.static_data_cache = {}
-                
+
             def _load_static_data(self):
                 # This is our fixed method
                 import logging
+
                 import numpy as np
                 import torch
+
                 logger = logging.getLogger(__name__)
-                
+
                 logger.info("Loading static data cache and converting to Tensors...")
                 if self.processed_static_attributes_path and self.processed_static_attributes_path.exists():
                     try:
                         static_df = pl.read_parquet(self.processed_static_attributes_path)
-                        
+
                         # Filter to only include basins that passed quality validation
                         valid_basin_ids = set(self.chunkable_basin_ids + self._test_basin_ids)
-                        static_df = static_df.filter(
-                            pl.col(self.hparams.group_identifier).is_in(valid_basin_ids)
-                        )
-                        
+                        static_df = static_df.filter(pl.col(self.hparams.group_identifier).is_in(valid_basin_ids))
+
                         required_static_cols = [self.hparams.group_identifier] + self.hparams.static_features
                         missing_cols = [col for col in required_static_cols if col not in static_df.columns]
                         if missing_cols:
@@ -1094,7 +1095,8 @@ class TestEndToEndWorkflowScenarios:
 
                         temp_cache: dict[str, np.ndarray] = {}
                         for row in static_df.select(
-                            [self.hparams.group_identifier] + [sf for sf in sorted_static_features if sf in static_df.columns]
+                            [self.hparams.group_identifier]
+                            + [sf for sf in sorted_static_features if sf in static_df.columns]
                         ).iter_rows(named=True):
                             basin_id = row[self.hparams.group_identifier]
                             if basin_id:
@@ -1112,24 +1114,26 @@ class TestEndToEndWorkflowScenarios:
                         self.static_data_cache = {bid: torch.from_numpy(arr) for bid, arr in temp_cache.items()}
                         logger.info(f"Loaded and tensorized static data for {len(self.static_data_cache)} basins.")
                     except Exception as e:
-                        logger.error(f"Failed to load/tensorize static data from {self.processed_static_attributes_path}: {e}")
+                        logger.error(
+                            f"Failed to load/tensorize static data from {self.processed_static_attributes_path}: {e}"
+                        )
                         self.static_data_cache = {}
                 else:
                     logger.warning("Processed static attributes file not found. Static cache empty.")
                     self.static_data_cache = {}
-        
+
         # Test our fixed method
         test_dm = TestDataModule()
         test_dm._load_static_data()
-        
+
         # With our fix, static data cache should only contain valid basins
         assert len(test_dm.static_data_cache) == len(basin_ids)
         assert "basin_999" not in test_dm.static_data_cache
-        
+
         # Verify all valid basins have static data
         for basin_id in basin_ids:
             assert basin_id in test_dm.static_data_cache
-            
+
         # Verify the shape of static data tensors
         for basin_id, static_tensor in test_dm.static_data_cache.items():
             assert static_tensor.shape[0] == 2  # elevation and area

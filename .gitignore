@@ -1,10 +1,12 @@
 # Python-generated files
 __pycache__/
 *.py[oc]
+*.pyc
 build/
 dist/
 wheels/
 *.egg-info
+.ipynb_checkpoints/
 
 # Virtual environments
 .venv
@@ -20,6 +22,7 @@ wheels/
 **.DS_Store
 
 notebooks/lightning_logs
+lightning_logs/
 
 experiments/TiDE_on_low_medium/output/preprocessing_cache
 experiments/TiDE_on_low_medium/output/logs

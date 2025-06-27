@@ -79,7 +79,7 @@ def _setup_datamodule_core(
             f"Available keys: {list(current_datamodule_config.keys())}. "
             "This parameter should come from the model's YAML file as 'input_len' or 'input_length'."
         )
-    
+
     if "output_length" not in current_datamodule_config:
         raise DataProcessingError(
             f"'output_length' not found in datamodule config for {model_type}. "

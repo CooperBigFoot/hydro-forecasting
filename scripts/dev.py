@@ -31,9 +31,7 @@ def format_code():
 
 def check_format():
     """Check code formatting with Ruff."""
-    return run_command(
-        ["uv", "run", "ruff", "format", "--check", "--diff", "."], "Format Check"
-    )
+    return run_command(["uv", "run", "ruff", "format", "--check", "--diff", "."], "Format Check")
 
 
 def lint_code():
@@ -50,9 +48,7 @@ def type_check():
     """Run type checking with TY."""
     try:
         # First check if ty is available
-        subprocess.run(
-            ["uv", "run", "ty", "--version"], check=True, capture_output=True
-        )
+        subprocess.run(["uv", "run", "ty", "--version"], check=True, capture_output=True)
         return run_command(["uv", "run", "ty", "check", "."], "Type Checking")
     except (subprocess.CalledProcessError, FileNotFoundError):
         print("⚠️  TY type checker not available - skipping type check")
@@ -64,9 +60,7 @@ def run_tests():
     """Run test suite with pytest."""
     try:
         # First check if pytest is available
-        subprocess.run(
-            ["uv", "run", "pytest", "--version"], check=True, capture_output=True
-        )
+        subprocess.run(["uv", "run", "pytest", "--version"], check=True, capture_output=True)
         return run_command(["uv", "run", "pytest", "tests/", "-v"], "Test Suite")
     except (subprocess.CalledProcessError, FileNotFoundError):
         print("⚠️  pytest not available - skipping tests")
