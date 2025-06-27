@@ -1,0 +1,141 @@
+name: CI/CD Pipeline
+
+# Triggers - when this workflow runs
+on:
+  # Run on pushes to main branch
+  push:
+    branches: [ main ]
+  
+  # Run on pull requests to main branch
+  pull_request:
+    branches: [ main ]
+  
+  # Allow manual triggering from GitHub UI
+  workflow_dispatch:
+
+# Global environment variables
+env:
+  PYTHON_VERSION: "3.10"
+
+jobs:
+  # Job 1: Linting and Formatting
+  lint-and-format:
+    name: Lint and Format Code
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up UV
+      uses: astral-sh/setup-uv@v5
+      with:
+        version: "latest"
+        enable-cache: true
+    
+    - name: Set up Python
+      run: uv python install ${{ env.PYTHON_VERSION }}
+    
+    - name: Install dependencies
+      run: |
+        uv sync --dev --frozen
+    
+    - name: Check code formatting with Ruff
+      run: |
+        uv run ruff format --check --diff .
+    
+    - name: Lint code with Ruff
+      run: |
+        uv run ruff check --output-format=github .
+
+  # Job 2: Type Checking
+  type-check:
+    name: Type Check Code  
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up UV
+      uses: astral-sh/setup-uv@v5
+      with:
+        version: "latest"
+        enable-cache: true
+    
+    - name: Set up Python
+      run: uv python install ${{ env.PYTHON_VERSION }}
+    
+    - name: Install dependencies
+      run: |
+        uv sync --dev --frozen
+    
+    - name: Run type checking with TY
+      run: |
+        uv run ty check .
+
+  # Job 3: Run Tests
+  test:
+    name: Run Test Suite
+    runs-on: ubuntu-latest
+    
+    # Test against multiple Python versions for robustness
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up UV  
+      uses: astral-sh/setup-uv@v5
+      with:
+        version: "latest"
+        enable-cache: true
+        python-version: ${{ matrix.python-version }}
+    
+    - name: Install dependencies
+      run: |
+        uv sync --dev --frozen
+    
+    - name: Run tests with pytest
+      run: |
+        uv run pytest tests/ -v --tb=short
+    
+    - name: Generate test coverage (optional)
+      run: |
+        uv run pytest tests/ --cov=src --cov-report=xml --cov-report=term
+      continue-on-error: true
+
+  # Job 4: Build Check (ensures package can be built)
+  build-check:
+    name: Build Check
+    runs-on: ubuntu-latest
+    needs: [lint-and-format, type-check, test]  # Only run if other jobs pass
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up UV
+      uses: astral-sh/setup-uv@v5
+      with:
+        version: "latest"
+        enable-cache: true
+    
+    - name: Set up Python  
+      run: uv python install ${{ env.PYTHON_VERSION }}
+    
+    - name: Install dependencies
+      run: |
+        uv sync --dev --frozen
+    
+    - name: Build package
+      run: |
+        uv build
+    
+    - name: Installation test
+      run: |
+        uv pip install dist/*.whl
+        # Add any installation verification commands here

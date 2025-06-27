@@ -1,472 +1,243 @@
-# Hydro-Forecasting Codebase Structure Guide
+# CLAUDE.md
 
-## Overview
+## Project: streamflow-mapper
 
-This codebase implements a comprehensive hydrological time series forecasting system supporting multiple deep learning architectures. The project has undergone a major refactoring (completed in two phases) to migrate away from Railway-Oriented Programming (ROP) to idiomatic Python exception handling, resulting in cleaner, more maintainable code.
+This file helps Claude Code understand our project setup and workflows.
 
-## Project Tree Structure
+## Tool Stack
 
-```
-hydro-forecasting/
-├── src/hydro_forecasting/
-│   ├── data/                                    # Data processing and loading modules
-│   │   ├── preprocessing.py                     # Main data processing orchestration
-│   │   ├── in_memory_datamodule.py             # Lightning DataModule for in-memory data
-│   │   ├── in_memory_dataset.py                # PyTorch Dataset implementation
-│   │   ├── clean_data.py                       # Data cleaning utilities
-│   │   ├── datamodule_validators.py            # Validation logic for data modules
-│   │   ├── caravanify_parquet.py               # Basin/gauge data loading utilities
-│   │   └── data_deprecated/                    # Legacy data modules (includes lazy_datamodule.py)
-│   ├── models/                                  # Model architectures and configurations
-│   │   ├── base/                                # Base classes and configurations
-│   │   │   └── base_config.py                  # Base configuration class for all models
-│   │   ├── tide/                                # TiDE (Time-series Dense Encoder) model
-│   │   │   ├── model.py                        # TiDE model implementation
-│   │   │   └── config.py                       # TiDE-specific configuration
-│   │   ├── tsmixer/                             # TSMixer model architecture
-│   │   │   ├── model.py                        # TSMixer model with MLP-based mixing
-│   │   │   └── config.py                       # TSMixer-specific configuration
-│   │   ├── ealstm/                              # Entity-Aware LSTM model
-│   │   │   ├── model.py                        # EA-LSTM implementation
-│   │   │   └── config.py                       # EA-LSTM configuration
-│   │   ├── tft/                                 # Temporal Fusion Transformer
-│   │   │   ├── model.py                        # TFT model implementation
-│   │   │   └── config.py                       # TFT configuration
-│   │   ├── layers/                              # Shared neural network layers
-│   │   │   ├── __init__.py                     # Exports RevIN normalization layer
-│   │   │   └── rev_in.py                       # Reversible Instance Normalization
-│   │   └── model_factory.py                    # Central model registry and factory
-│   ├── preprocessing/                           # Data preprocessing pipeline
-│   │   ├── base.py                             # Base transformer classes
-│   │   ├── grouped.py                          # Grouped preprocessing pipelines
-│   │   ├── unified.py                          # Unified preprocessing pipeline
-│   │   ├── pipeline_builder.py                # Builder pattern for preprocessing configs
-│   │   ├── transformer_registry.py            # Registry for preprocessing transformers
-│   │   ├── log_scale.py                        # Log scaling transformer
-│   │   ├── normalize.py                        # Normalization transformer
-│   │   └── standard_scale.py                   # Standard scaling transformer
-│   ├── model_evaluation/                       # Model evaluation and metrics
-│   │   ├── evaluators.py                       # TSForecastEvaluator class (robust, minimal changes needed)
-│   │   ├── hp_from_yaml.py                     # YAML configuration loading utilities
-│   │   └── checkpoint_manager.py               # Checkpoint discovery and management (critical infrastructure)
-│   ├── experiment_utils/                       # Experiment orchestration utilities
-│   │   ├── training_runner.py                  # Training execution and management
-│   │   └── checkpoint_manager.py               # Versioned checkpoint and output management
-│   ├── exceptions.py                           # Custom exception classes (part of ROP migration)
-│   └── config_utils.py                         # Configuration utilities and helpers
-├── experiments/                                 # Self-contained experiment directories
-│   └── [ExperimentName]/                       # Each experiment is self-contained
-│       ├── experiment.py                       # Main experiment orchestration script
-│       ├── config.py                           # Experiment-specific configuration dataclass
-│       ├── data_loader.py                      # Basin/gauge ID selection logic
-│       ├── yaml_files/                         # Model hyperparameter configurations
-│       │   ├── tide.yaml                       # TiDE model hyperparameters
-│       │   ├── tsmixer.yaml                    # TSMixer model hyperparameters
-│       │   ├── ealstm.yaml                     # EA-LSTM model hyperparameters
-│       │   └── tft.yaml                        # TFT model hyperparameters
-│       ├── utils.py                            # Experiment-specific helper functions
-│       └── README.md                           # Experiment documentation
-├── tests/                                       # Comprehensive test suite
-│   └── unit/                                   # Unit tests
-│       └── test_preprocessing.py               # Preprocessing pipeline tests
-└── docs/                                       # Project documentation
-    ├── data_processing.md                      # Data processing pipeline documentation
-    ├── experiment-setup-guidelines.md         # Standardized experiment setup guide
-    ├── migrate_away_from_ROP_report.md        # ROP migration project summary
-    ├── refactoring_vision_plan.md             # Future refactoring plans
-    └── streamline_evaluation_plan.md          # Evaluation workflow streamlining plan
-```
+- **UV**: Python package and project manager (replaces pip, poetry, pyenv)
+- **RUFF**: Python linter and formatter (replaces Flake8, Black, isort)
+- **TY**: Type checker from Astral (alpha version)
 
-## Core Architecture Components
+## Development Script (`scripts/dev.py`)
 
-### 1. Data Processing Pipeline (`src/hydro_forecasting/data/`)
+Our main development orchestration script that mirrors the CI/CD pipeline locally.
 
-**Key Module**: `preprocessing.py` - Main orchestration of the data processing pipeline
-
-**Key Features**:
-
-- Loads raw time series data from multiple basins/catchments
-- Merges static basin attributes with time series data
-- Applies configurable preprocessing transformations
-- Performs quality checking and filtering
-- Splits data into training/validation/test sets
-- Generates deterministic UUIDs for reproducible preprocessing runs
-
-**Data Module**: `in_memory_datamodule.py` - Lightning DataModule for efficient data loading
-
-- Handles configuration validation and reuse of existing processed data
-- Creates train/val/test DataLoaders with proper batching
-- Supports caching with `_SUCCESS` markers for complete processing runs
-
-**Output Structure**:
-
-```
-<preprocessing_output_dir>/
-└── <run_uuid>/
-    ├── config.json                             # Processing configuration
-    ├── pipelines.joblib                        # Fitted preprocessing pipelines
-    ├── quality_report.json                     # Data quality metrics
-    ├── processed_timeseries/                   # Processed time series data
-    │   ├── train/                              # Training split
-    │   ├── val/                                # Validation split
-    │   └── test/                               # Test split
-    ├── processed_static_attributes.parquet     # Processed static features
-    └── _SUCCESS                                # Completion marker
-```
-
-### 2. Model Architectures (`src/hydro_forecasting/models/`)
-
-**Supported Models**:
-
-- **TiDE**: Time-series Dense Encoder for efficient temporal modeling
-- **TSMixer**: MLP-based architecture with separate temporal and feature mixing
-- **EA-LSTM**: Entity-Aware LSTM with attention mechanisms
-- **TFT**: Temporal Fusion Transformer with interpretability features
-
-**Key Module**: `model_factory.py` - Central model registry and factory
-
-```python
-MODEL_REGISTRY = {
-    "tide": {"config_class_getter": _get_tide_config, "model_class_getter": _get_tide_model},
-    "tsmixer": {"config_class_getter": _get_tsmixer_config, "model_class_getter": _get_tsmixer_model},
-    "ealstm": {"config_class_getter": _get_ealstm_config, "model_class_getter": _get_ealstm_model},
-    "tft": {"config_class_getter": _get_tft_config, "model_class_getter": _get_tft_model},
-}
-```
-
-**Configuration System**: Each model has a dedicated config class inheriting from `BaseConfig`
-
-- Separates `STANDARD_PARAMS` (common across models) from `MODEL_PARAMS` (model-specific)
-- Supports dynamic loading from YAML files via `hp_from_yaml()`
-
-### 3. Preprocessing System (`src/hydro_forecasting/preprocessing/`)
-
-**Architecture**: Transformer-based preprocessing with registry pattern
-
-- `HydroTransformer`: Base class for all preprocessing transformers
-- `GroupedPipeline`: Handles group-aware transformations (e.g., per-basin normalization)
-- `PipelineBuilder`: Builder pattern for constructing preprocessing configurations
-
-**Available Transformers**:
-
-- `StandardScaleTransformer`: Z-score normalization
-- `NormalizeTransformer`: Min-max scaling
-- `LogTransformer`: Logarithmic transformation
-
-**Usage Pattern**:
-
-```python
-builder = PipelineBuilder()
-config = (builder
-    .features().add("standard_scale")
-    .target().add("log_transform").add("standard_scale")
-    .build())
-```
-
-### 4. Experiment Management (`experiments/` and `src/hydro_forecasting/experiment_utils/`)
-
-**Experiment Structure**: Self-contained experiments with standardized layout
-
-- `experiment.py`: Main orchestration script with CLI argument parsing
-- `config.py`: Dataclass for experiment-specific configurations
-- `yaml_files/`: Model hyperparameter configurations
-
-**Versioned Output Structure**:
-
-```
-<experiment_output>/
-├── checkpoints/
-│   └── <model_type>/
-│       ├── overall_best_model_info.txt         # Best checkpoint reference
-│       ├── run_0/
-│       │   ├── attempt_0/                      # First execution
-│       │   └── attempt_1/                      # Re-run with same config
-│       └── run_1/
-│           └── attempt_0/
-└── logs/                                       # Mirror structure for logs
-```
-
-**Key Features**:
-
-- Deterministic run versioning with `run_<index>/attempt_<index>/` structure
-- Checkpoint reuse and fine-tuning support
-- Robust error handling and logging
-
-### 5. Model Evaluation (`src/hydro_forecasting/model_evaluation/`)
-
-**Key Module**: `evaluators.py` - Contains `TSForecastEvaluator` class
-
-- Robust caching mechanism for evaluation results
-- Multi-horizon forecasting evaluation
-- Comprehensive error handling and logging
-
-**Current State**: Well-designed, requires minimal changes
-**Future Enhancement**: Streamlining from ~200 lines of setup code to 5-10 lines via factory pattern
-
-**Checkpoint Management**: `checkpoint_manager.py` - Critical infrastructure
-
-- `get_checkpoint_path_to_load()`: Flexible checkpoint discovery
-- Support for "overall best" vs. specific run/attempt selection
-- Production-ready with comprehensive error handling
-
-## Key Design Patterns and Principles
-
-### 1. Configuration-Driven Design
-
-- YAML files for model hyperparameters
-- Dataclass configurations with validation
-- Environment-agnostic path resolution
-
-### 2. Factory Pattern
-
-- `model_factory.py` for model instantiation
-- Registry-based transformer system
-- Dynamic imports for loose coupling
-
-### 3. Exception-Based Error Handling
-
-- **Major Refactoring Completed**: Migrated away from Railway-Oriented Programming
-- Custom exception hierarchy in `exceptions.py`:
-  - `ConfigurationError`: Configuration validation failures
-  - `FileOperationError`: File I/O related errors  
-  - `DataProcessingError`: Data processing failures
-
-### 4. Reproducibility and Versioning
-
-- Deterministic UUIDs for preprocessing runs
-- Versioned experiment outputs with attempt tracking
-- Comprehensive configuration logging
-
-## Critical Files for LLM Context
-
-### Most Important for Understanding Core Functionality
-
-1. **`src/hydro_forecasting/models/model_factory.py`** - Central model registry, critical for model instantiation
-2. **`src/hydro_forecasting/experiment_utils/checkpoint_manager.py`** - Checkpoint discovery and versioning logic
-3. **`src/hydro_forecasting/data/in_memory_datamodule.py`** - Main data loading interface
-4. **`src/hydro_forecasting/preprocessing/pipeline_builder.py`** - Preprocessing configuration system
-
-### Model-Specific Files
-
-- `src/hydro_forecasting/models/{tide,tsmixer,ealstm,tft}/config.py` - Model configurations
-- `src/hydro_forecasting/models/{tide,tsmixer,ealstm,tft}/model.py` - Model implementations
-
-### Evaluation and Infrastructure
-
-- **`src/hydro_forecasting/model_evaluation/evaluators.py`** - Robust evaluation framework
-- **`src/hydro_forecasting/model_evaluation/hp_from_yaml.py`** - Configuration loading utilities
-
-## Current Development Status
-
-### Recently Completed
-
-- **Phase 1 & 2 ROP Migration**: Complete refactoring away from `returns` library to standard Python exceptions
-- **Data Processing Pipeline**: Robust, production-ready with comprehensive testing
-- **Model Factory System**: Dynamic model registry with proven checkpoint loading
-
-### Active Development
-
-- **Evaluation Workflow Streamlining**: Reducing evaluation setup from ~200 lines to 5-10 lines
-- **Factory-Based Configuration**: Automatic discovery and configuration of model-experiment combinations
-- **Multi-Country Support**: Batch processing capabilities across different regions
-
-### Architecture Strengths
-
-1. **Modular Design**: Clear separation between data, models, preprocessing, and evaluation
-2. **Configuration-Driven**: Minimal code changes needed for new models/experiments
-3. **Robust Error Handling**: Comprehensive exception hierarchy with detailed error messages
-4. **Reproducibility**: Deterministic processing with versioned outputs
-5. **Testing Coverage**: Comprehensive unit tests for critical components
-
-## Usage Patterns for LLMs
-
-### When Adding New Models
-
-1. Create model implementation in `src/hydro_forecasting/models/{model_name}/`
-2. Add to `MODEL_REGISTRY` in `model_factory.py`
-3. Create YAML configuration file for experiments
-4. Model automatically integrates with existing evaluation infrastructure
-
-### When Working with Data
-
-1. Use `PipelineBuilder` for preprocessing configuration
-2. Leverage existing `HydroInMemoryDataModule` for data loading
-3. Follow deterministic UUID pattern for reproducible preprocessing
-
-### When Running Experiments
-
-1. Create self-contained experiment directory under `experiments/`
-2. Use standardized `experiment.py` pattern with CLI arguments
-3. Leverage existing checkpoint management for versioning and reuse
-
-## Development Environment and Tooling
-
-### Package Management with `uv`
-
-This project uses **uv**, an extremely fast Python package and project manager written in Rust that serves as a single tool to replace pip, pip-tools, pipx, poetry, pyenv, twine, virtualenv, and more. UV is 10-100 times faster than traditional package managers like pip, making dependency installation and environment management significantly more efficient.
-
-**Key Features of uv in this project**:
-
-- **Unified Dependency Management**: Single `pyproject.toml` configuration for all dependencies
-- **Fast Virtual Environment Creation**: ~80x faster than `python -m venv`  
-- **Automatic Python Installation**: Can install and manage Python versions automatically
-- **Project Initialization**: Scaffolds complete Python projects with proper structure
-
-**Essential uv Commands for LLMs**:
+### Core Commands
 
 ```bash
-# Install dependencies and sync environment
-uv sync
+# Full pipeline (recommended before commits)
+uv run python scripts/dev.py full         # Run all checks like CI/CD
 
-# Add a new dependency 
-uv add package-name
-
-# Add a development dependency
-uv add --dev package-name
-
-# Run commands in the project environment
-uv run python script.py
-uv run pytest
-
-# Create a virtual environment (if needed manually)
-uv venv
-
-# Install Python versions
-uv python install 3.10 3.11 3.12
-
-# Run scripts defined in pyproject.toml
-uv run hydro-forecasting          # Main application
-uv run hii                        # Human influence index script
-uv run cluster_all                # Basin clustering script
+# Individual operations
+uv run python scripts/dev.py format       # Format code with Ruff
+uv run python scripts/dev.py check-format # Check if formatting needed
+uv run python scripts/dev.py lint         # Lint code with Ruff
+uv run python scripts/dev.py fix          # Auto-fix linting issues
+uv run python scripts/dev.py type-check   # Run TY type checking
+uv run python scripts/dev.py test         # Run pytest test suite
+uv run python scripts/dev.py test-cov     # Run tests with coverage
+uv run python scripts/dev.py install      # Install/sync dependencies
 ```
 
-### Code Quality with `ruff`
+### What `full` command does
 
-This project uses **ruff**, an extremely fast Python linter and code formatter written in Rust that is 10-100x faster than existing linters (like Flake8) and formatters (like Black). Ruff provides over 800 built-in rules with native re-implementations of popular Flake8 plugins.
+1. **Dependencies** - `uv sync --dev`
+2. **Format Check** - `ruff format --check --diff`
+3. **Linting** - `ruff check`
+4. **Type Check** - `ty check`
+5. **Tests** - `pytest tests/ -v`
 
-**Ruff Configuration** (from `pyproject.toml`):
+Provides clear ✅/❌ summary at the end.
 
-```toml
-[tool.ruff]
-line-length = 120                    # Maximum line length
-target-version = "py310"             # Target Python 3.10+
-fix = false                          # Don't auto-fix by default
-
-[tool.ruff.lint]
-# Selected rule sets: Pyflakes (E/F), pycodestyle (W), pep8-naming (N), 
-# isort (I), pyupgrade (UP), flake8-bugbear (B), flake8-comprehensions (C4), 
-# flake8-simplify (SIM)
-select = ["E", "F", "W", "N", "I", "UP", "B", "C4", "SIM"]
-```
-
-**Essential ruff Commands for LLMs**:
+## UV Commands
 
 ```bash
-# Check code for linting errors
-uv run ruff check .
+# Setup
+uv sync                    # Install dependencies
+uv sync --dev             # Install with dev dependencies
+uv sync --all-extras      # Install all optional dependencies
+uv venv                   # Create virtual environment
+uv python install         # Install Python from .python-version
 
-# Check specific files
-uv run ruff check src/hydro_forecasting/
+# Dependencies
+uv add <package>          # Add dependency
+uv add --dev <package>    # Add dev dependency
+uv add --optional <group> <package>  # Add to optional group
+uv remove <package>       # Remove dependency
+uv lock                   # Update lockfile
+uv lock --upgrade-package <pkg>  # Update specific package
 
-# Format code
-uv run ruff format .
+# Running
+uv run <command>          # Run command in project environment
+uv run python script.py   # Run Python script
+uv run pytest            # Run tests
+uv run ruff check        # Run linter
 
-# Auto-fix linting errors where possible
-uv run ruff check --fix .
-
-# Check formatting without making changes
-uv run ruff format --check .
+# Building
+uv build                  # Build project
+uv publish               # Publish to PyPI
 ```
 
-### Project Dependencies
+## RUFF Commands
 
-The project uses a modern Python data science and machine learning stack:
+```bash
+# Linting
+uv run ruff check              # Check all files
+uv run ruff check --fix        # Auto-fix issues
+uv run ruff check --watch      # Watch mode
+uv run ruff check <file>       # Check specific file
 
-**Core Dependencies**:
+# Formatting
+uv run ruff format             # Format all files
+uv run ruff format --check     # Check formatting only
+uv run ruff format <file>      # Format specific file
 
-- **PyTorch (`torch>=2.7.0`)**: Deep learning framework
-- **Lightning (`lightning>=2.5.1.post0`)**: PyTorch Lightning for training orchestration
-- **Polars (`polars>=1.29.0`)**: Fast DataFrame library (primary data processing)
-- **Pandas (`pandas>=2.2.3`)**: Traditional DataFrame operations (legacy support)
-- **scikit-learn (`scikit-learn>=1.6.1`)**: Machine learning utilities and preprocessing
-- **NumPy (`numpy>=2.2.5`)**: Numerical computing foundation
+# Combined (recommended order)
+uv run ruff check --fix && uv run ruff format
+```
 
-**Geospatial and Visualization**:
+## TY Commands
 
-- **CartoPy (`cartopy>=0.24.1`)**: Geospatial data processing and cartographic projections
-- **GeoPandas (`geopandas>=1.0.1`)**: Geospatial data analysis
-- **Matplotlib (`matplotlib>=3.10.1`)**: Plotting and visualization
-- **Seaborn (`seaborn>=0.13.2`)**: Statistical data visualization
+```bash
+# Type Checking
+uv run ty                      # Check project
+uv run ty <file>              # Check specific file
+uv run ty --watch             # Watch mode
 
-**Experiment Management**:
+# Configuration
+uv run ty --python-version 3.10  # Specify Python version
+uv run ty --ignore <rule>        # Ignore specific rule
+uv run ty --error <rule>         # Treat rule as error
+```
 
-- **Optuna (`optuna>=4.3.0`)**: Hyperparameter optimization
-- **Hydra (`hydra-core>=1.3.2`)**: Configuration management
-- **TensorBoard (`tensorboard>=2.19.0`)**: Experiment tracking and visualization
+## Development Workflow
 
-**Development Tools**:
+### Starting New Work
 
-- **pytest (`pytest>=8.3.5`)**: Testing framework  
-- **ruff (`ruff>=0.11.8`)**: Linting and formatting
-- **psutil (`psutil>=7.0.0`)**: System monitoring
-- **pympler (`pympler>=1.1`)**: Memory profiling
+```bash
+git checkout -b feature/description
+uv sync --dev
+# Check for existing scratchpads
+```
 
-### Development Workflow for LLMs
+### During Development
 
-When working with this codebase:
+```bash
+# Quick checks during coding:
+uv run python scripts/dev.py format      # Fix formatting
+uv run python scripts/dev.py fix         # Fix auto-fixable lint issues
 
-1. **Environment Setup**:
+# In separate terminals for continuous feedback:
+uv run ty --watch             # Continuous type checking
+uv run ruff check --watch     # Continuous linting
 
-   ```bash
-   # Clone repository and navigate to project
-   cd hydro-forecasting
-   
-   # Sync dependencies (creates .venv automatically)
-   uv sync
-   ```
+# Run tests frequently:
+uv run python scripts/dev.py test
+uv run pytest tests/test_specific.py
+```
 
-2. **Running Code**:
+### Before Committing
 
-   ```bash
-   # Run any Python script in the project environment
-   uv run python src/hydro_forecasting/script.py
-   
-   # Run tests
-   uv run pytest
-   
-   # Execute project scripts
-   uv run hydro-forecasting
-   ```
+```bash
+# Full pipeline check (mirrors CI/CD):
+uv run python scripts/dev.py full
 
-3. **Code Quality Checks**:
+# Or manual steps:
+uv run ruff check --fix && uv run ruff format && uv run ty && uv run pytest
 
-   ```bash
-   # Format code before committing
-   uv run ruff format .
-   
-   # Check for linting issues
-   uv run ruff check .
-   
-   # Auto-fix issues where possible
-   uv run ruff check --fix .
-   ```
+# Or with pre-commit hooks:
+git commit  # pre-commit runs automatically
+```
 
-4. **Adding Dependencies**:
+### Troubleshooting
 
-   ```bash
-   # Add runtime dependency
-   uv add numpy
-   
-   # Add development dependency  
-   uv add --dev pytest-cov
-   ```
+```bash
+# If dev script fails:
+uv run python scripts/dev.py install     # Reinstall dependencies
+uv pip list | grep -E "(pytest|ruff|ty)" # Check tool availability
 
-### Important Notes for LLMs
+# Individual tool debugging:
+uv run ruff --version
+uv run pytest --version  
+uv run ty --version
+```
 
-- **Always use `uv run`**: Prefix Python commands with `uv run` to ensure they execute in the correct environment
-- **No manual virtualenv activation needed**: uv handles virtual environment management automatically
-- **Fast feedback loops**: Ruff's speed enables real-time code quality checking
-- **Modern Python features**: Target Python 3.10+ as specified in the configuration
-- **Line length**: Maintain 120 character line limit as configured in ruff settings
+## CI/CD Pipeline
 
-This codebase represents a mature, well-architected system with clear patterns and robust infrastructure for hydrological forecasting research and development.
+Our GitHub Actions pipeline (`.github/workflows/ci.yml`) runs the same checks as `scripts/dev.py full`:
+
+- **Lint & Format** - Ruff check and format validation
+- **Type Check** - TY static type analysis  
+- **Test Suite** - pytest on multiple Python versions
+- **Build Check** - Verify package builds correctly
+
+**Triggers**: Push to main, PRs to main, manual dispatch
+
+## Scratchpad System
+
+Organize complex work with markdown scratchpads:
+
+```
+scratchpads/
+├── issues/      # Issue tracking (use /project:fix-issue command)
+├── planning/    # Feature planning
+└── research/    # Technical exploration
+```
+
+**Format**: `scratchpads/{type}/{description}.md`
+
+**Template**:
+
+```markdown
+# [Task Name]
+
+## Objective
+[What needs to be done]
+
+## Plan
+- [ ] Step 1
+- [ ] Step 2
+
+## Notes
+[Findings, decisions, code snippets]
+```
+
+## Project Configuration
+
+- **Python**: >=3.10 (see .python-version)
+- **Ruff**: line-length=88, rules: E,F,W,N,I,UP,B,C4,SIM
+- **TY**: Basic type checking with gradual adoption
+- **Layout**: Source code in `src/`
+- **Virtual env**: `.venv/`
+
+## Key Files
+
+- `@README.md` - Project structure
+- `@.github/copilot-instructions.md` - Coding standards
+- `@pyproject.toml` - Project configuration
+- `@scripts/dev.py` - Development orchestration script
+- `@.claude/commands/fix-issue.md` - Issue workflow command
+
+## Extended Thinking
+
+For complex problems, use trigger words:
+
+- "think" - Basic extended thinking
+- "think hard/more/harder" - Deeper analysis
+
+## Quick Reference
+
+```bash
+# Most common development workflow:
+uv sync --dev                          # Setup
+uv run python scripts/dev.py full      # Full check (like CI/CD)
+
+# Fast iteration during coding:
+uv run python scripts/dev.py format    # Format code
+uv run python scripts/dev.py fix       # Fix lint issues
+uv run python scripts/dev.py test      # Run tests
+
+# Before committing:
+uv run python scripts/dev.py full      # Ensure CI/CD will pass
+```
+
+## Error Handling
+
+The `scripts/dev.py` includes graceful error handling:
+
+- **Missing tools**: Warns and continues instead of failing
+- **Detailed output**: Shows exact commands and exit codes
+- **Summary report**: Clear ✅/❌ status for all checks
+- **CI compatibility**: Same commands work locally and in GitHub Actions
