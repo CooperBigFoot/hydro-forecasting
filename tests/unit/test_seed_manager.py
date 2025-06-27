@@ -26,14 +26,14 @@ except ImportError:
 
 import importlib.util
 
-HAS_PYTORCH_LIGHTNING = importlib.util.find_spec("pytorch_lightning") is not None
-
 from hydro_forecasting.experiment_utils.seed_manager import (
     SeedManager,
     get_global_seed_manager,
     init_global_seed_manager,
     set_global_seed_manager,
 )
+
+HAS_PYTORCH_LIGHTNING = importlib.util.find_spec("pytorch_lightning") is not None
 
 
 @pytest.fixture
@@ -206,11 +206,12 @@ class TestSeedManager:
 
     def test_set_global_seeds_with_seed(self, seed_manager, test_seed):
         """Test setting global seeds when master seed is available."""
-        with patch("random.seed") as mock_random_seed:
-            # Mock PyTorch Lightning to test fallback behavior
-            with patch("hydro_forecasting.experiment_utils.seed_manager.HAS_PYTORCH_LIGHTNING", False):
-                seed_manager.set_global_seeds()
-                mock_random_seed.assert_called_once_with(test_seed)
+        with (
+            patch("random.seed") as mock_random_seed,
+            patch("hydro_forecasting.experiment_utils.seed_manager.HAS_PYTORCH_LIGHTNING", False),
+        ):
+            seed_manager.set_global_seeds()
+            mock_random_seed.assert_called_once_with(test_seed)
 
     def test_set_global_seeds_without_seed(self):
         """Test setting global seeds when no master seed is available."""
@@ -223,20 +224,22 @@ class TestSeedManager:
     @pytest.mark.skipif(not HAS_NUMPY, reason="NumPy not available")
     def test_set_global_seeds_numpy(self, seed_manager, test_seed):
         """Test setting global seeds includes NumPy."""
-        with patch("numpy.random.seed") as mock_numpy_seed:
-            # Mock PyTorch Lightning to test fallback behavior
-            with patch("hydro_forecasting.experiment_utils.seed_manager.HAS_PYTORCH_LIGHTNING", False):
-                seed_manager.set_global_seeds()
-                mock_numpy_seed.assert_called_once_with(test_seed)
+        with (
+            patch("numpy.random.seed") as mock_numpy_seed,
+            patch("hydro_forecasting.experiment_utils.seed_manager.HAS_PYTORCH_LIGHTNING", False),
+        ):
+            seed_manager.set_global_seeds()
+            mock_numpy_seed.assert_called_once_with(test_seed)
 
     @pytest.mark.skipif(not HAS_TORCH, reason="PyTorch not available")
     def test_set_global_seeds_torch(self, seed_manager, test_seed):
         """Test setting global seeds includes PyTorch."""
-        with patch("torch.manual_seed") as mock_torch_seed:
-            # Mock PyTorch Lightning to test fallback behavior
-            with patch("hydro_forecasting.experiment_utils.seed_manager.HAS_PYTORCH_LIGHTNING", False):
-                seed_manager.set_global_seeds()
-                mock_torch_seed.assert_called_once_with(test_seed)
+        with (
+            patch("torch.manual_seed") as mock_torch_seed,
+            patch("hydro_forecasting.experiment_utils.seed_manager.HAS_PYTORCH_LIGHTNING", False),
+        ):
+            seed_manager.set_global_seeds()
+            mock_torch_seed.assert_called_once_with(test_seed)
 
     @pytest.mark.skipif(not HAS_PYTORCH_LIGHTNING, reason="PyTorch Lightning not available")
     def test_set_global_seeds_lightning(self, seed_manager, test_seed):

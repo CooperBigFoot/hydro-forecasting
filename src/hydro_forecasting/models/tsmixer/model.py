@@ -6,7 +6,7 @@ https://arxiv.org/abs/2303.06053
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+import torch.nn.functional as functional
 
 from .config import TSMixerConfig
 
@@ -16,7 +16,7 @@ class DeterministicDropout(nn.Dropout):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Apply dropout that explicitly checks training mode."""
-        return F.dropout(x, p=self.p, training=self.training)
+        return functional.dropout(x, p=self.p, training=self.training)
 
 
 class TemporalProjection(nn.Module):
