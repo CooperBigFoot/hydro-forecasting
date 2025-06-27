@@ -48,39 +48,6 @@ jobs:
       run: |
         uv run ruff check --output-format=github .
 
-  # Job 2: Type Checking
-  type-check:
-    name: Type Check Code  
-    runs-on: ubuntu-latest
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-    
-    - name: Set up UV
-      uses: astral-sh/setup-uv@v5
-      with:
-        version: "latest"
-        enable-cache: true
-    
-    - name: Set up Python
-      run: uv python install ${{ env.PYTHON_VERSION }}
-    
-    - name: Install dependencies
-      run: |
-        uv sync --dev --frozen
-    
-    - name: Run type checking with TY
-      run: |
-        uv run ty check \
-          --exclude "notebooks/" \
-          --exclude "**/*.ipynb" \
-          --exclude "**/deprecated/**" \
-          --exclude "**/*deprecated*/**" \
-          --exclude "experiments/" \
-          --exclude "src/hydro_forecasting/data_deprecated/" \
-          .
-
   # Job 3: Run Tests
   test:
     name: Run Test Suite
@@ -119,7 +86,7 @@ jobs:
   build-check:
     name: Build Check
     runs-on: ubuntu-latest
-    needs: [lint-and-format, type-check, test]  # Only run if other jobs pass
+    needs: [lint-and-format, test]  # Only run if other jobs pass
     
     steps:
     - name: Checkout code

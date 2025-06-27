@@ -8,7 +8,7 @@ This file helps Claude Code understand our project setup and workflows.
 
 - **UV**: Python package and project manager (replaces pip, poetry, pyenv)
 - **RUFF**: Python linter and formatter (replaces Flake8, Black, isort)
-- **TY**: Type checker from Astral (alpha version)
+- **TY**: Type checker from Astral (⚠️ Preview/alpha version - not used in CI/CD)
 
 ## Development Script (`scripts/dev.py`)
 
@@ -25,7 +25,7 @@ uv run python scripts/dev.py format       # Format code with Ruff
 uv run python scripts/dev.py check-format # Check if formatting needed
 uv run python scripts/dev.py lint         # Lint code with Ruff
 uv run python scripts/dev.py fix          # Auto-fix linting issues
-uv run python scripts/dev.py type-check   # Run TY type checking
+uv run python scripts/dev.py type-check   # Run TY type checking (optional, preview)
 uv run python scripts/dev.py test         # Run pytest test suite
 uv run python scripts/dev.py test-cov     # Run tests with coverage
 uv run python scripts/dev.py install      # Install/sync dependencies
@@ -36,8 +36,7 @@ uv run python scripts/dev.py install      # Install/sync dependencies
 1. **Dependencies** - `uv sync --dev`
 2. **Format Check** - `ruff format --check --diff`
 3. **Linting** - `ruff check`
-4. **Type Check** - `ty check`
-5. **Tests** - `pytest tests/ -v`
+4. **Tests** - `pytest tests/ -v`
 
 Provides clear ✅/❌ summary at the end.
 
@@ -156,12 +155,13 @@ uv run ty --version
 
 ## CI/CD Pipeline
 
-Our GitHub Actions pipeline (`.github/workflows/ci.yml`) runs the same checks as `scripts/dev.py full`:
+Our GitHub Actions pipeline (`.github/workflows/ci.yaml`) runs the same checks as `scripts/dev.py full`:
 
 - **Lint & Format** - Ruff check and format validation
-- **Type Check** - TY static type analysis  
 - **Test Suite** - pytest on multiple Python versions
 - **Build Check** - Verify package builds correctly
+
+Note: Type checking with TY is not included in CI/CD as it's still in preview/alpha
 
 **Triggers**: Push to main, PRs to main, manual dispatch
 

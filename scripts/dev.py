@@ -119,7 +119,6 @@ def full_check():
         ("Dependencies", install_deps),
         ("Format Check", check_format),
         ("Linting", lint_code),
-        ("Type Check", type_check),
         ("Tests", run_tests),
     ]
 
