@@ -607,7 +607,7 @@ def save_quality_report_to_json(
         with open(output_path, "w") as f:
             json.dump(asdict(report), f, indent=2)
     except Exception as e:
-        raise FileOperationError(f"Failed to save quality report to {path}: {e}")
+        raise FileOperationError(f"Failed to save quality report to {path}: {e}") from e
 
 
 def summarize_quality_reports_from_folder(

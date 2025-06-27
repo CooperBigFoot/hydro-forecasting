@@ -157,7 +157,7 @@ def finetune_pretrained_models(
                 except:
                     # If unwrap fails, this is a Failure result
                     error_msg = pretrained_checkpoint_path_result.failure()
-                    raise FileOperationError(error_msg)
+                    raise FileOperationError(error_msg) from None
             else:
                 # Handle direct return (exception-based interface or raw value)
                 pretrained_checkpoint_path = pretrained_checkpoint_path_result

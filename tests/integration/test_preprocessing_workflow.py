@@ -965,7 +965,6 @@ class TestEndToEndWorkflowScenarios:
 
     def test_static_data_filtered_after_quality_validation(self, temp_dir, create_basin_files, basin_ids):
         """Test that static data is correctly filtered to match basins that passed quality validation."""
-        from hydro_forecasting.data.in_memory_datamodule import HydroInMemoryDataModule
         
         region_time_series_dirs = create_basin_files
         region_static_dirs = {"basin": temp_dir / "static" / "basin"}
@@ -1052,7 +1051,6 @@ class TestEndToEndWorkflowScenarios:
         
         # Now create a minimal test to verify our fix works
         # Simulate loading static data with our fix
-        from hydro_forecasting.data.in_memory_datamodule import HydroInMemoryDataModule
         
         # Create a simple instance just to test the _load_static_data method
         class TestDataModule:

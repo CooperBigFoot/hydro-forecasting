@@ -59,9 +59,9 @@ def _load_search_space(model_type: str, search_spaces_dir: str | Path = "search_
             raise ConfigurationError(f"'get_search_space' function not found in {model_space_file}")
         return module.get_search_space()
     except ImportError as e:
-        raise ConfigurationError(f"Error importing search space for {model_type}: {e}")
+        raise ConfigurationError(f"Error importing search space for {model_type}: {e}") from e
     except Exception as e:
-        raise ConfigurationError(f"Unexpected error loading search space for {model_type}: {e}")
+        raise ConfigurationError(f"Unexpected error loading search space for {model_type}: {e}") from e
 
 
 def _suggest_trial_hparams(trial: optuna.Trial, search_space: dict[str, Any]) -> dict[str, Any]:
@@ -132,7 +132,7 @@ def save_best_hp_to_yaml(
 
     except Exception as e:
         logger.error(f"Error saving best HP to YAML: {e}", exc_info=True)
-        raise FileOperationError(f"Failed to save best hyperparameters to YAML: {e}")
+        raise FileOperationError(f"Failed to save best hyperparameters to YAML: {e}") from e
 
 
 def plot_optimization_history(
@@ -181,7 +181,7 @@ def plot_optimization_history(
 
     except Exception as e:
         logger.error(f"Error creating optimization history plot: {e}", exc_info=True)
-        raise FileOperationError(f"Failed to create optimization history plot: {e}")
+        raise FileOperationError(f"Failed to create optimization history plot: {e}") from e
 
 
 def plot_parameter_importance(
@@ -237,7 +237,7 @@ def plot_parameter_importance(
 
     except Exception as e:
         logger.error(f"Error creating parameter importance plot: {e}", exc_info=True)
-        raise FileOperationError(f"Failed to create parameter importance plot: {e}")
+        raise FileOperationError(f"Failed to create parameter importance plot: {e}") from e
 
 
 def analyze_hpt_results(
@@ -313,7 +313,7 @@ def analyze_hpt_results(
 
     except Exception as e:
         logger.error(f"Error analyzing HPT results: {e}", exc_info=True)
-        raise ConfigurationError(f"Failed to analyze HPT results: {e}")
+        raise ConfigurationError(f"Failed to analyze HPT results: {e}") from e
 
 
 def hyperparameter_tune_model(
@@ -387,7 +387,7 @@ def hyperparameter_tune_model(
         search_space = _load_search_space(model_type, search_spaces_dir)
     except (ConfigurationError, FileOperationError) as e:
         logger.error(f"Failed to load search space for {model_type}: {e}")
-        raise ConfigurationError(f"Failed to load search space: {e}")
+        raise ConfigurationError(f"Failed to load search space: {e}") from e
 
     def _objective(trial: optuna.Trial) -> float:
         model_pl: pl.LightningModule | None = None
@@ -537,7 +537,7 @@ def hyperparameter_tune_model(
         raise
     except Exception as e:
         logger.error(f"Unexpected error during study.optimize for '{experiment_name}': {e}", exc_info=True)
-        raise ModelTrainingError(f"Study optimization failed: {e}")
+        raise ModelTrainingError(f"Study optimization failed: {e}") from e
     finally:
         logger.info(f"Optuna study '{experiment_name}' process finished or interrupted.")
 

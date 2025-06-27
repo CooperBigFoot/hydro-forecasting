@@ -145,7 +145,7 @@ class HydroLazyDataset(Dataset):
             inp = ts.slice(0, self.input_length)
             out = ts.slice(self.input_length, self.output_length)
         except Exception as e:
-            raise OSError(f"Error loading/slicing data for idx {idx}, path {entry['file_path']}: {e}")
+            raise OSError(f"Error loading/slicing data for idx {idx}, path {entry['file_path']}: {e}") from e
         try:
             X_np = inp.select(self.input_features).to_numpy().astype(np.float32)
             X = torch.tensor(X_np, dtype=torch.float32)
@@ -162,7 +162,7 @@ class HydroLazyDataset(Dataset):
                 print(f"NaNs found in future tensor for index {idx}")
 
         except Exception as e:
-            raise ValueError(f"Error constructing tensors for idx {idx}: {e}")
+            raise ValueError(f"Error constructing tensors for idx {idx}: {e}") from e
 
         static_arr = self.static_data_cache.get(
             entry[self.group_identifier],
@@ -179,7 +179,7 @@ class HydroLazyDataset(Dataset):
 
             input_end_ts = int(pd.to_datetime(input_end).to_datetime64().astype(np.int64))
         except Exception as e:
-            raise ValueError(f"Could not convert input_end_date '{input_end}' to int64 for index {idx}: {e}")
+            raise ValueError(f"Could not convert input_end_date '{input_end}' to int64 for index {idx}: {e}") from e
         return {
             "X": X,
             "y": y,

@@ -1038,7 +1038,7 @@ class HydroInMemoryDataModule(LightningDataModule):
                 ts_pipelines = load_time_series_pipelines(ts_pipelines_path)
                 self.fitted_pipelines.update(ts_pipelines)
             except (FileOperationError, PipelineCompatibilityError) as e:
-                raise RuntimeError(f"Failed to load time series pipelines: {e}")
+                raise RuntimeError(f"Failed to load time series pipelines: {e}") from e
         else:
             logger.warning("Fitted time series pipelines file not found.")
 

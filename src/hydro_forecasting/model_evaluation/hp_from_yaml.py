@@ -35,7 +35,7 @@ def get_config_class(model_type: str):
 
         return getattr(module, class_name)
     except (ImportError, AttributeError) as e:
-        raise ImportError(f"Failed to import config for model type '{model_type}': {e}")
+        raise ImportError(f"Failed to import config for model type '{model_type}': {e}") from e
 
 
 def get_expected_params(model_type: str) -> tuple[set[str], set[str]]:
@@ -98,9 +98,9 @@ def hp_from_yaml(model_type: str, yaml_path: str) -> dict[str, Any]:
         with open(yaml_path) as f:
             yaml_params = yaml.safe_load(f)
     except yaml.YAMLError as e:
-        raise yaml.YAMLError(f"Invalid YAML syntax in {yaml_path}: {e}")
+        raise yaml.YAMLError(f"Invalid YAML syntax in {yaml_path}: {e}") from e
     except Exception as e:
-        raise RuntimeError(f"Error reading YAML file {yaml_path}: {e}")
+        raise RuntimeError(f"Error reading YAML file {yaml_path}: {e}") from e
 
     if not yaml_params or not isinstance(yaml_params, dict):
         raise ValueError(f"YAML file {yaml_path} does not contain a valid parameter dictionary")

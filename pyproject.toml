@@ -56,6 +56,8 @@ exclude = ["notebooks/"]
 select = ["E", "F", "W", "N", "I", "UP", "B", "C4", "SIM"]
 ignore = [
   "E501", # Line too long (let formatter handle this)
+  "N803", # Argument name should be lowercase - ML convention allows X, Y
+  "N806", # Variable in function should be lowercase - ML convention allows X, Y
 ]
 
 [tool.ruff.format]

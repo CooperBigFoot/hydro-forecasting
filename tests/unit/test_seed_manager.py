@@ -24,14 +24,11 @@ try:
 except ImportError:
     HAS_TORCH = False
 
-try:
-    import pytorch_lightning as pl
+import importlib.util
 
-    HAS_PYTORCH_LIGHTNING = True
-except ImportError:
-    HAS_PYTORCH_LIGHTNING = False
+HAS_PYTORCH_LIGHTNING = importlib.util.find_spec("pytorch_lightning") is not None
 
-from src.hydro_forecasting.experiment_utils.seed_manager import (
+from hydro_forecasting.experiment_utils.seed_manager import (
     SeedManager,
     get_global_seed_manager,
     init_global_seed_manager,
@@ -211,7 +208,7 @@ class TestSeedManager:
         """Test setting global seeds when master seed is available."""
         with patch("random.seed") as mock_random_seed:
             # Mock PyTorch Lightning to test fallback behavior
-            with patch("src.hydro_forecasting.experiment_utils.seed_manager.HAS_PYTORCH_LIGHTNING", False):
+            with patch("hydro_forecasting.experiment_utils.seed_manager.HAS_PYTORCH_LIGHTNING", False):
                 seed_manager.set_global_seeds()
                 mock_random_seed.assert_called_once_with(test_seed)
 
@@ -228,7 +225,7 @@ class TestSeedManager:
         """Test setting global seeds includes NumPy."""
         with patch("numpy.random.seed") as mock_numpy_seed:
             # Mock PyTorch Lightning to test fallback behavior
-            with patch("src.hydro_forecasting.experiment_utils.seed_manager.HAS_PYTORCH_LIGHTNING", False):
+            with patch("hydro_forecasting.experiment_utils.seed_manager.HAS_PYTORCH_LIGHTNING", False):
                 seed_manager.set_global_seeds()
                 mock_numpy_seed.assert_called_once_with(test_seed)
 
@@ -237,7 +234,7 @@ class TestSeedManager:
         """Test setting global seeds includes PyTorch."""
         with patch("torch.manual_seed") as mock_torch_seed:
             # Mock PyTorch Lightning to test fallback behavior
-            with patch("src.hydro_forecasting.experiment_utils.seed_manager.HAS_PYTORCH_LIGHTNING", False):
+            with patch("hydro_forecasting.experiment_utils.seed_manager.HAS_PYTORCH_LIGHTNING", False):
                 seed_manager.set_global_seeds()
                 mock_torch_seed.assert_called_once_with(test_seed)
 

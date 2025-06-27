@@ -173,8 +173,6 @@ def main():
     n = len(result_df["gauge_id"].unique())
     print(f"Number of unique gauge IDs: {n}")
 
-    bins = int(np.ceil(np.log2(n) + 1))
-
     # Create histogram of HII values
     sns.set_context("paper", font_scale=1.3)
     plt.figure(figsize=(10, 6))

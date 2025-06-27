@@ -31,4 +31,8 @@ __all__ = [
     "StandardScaleTransformer",
     "NormalizeTransformer",
     "LogTransformer",
+    # Modules (for registration)
+    "log_scale",
+    "normalize",
+    "standard_scale",
 ]

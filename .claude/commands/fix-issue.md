@@ -40,7 +40,7 @@ Analyze and implement a solution for GitHub issue: $ARGUMENTS
 ## DEPLOY
 
 1. **Self-review**: Check your changes thoroughly
-2. **PR**: `gh pr create` with clear description linking to issue
+2. **PR**: `/project:create-pr {issue-number}` - Creates comprehensive PR with proper formatting
 3. **Monitor**: Watch for CI results and review feedback
 
 **Always use `gh` CLI for GitHub operations. Update your scratchpad throughout the process.**
