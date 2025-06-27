@@ -32,7 +32,7 @@ This hydrological forecasting system implements multiple deep learning architect
 
 1. **TiDE** (Time-series Dense Encoder) - Efficient temporal modeling
 2. **TSMixer** - MLP-based architecture with temporal/feature mixing
-3. **EA-LSTM** - Entity-Aware LSTM with attention mechanisms
+3. **EA-LSTM** - Entity-Aware LSTM
 4. **TFT** (Temporal Fusion Transformer) - Interpretable forecasting
 
 ## 📁 Essential Directory Structure
