@@ -44,11 +44,11 @@ class LogTransformer(HydroTransformer):
         self._fitted_state["offsets"] = {}
 
         if isinstance(X, pd.DataFrame):
-            for col_idx, col in enumerate(feature_cols):
+            for _col_idx, col in enumerate(feature_cols):
                 min_val = X[col].min()
                 self._fitted_state["offsets"][col] = abs(min_val) + self.epsilon if min_val < 0 else 0
         else:
-            for col_idx, col in enumerate(feature_cols):
+            for _col_idx, col in enumerate(feature_cols):
                 min_val = X[:, col].min()
                 self._fitted_state["offsets"][col] = abs(min_val) + self.epsilon if min_val < 0 else 0
 
@@ -75,7 +75,7 @@ class LogTransformer(HydroTransformer):
             return X_transformed
         else:
             X_transformed = X.copy()
-            for col_idx, col in enumerate(feature_cols):
+            for _col_idx, col in enumerate(feature_cols):
                 offset = self._fitted_state["offsets"].get(col, 0)
                 X_transformed[:, col] = np.log1p(X[:, col] + offset)
             return X_transformed
@@ -101,7 +101,7 @@ class LogTransformer(HydroTransformer):
             return X_inverse
         else:
             X_inverse = X.copy()
-            for col_idx, col in enumerate(feature_cols):
+            for _col_idx, col in enumerate(feature_cols):
                 offset = self._fitted_state["offsets"].get(col, 0)
                 X_inverse[:, col] = np.expm1(X[:, col]) - offset
             return X_inverse

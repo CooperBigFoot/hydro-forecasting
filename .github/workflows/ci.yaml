@@ -72,7 +72,14 @@ jobs:
     
     - name: Run type checking with TY
       run: |
-        uv run ty check .
+        uv run ty check \
+          --exclude "notebooks/" \
+          --exclude "**/*.ipynb" \
+          --exclude "**/deprecated/**" \
+          --exclude "**/*deprecated*/**" \
+          --exclude "experiments/" \
+          --exclude "src/hydro_forecasting/data_deprecated/" \
+          .
 
   # Job 3: Run Tests
   test:

@@ -322,7 +322,7 @@ class TestSeedManager:
 
         # Create multiple threads
         threads = []
-        for i in range(10):
+        for _i in range(10):
             thread = threading.Thread(target=worker_function)
             threads.append(thread)
             thread.start()

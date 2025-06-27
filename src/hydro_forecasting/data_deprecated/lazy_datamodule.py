@@ -212,7 +212,7 @@ class HydroLazyDataModule(pl.LightningDataModule):
         Returns:
             Success with the value if valid, or Failure with error message
         """
-        if not isinstance(value, (int, float)):
+        if not isinstance(value, int | float):
             return Failure(f"Parameter '{param_name}' must be a number, got {type(value).__name__}")
         if value <= 0:
             return Failure(f"Parameter '{param_name}' must be greater than 0, got {value}")
@@ -309,16 +309,15 @@ class HydroLazyDataModule(pl.LightningDataModule):
                 return Failure(f"Missing 'pipeline' key in {data_type} config")
 
             pipeline = cfg["pipeline"]
-            if not isinstance(pipeline, (Pipeline, GroupedPipeline)):
+            if not isinstance(pipeline, Pipeline | GroupedPipeline):
                 return Failure(f"Pipeline for {data_type} must be Pipeline or GroupedPipeline, got {type(pipeline)}")
 
-            if isinstance(pipeline, GroupedPipeline):
-                if pipeline.group_identifier != self.group_identifier:
-                    return Failure(
-                        f"GroupedPipeline for {data_type} uses group_identifier "
-                        f"'{pipeline.group_identifier}' but data module uses "
-                        f"'{self.group_identifier}'"
-                    )
+            if isinstance(pipeline, GroupedPipeline) and pipeline.group_identifier != self.group_identifier:
+                return Failure(
+                    f"GroupedPipeline for {data_type} uses group_identifier "
+                    f"'{pipeline.group_identifier}' but data module uses "
+                    f"'{self.group_identifier}'"
+                )
 
             if data_type == "static_features" and "columns" not in cfg:
                 return Failure("static_features config must include 'columns' key")
@@ -550,12 +549,11 @@ class HydroLazyDataModule(pl.LightningDataModule):
             "test_prop",
         ]
         for key in critical_keys:
-            if key in loaded_config and key in current_config:
-                if loaded_config[key] != current_config[key]:
-                    return (
-                        f"Configuration mismatch for key '{key}': "
-                        f"loaded={loaded_config[key]}, current={current_config[key]}"
-                    )
+            if key in loaded_config and key in current_config and loaded_config[key] != current_config[key]:
+                return (
+                    f"Configuration mismatch for key '{key}': "
+                    f"loaded={loaded_config[key]}, current={current_config[key]}"
+                )
 
         # Validate preprocessing transformer details
         loaded_transformer_details = loaded_config.get("preprocessing_transformer_details", {})
@@ -856,7 +854,7 @@ class HydroLazyDataModule(pl.LightningDataModule):
             batch_sampler=sampler,
             num_workers=self.num_workers,
             pin_memory=True,
-            persistent_workers=True if self.num_workers > 0 else False,
+            persistent_workers=self.num_workers > 0,
             worker_init_fn=worker_init_fn,
             multiprocessing_context=mp.get_context("spawn"),
         )
@@ -881,7 +879,7 @@ class HydroLazyDataModule(pl.LightningDataModule):
             batch_sampler=sampler,
             num_workers=self.num_workers,
             pin_memory=True,
-            persistent_workers=True if self.num_workers > 0 else False,
+            persistent_workers=self.num_workers > 0,
             multiprocessing_context=mp.get_context("spawn"),
         )
 
@@ -905,7 +903,7 @@ class HydroLazyDataModule(pl.LightningDataModule):
             batch_sampler=sampler,
             num_workers=self.num_workers,
             pin_memory=True,
-            persistent_workers=True if self.num_workers > 0 else False,
+            persistent_workers=self.num_workers > 0,
             multiprocessing_context=mp.get_context("spawn"),
         )
 

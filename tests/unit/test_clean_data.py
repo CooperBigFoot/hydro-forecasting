@@ -166,7 +166,7 @@ class TestCleanDataFunction:
         assert len(reports) > 0
 
         # All basins should pass quality checks with clean data
-        for basin_id, report in reports.items():
+        for _basin_id, report in reports.items():
             assert report.passed_quality_check is True
             assert report.failure_reason is None
 
@@ -260,7 +260,7 @@ class TestCleanDataFunction:
         cleaned_df, reports = clean_data(lf, processing_config)
 
         # Verify report structure
-        for basin_id, report in reports.items():
+        for _basin_id, report in reports.items():
             assert isinstance(report, BasinQualityReport)
             assert isinstance(report.valid_period, dict)
             assert isinstance(report.processing_steps, list)

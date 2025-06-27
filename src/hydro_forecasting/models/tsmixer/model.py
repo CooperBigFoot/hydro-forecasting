@@ -145,7 +145,7 @@ class AlignmentStage(nn.Module):
         Returns:
             Aligned representation [batch_size, output_len, output_size]
         """
-        batch_size = historical.size(0)
+        historical.size(0)
         output_len = future.size(1)
 
         # Process historical features
@@ -430,10 +430,7 @@ class MixingStage(nn.Module):
         )
 
         # Determine feature dimension for mixer layers based on alignment output
-        if config.static_size > 0:
-            feature_dim = config.hidden_size * 3  # hist + future + static
-        else:
-            feature_dim = config.hidden_size * 2  # hist + future
+        feature_dim = config.hidden_size * 3 if config.static_size > 0 else config.hidden_size * 2
 
         # Store the feature dimension for use by other components
         self.feature_dim = feature_dim

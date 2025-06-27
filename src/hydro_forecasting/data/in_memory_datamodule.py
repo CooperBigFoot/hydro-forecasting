@@ -926,7 +926,7 @@ class HydroInMemoryDataModule(LightningDataModule):
                         configs_match = False
                     else:
                         # Compare each pipeline config
-                        for pipeline_name in current_val.keys():
+                        for pipeline_name in current_val:
                             current_pipeline_config = current_val[pipeline_name]
                             loaded_pipeline_config = loaded_val[pipeline_name]
 

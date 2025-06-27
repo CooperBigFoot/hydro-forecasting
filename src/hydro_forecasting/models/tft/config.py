@@ -47,7 +47,7 @@ class TFTConfig(BaseConfig):
         group_identifier: str = "gauge_id",
         scheduler_patience: int = 5,
         scheduler_factor: float = 0.5,
-        quantiles: list[float] = [0.5],
+        quantiles: list[float] = None,
         context_length_ratio: float = 1.0,
         encoder_layers: int = 1,
         **kwargs,
@@ -78,6 +78,8 @@ class TFTConfig(BaseConfig):
             **kwargs: Additional parameters
         """
         # Initialize base config with standard parameters
+        if quantiles is None:
+            quantiles = [0.5]
         super().__init__(
             input_len=input_len,
             output_len=output_len,

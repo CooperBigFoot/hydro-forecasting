@@ -29,10 +29,7 @@ class LitTSMixer(BaseLitModel):
             config: TSMixer configuration as a TSMixerConfig instance or dict
         """
         # Convert dict config to TSMixerConfig if needed
-        if isinstance(config, dict):
-            tsmixer_config = TSMixerConfig.from_dict(config)
-        else:
-            tsmixer_config = config
+        tsmixer_config = TSMixerConfig.from_dict(config) if isinstance(config, dict) else config
 
         # Initialize base lightning model with the config
         super().__init__(tsmixer_config)

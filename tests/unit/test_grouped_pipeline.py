@@ -164,10 +164,10 @@ class TestGroupedPipelineFitting:
     def test_grouped_pipeline_fit_empty_group(self, synthetic_clean_data):
         """Test handling of empty groups during fitting."""
         # Create data with some groups that would be empty after filtering
-        data_with_empty = synthetic_clean_data.copy()
+        synthetic_clean_data.copy()
 
         # Add a group with no data (shouldn't happen in practice but test robustness)
-        empty_group_data = pd.DataFrame(
+        pd.DataFrame(
             {
                 "gauge_id": ["empty_basin"],
                 "date": [pd.Timestamp("2020-01-01")],
@@ -242,7 +242,7 @@ class TestGroupedPipelineTransform:
         # Check that each group's data was transformed by its own scaler
         for basin_id in synthetic_clean_data["gauge_id"].unique():
             basin_mask = synthetic_clean_data["gauge_id"] == basin_id
-            basin_original = synthetic_clean_data.loc[basin_mask, "temperature"]
+            synthetic_clean_data.loc[basin_mask, "temperature"]
             basin_transformed = transformed.loc[basin_mask, "temperature"]
 
             # Transformed data should have approximately zero mean for each group

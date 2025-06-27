@@ -49,7 +49,29 @@ def type_check():
     try:
         # First check if ty is available
         subprocess.run(["uv", "run", "ty", "--version"], check=True, capture_output=True)
-        return run_command(["uv", "run", "ty", "check", "."], "Type Checking")
+        # Exclude notebooks and deprecated files
+        return run_command(
+            [
+                "uv",
+                "run",
+                "ty",
+                "check",
+                "--exclude",
+                "notebooks/",
+                "--exclude",
+                "**/*.ipynb",
+                "--exclude",
+                "**/deprecated/**",
+                "--exclude",
+                "**/*deprecated*/**",
+                "--exclude",
+                "experiments/",
+                "--exclude",
+                "src/hydro_forecasting/data_deprecated/",
+                ".",
+            ],
+            "Type Checking",
+        )
     except (subprocess.CalledProcessError, FileNotFoundError):
         print("⚠️  TY type checker not available - skipping type check")
         print("   Install with: uv add --dev ty@latest")

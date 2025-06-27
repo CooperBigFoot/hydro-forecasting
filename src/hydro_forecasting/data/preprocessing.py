@@ -239,7 +239,7 @@ def _load_single_basin_lazy(
         return lf
 
     except Exception as exc:
-        if isinstance(exc, (FileOperationError, DataQualityError)):
+        if isinstance(exc, FileOperationError | DataQualityError):
             raise
         raise FileOperationError(f"Error loading basin {gauge_id}: {exc}") from exc
 
@@ -412,11 +412,7 @@ def batch_process_time_series_data(
         # For unified pipelines, use the already-fitted pipeline
         batch_features_pipeline = features_pipeline
 
-    if isinstance(target_pipeline, GroupedPipeline):
-        batch_target_pipeline = clone(target_pipeline)
-    else:
-        # For unified pipelines, use the already-fitted pipeline
-        batch_target_pipeline = target_pipeline
+    batch_target_pipeline = clone(target_pipeline) if isinstance(target_pipeline, GroupedPipeline) else target_pipeline
 
     # Only fit grouped pipelines
     if isinstance(features_pipeline, GroupedPipeline) or isinstance(target_pipeline, GroupedPipeline):
@@ -661,7 +657,7 @@ def run_hydro_processor(
                 continue
 
         # Convert to list and sort for deterministic processing
-        valid_gauge_ids_list = sorted(list(valid_gauge_ids))
+        valid_gauge_ids_list = sorted(valid_gauge_ids)
         failed_count = original_basin_count - len(valid_gauge_ids_list)
 
         logger.info(f"Quality validation complete: {len(valid_gauge_ids_list)} valid basins, {failed_count} failed")
@@ -687,7 +683,7 @@ def run_hydro_processor(
 
             # Check for fit_on_n_basins parameter in configs
             fit_on_n_basins = None
-            for pipeline_name, pipeline_config in preprocessing_config.items():
+            for _pipeline_name, pipeline_config in preprocessing_config.items():
                 if pipeline_config.get("strategy") == "unified" and "fit_on_n_basins" in pipeline_config:
                     fit_on_n_basins = pipeline_config["fit_on_n_basins"]
                     break  # Use the first fit_on_n_basins found
@@ -756,10 +752,7 @@ def run_hydro_processor(
                             else:
                                 # For target pipeline, use target column
                                 target_col = preprocessing_config.get("target", {}).get("column", "streamflow")
-                                if target_col in train_pd.columns:
-                                    X = train_pd[[target_col]]
-                                else:
-                                    X = train_pd
+                                X = train_pd[[target_col]] if target_col in train_pd.columns else train_pd
 
                             pipeline.fit(X)
                             logger.info(f"Successfully fitted unified {pipeline_name} pipeline")

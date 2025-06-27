@@ -427,7 +427,6 @@ def _validate_and_build_reports_with_imputation(
     min_train_years = config.min_train_years
     train_prop = config.train_prop
     val_prop = config.val_prop
-    test_prop = config.test_prop
 
     # Convert minimum training years to minimum data points needed
     min_required_train_points = int(min_train_years * 365.25)

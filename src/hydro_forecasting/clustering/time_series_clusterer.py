@@ -65,7 +65,7 @@ class TimeSeriesClusterer:
 
         # Try importing tslearn for DBA if needed
         import importlib.util
-        
+
         self._has_tslearn = importlib.util.find_spec("tslearn.barycenters") is not None
         if not self._has_tslearn and averaging_method == "dba":
             print("Warning: tslearn not found. Using mean for averaging instead.")
