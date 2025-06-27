@@ -392,7 +392,7 @@ class TestUnifiedPipelineEdgeCases:
         transformed = unified_pipeline.transform(data_with_nans)
 
         # NaN values should still be NaN
-        assert pd.isna(transformed.loc[:10, "temperature"]).all()
+        assert pd.isna(transformed.loc[:10, "temperature"]).values.all()
 
     def test_unified_pipeline_all_same_values(self):
         """Test behavior when all values in a column are the same."""
