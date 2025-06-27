@@ -1,6 +1,6 @@
 """Hyperparameter search space definitions for hydrological models."""
 
-from typing import Any, Dict
+from typing import Any
 
 from .ealstm_space import get_ealstm_space
 from .tft_space import get_tft_space

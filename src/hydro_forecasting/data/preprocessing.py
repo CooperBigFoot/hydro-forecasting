@@ -241,7 +241,7 @@ def _load_single_basin_lazy(
     except Exception as exc:
         if isinstance(exc, (FileOperationError, DataQualityError)):
             raise
-        raise FileOperationError(f"Error loading basin {gauge_id}: {exc}")
+        raise FileOperationError(f"Error loading basin {gauge_id}: {exc}") from exc
 
 
 def load_basins_timeseries_lazy(
@@ -351,7 +351,7 @@ def write_train_val_test_splits_to_disk(
                     basin_split_df.write_parquet(out_file, compression=compression)
 
     except Exception as exc:
-        raise FileOperationError(f"Error writing splits to disk: {exc}")
+        raise FileOperationError(f"Error writing splits to disk: {exc}") from exc
 
 
 def batch_process_time_series_data(
@@ -389,7 +389,7 @@ def batch_process_time_series_data(
     try:
         cleaned_df = apply_cleaning_steps(lf, config)
     except Exception as e:
-        raise DataQualityError(f"Data cleaning failed: {e}")
+        raise DataQualityError(f"Data cleaning failed: {e}") from e
 
     if cleaned_df.height == 0:
         raise DataQualityError("Cleaned DataFrame is empty.")
@@ -427,7 +427,7 @@ def batch_process_time_series_data(
                 batch_target_pipeline if isinstance(batch_target_pipeline, GroupedPipeline) else None,
             )
         except Exception as e:
-            raise DataProcessingError(f"Pipeline fitting failed: {e}")
+            raise DataProcessingError(f"Pipeline fitting failed: {e}") from e
 
     # Add unified pipelines to fitted pipelines dict (they're already fitted)
     if isinstance(features_pipeline, UnifiedPipeline):
@@ -441,21 +441,21 @@ def batch_process_time_series_data(
     try:
         train_transformed_pd = transform_time_series_data(train_pd_df, fitted_batch_pipelines)
     except Exception as e:
-        raise DataProcessingError(f"Train transform failed: {e}")
+        raise DataProcessingError(f"Train transform failed: {e}") from e
 
     val_transformed_pd = pd.DataFrame()
     if not val_pd_df.empty:
         try:
             val_transformed_pd = transform_time_series_data(val_pd_df, fitted_batch_pipelines)
         except Exception as e:
-            raise DataProcessingError(f"Validation transform failed: {e}")
+            raise DataProcessingError(f"Validation transform failed: {e}") from e
 
     test_transformed_pd = pd.DataFrame()
     if not test_pd_df.empty:
         try:
             test_transformed_pd = transform_time_series_data(test_pd_df, fitted_batch_pipelines)
         except Exception as e:
-            raise DataProcessingError(f"Test transform failed: {e}")
+            raise DataProcessingError(f"Test transform failed: {e}") from e
 
     final_train_df = pl.from_pandas(train_transformed_pd) if not train_transformed_pd.empty else pl.DataFrame()
     final_val_df = pl.from_pandas(val_transformed_pd) if not val_transformed_pd.empty else pl.DataFrame()
@@ -568,7 +568,7 @@ def run_hydro_processor(
         try:
             save_config(datamodule_config, config_path)
         except Exception as e:
-            raise FileOperationError(f"Failed to save config: {e}")
+            raise FileOperationError(f"Failed to save config: {e}") from e
         logger.info(f"Config saved to {config_path}")
 
         static_features_path = run_output_dir / "processed_static_features.parquet"
@@ -764,12 +764,12 @@ def run_hydro_processor(
                             pipeline.fit(X)
                             logger.info(f"Successfully fitted unified {pipeline_name} pipeline")
                         except Exception as e:
-                            raise DataProcessingError(f"Failed to fit unified {pipeline_name} pipeline: {e}")
+                            raise DataProcessingError(f"Failed to fit unified {pipeline_name} pipeline: {e}") from e
                 else:
                     logger.warning("No training data available for unified pipeline fitting")
 
             except Exception as e:
-                raise DataProcessingError(f"Failed during unified pipeline fitting stage: {e}")
+                raise DataProcessingError(f"Failed during unified pipeline fitting stage: {e}") from e
 
             logger.info("Completed unified pipeline fitting stage")
 
@@ -854,7 +854,7 @@ def run_hydro_processor(
         try:
             summary_report = summarize_quality_reports_from_folder(quality_reports_dir, summary_quality_report_path)
         except Exception as e:
-            raise FileOperationError(f"Failed to create summary report: {e}")
+            raise FileOperationError(f"Failed to create summary report: {e}") from e
         logger.info(f"Summary quality report saved to {summary_quality_report_path}")
 
         success_marker_path.touch(exist_ok=True)
@@ -882,4 +882,4 @@ def run_hydro_processor(
         import traceback
 
         logger.error(f"ERROR in run_hydro_processor: {e}\n{traceback.format_exc()}")
-        raise DataProcessingError(f"Unexpected error during hydro processing: {e}")
+        raise DataProcessingError(f"Unexpected error during hydro processing: {e}") from e

@@ -38,7 +38,7 @@ def fit_static_pipeline(
     try:
         cols: list[str] = preprocessing_config["static_features"]["columns"]
     except KeyError as e:
-        raise ConfigurationError(f"Missing configuration key: {e}")
+        raise ConfigurationError(f"Missing configuration key: {e}") from e
 
     missing = [c for c in cols if c not in static_df.columns]
     if missing:
@@ -81,7 +81,7 @@ def transform_static_data(
     try:
         cols: list[str] = preprocessing_config["static_features"]["columns"]
     except KeyError as e:
-        raise ConfigurationError(f"Missing configuration key: {e}")
+        raise ConfigurationError(f"Missing configuration key: {e}") from e
 
     missing = [c for c in cols if c not in static_df.columns]
     if missing:
@@ -264,7 +264,7 @@ def process_static_data(
         # Get columns to transform from config
         columns_to_save = preprocessing_config["static_features"]["columns"]
     except KeyError as e:
-        raise ConfigurationError(f"Missing configuration key: {e}")
+        raise ConfigurationError(f"Missing configuration key: {e}") from e
 
     # Process data step by step
     static_df = read_static_data_from_disk(region_static_attributes_base_dirs, list_of_gauge_ids)

@@ -64,15 +64,12 @@ class TimeSeriesClusterer:
         }
 
         # Try importing tslearn for DBA if needed
-        try:
-            import tslearn.barycenters
-
-            self._has_tslearn = True
-        except ImportError:
-            self._has_tslearn = False
-            if averaging_method == "dba":
-                print("Warning: tslearn not found. Using mean for averaging instead.")
-                self.averaging_method = "mean"
+        import importlib.util
+        
+        self._has_tslearn = importlib.util.find_spec("tslearn.barycenters") is not None
+        if not self._has_tslearn and averaging_method == "dba":
+            print("Warning: tslearn not found. Using mean for averaging instead.")
+            self.averaging_method = "mean"
 
     def _compute_dtw_distance(self, x: np.ndarray, y: np.ndarray) -> float:
         """

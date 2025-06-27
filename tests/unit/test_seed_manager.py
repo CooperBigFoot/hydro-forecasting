@@ -24,12 +24,9 @@ try:
 except ImportError:
     HAS_TORCH = False
 
-try:
-    import pytorch_lightning as pl
+import importlib.util
 
-    HAS_PYTORCH_LIGHTNING = True
-except ImportError:
-    HAS_PYTORCH_LIGHTNING = False
+HAS_PYTORCH_LIGHTNING = importlib.util.find_spec("pytorch_lightning") is not None
 
 from hydro_forecasting.experiment_utils.seed_manager import (
     SeedManager,
