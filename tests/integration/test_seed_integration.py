@@ -23,7 +23,7 @@ try:
 except ImportError:
     HAS_TORCH = False
 
-from src.hydro_forecasting.experiment_utils.seed_manager import SeedManager
+from hydro_forecasting.experiment_utils.seed_manager import SeedManager
 
 
 class TestSeedManagerIntegration:
