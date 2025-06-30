@@ -6,7 +6,21 @@
       "Bash(git add:*)",
       "Bash(git commit:*)",
       "Bash(git clean:*)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Bash(uv pip:*)",
+      "mcp__ide__executeCode",
+      "Bash(cat:*)",
+      "Bash(jupyter:*)",
+      "Bash(uv run:*)",
+      "Bash(python:*)",
+      "Bash(ulimit:*)",
+      "Bash(git pull:*)",
+      "Bash(grep:*)",
+      "Bash(for region in CA CH CL USA)",
+      "Bash(do echo \"=== $region ===\")",
+      "Bash(done)",
+      "Bash(rm:*)",
+      "Bash(mv:*)"
     ],
     "deny": []
   }

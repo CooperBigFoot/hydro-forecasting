@@ -1,3 +1,4 @@
+import argparse
 import sys
 from pathlib import Path
 
@@ -15,18 +16,29 @@ from hydro_forecasting.data.caravanify_parquet import (
 )
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Calculate Human Influence Index (HII) for specified regions")
+    parser.add_argument(
+        "--regions",
+        type=str,
+        required=True,
+        help="Comma-separated list of regions (e.g., CL,CA,USA,camelsaus)",
+    )
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default="default",
+        help="Subdirectory name within results folder (default: 'default')",
+    )
+    return parser.parse_args()
+
+
 def main():
-    # Define regions to process
-    regions = [
-        "CL",
-        "CA",
-        "USA",
-        "camelsaus",
-        "camelsgb",
-        "camelsbr",
-        "hysets",
-        "lamah",
-    ]
+    # Parse command-line arguments
+    args = parse_args()
+    regions = [r.strip() for r in args.regions.split(",")]
+
+    print(f"Processing regions: {', '.join(regions)}")
 
     # Anthropogenic attributes to extract
     anthro_columns = [
@@ -163,8 +175,9 @@ def main():
     result_df = norm_data[["gauge_id", "hii", "human_influence_category"]]
 
     # Save to CSV
-    output_dir = Path("/Users/cooper/Desktop/hydro-forecasting/scripts/human_influence_index/results")
-    output_dir.mkdir(exist_ok=True)
+    base_results_dir = Path("/Users/cooper/Desktop/hydro-forecasting/scripts/human_influence_index/results")
+    output_dir = base_results_dir / args.output_dir
+    output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / "human_influence_classification.parquet"
     result_df.to_parquet(output_path, index=False)
     print(f"\nClassification results saved to {output_path}")
