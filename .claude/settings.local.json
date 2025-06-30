@@ -25,7 +25,8 @@
       "Bash(uv cache clean:*)",
       "Bash(uv sync:*)",
       "Bash(git config:*)",
-      "Bash(git reset:*)"
+      "Bash(git reset:*)",
+      "Bash(git push:*)"
     ],
     "deny": []
   }
