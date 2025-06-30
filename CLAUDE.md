@@ -1,241 +1,454 @@
-# Project: streamflow-mapper
+# Streamflow Mapper - Claude Code Guide
 
-This file helps Claude Code understand our project setup and workflows.
+> Comprehensive development guide for the streamflow-mapper project using Claude Code with modern Python tooling.
 
-## Tool Stack
+## Quick Start
 
-- **UV**: Python package and project manager (replaces pip, poetry, pyenv)
-- **RUFF**: Python linter and formatter (replaces Flake8, Black, isort)
-- **TY**: Type checker from Astral (⚠️ Preview/alpha version - not used in CI/CD)
+The most important commands you'll use daily:
 
-## Development Script (`scripts/dev.py`)
+```bash
+# Setup new environment
+uv sync --dev
 
-Our main development orchestration script that mirrors the CI/CD pipeline locally.
+# Full CI/CD pipeline check (run before commits)
+uv run python scripts/dev.py full
+
+# Fast iteration cycle
+uv run python scripts/dev.py format && uv run python scripts/dev.py fix
+uv run python scripts/dev.py test
+```
+
+## Project Architecture
+
+### Core Technology Stack
+
+**Primary Tools:**
+
+- **UV**: Modern Python package and project manager (replaces pip, poetry, pyenv)
+- **RUFF**: Fast Python linter and formatter (replaces Flake8, Black, isort)  
+- **TY**: Type checker from Astral (⚠️ Alpha version - development use only)
+
+**Why this stack:** UV provides faster dependency resolution and virtual environment management. RUFF offers significantly faster linting/formatting than traditional tools. TY provides type checking with better performance characteristics than mypy.
+
+### Project Structure
+
+```bash
+streamflow-mapper/
+├── src/                    # Source code
+├── tests/                  # Test suite
+├── scripts/
+│   └── dev.py             # Development orchestration script
+├── scratchpads/           # Claude Code working documents
+│   ├── issues/           # Issue-specific planning
+│   ├── planning/         # Feature development
+│   └── research/         # Technical exploration
+├── .claude/
+│   └── commands/         # Custom slash commands
+└── pyproject.toml        # Project configuration
+```
+
+## Development Orchestration Script
+
+The `scripts/dev.py` script mirrors our CI/CD pipeline locally and should be your primary development tool.
 
 ### Core Commands
 
+| Command | Purpose | When to Use |
+|---------|---------|-------------|
+| `uv run python scripts/dev.py full` | Run complete CI/CD pipeline | Before commits, PRs, releases |
+| `uv run python scripts/dev.py format` | Format code with Ruff | During active development |
+| `uv run python scripts/dev.py check-format` | Check formatting without changes | CI verification |
+| `uv run python scripts/dev.py lint` | Lint code with Ruff | Code quality checks |
+| `uv run python scripts/dev.py fix` | Auto-fix linting issues | Quick issue resolution |
+| `uv run python scripts/dev.py test` | Run pytest suite | Feature verification |
+| `uv run python scripts/dev.py test-cov` | Run tests with coverage | Coverage analysis |
+| `uv run python scripts/dev.py install` | Install/sync dependencies | Environment setup |
+
+### Full Pipeline Details
+
+The `full` command executes these steps in order:
+
+1. **Dependency Sync**: `uv sync --dev` - Ensures consistent environment
+2. **Format Validation**: `ruff format --check --diff` - Enforces code style
+3. **Linting**: `ruff check` - Catches code quality issues  
+4. **Test Suite**: `pytest tests/ -v` - Verifies functionality
+
+**Output**: Clear ✅/❌ summary showing pipeline status
+
+## Package Management with UV
+
+**Important**: Use UV exclusively for all Python package operations. Never use pip, pip-tools, poetry, or conda directly.
+
+### Essential UV Commands
+
 ```bash
-# Full pipeline (recommended before commits)
-uv run python scripts/dev.py full         # Run all checks like CI/CD
-
-# Individual operations
-uv run python scripts/dev.py format       # Format code with Ruff
-uv run python scripts/dev.py check-format # Check if formatting needed
-uv run python scripts/dev.py lint         # Lint code with Ruff
-uv run python scripts/dev.py fix          # Auto-fix linting issues
-uv run python scripts/dev.py type-check   # Run TY type checking (optional, preview)
-uv run python scripts/dev.py test         # Run pytest test suite
-uv run python scripts/dev.py test-cov     # Run tests with coverage
-uv run python scripts/dev.py install      # Install/sync dependencies
-```
-
-### What `full` command does
-
-1. **Dependencies** - `uv sync --dev`
-2. **Format Check** - `ruff format --check --diff`
-3. **Linting** - `ruff check`
-4. **Tests** - `pytest tests/ -v`
-
-Provides clear ✅/❌ summary at the end.
-
-## UV Commands
-
-```bash
-# Setup
-uv sync                    # Install dependencies
-uv sync --dev             # Install with dev dependencies
-uv sync --all-extras      # Install all optional dependencies
+# Environment Management
+uv sync                    # Install from lockfile
+uv sync --dev             # Include development dependencies
+uv sync --all-extras      # Include all optional dependencies
 uv venv                   # Create virtual environment
 uv python install         # Install Python from .python-version
 
-# Dependencies
-uv add <package>          # Add dependency
-uv add --dev <package>    # Add dev dependency
-uv add --optional <group> <package>  # Add to optional group
+# Dependency Management  
+uv add <package>          # Add production dependency
+uv add --dev <package>    # Add development dependency
+uv add --optional <group> <package>  # Add to optional dependency group
 uv remove <package>       # Remove dependency
 uv lock                   # Update lockfile
 uv lock --upgrade-package <pkg>  # Update specific package
 
-# Running
+# Code Execution
 uv run <command>          # Run command in project environment
-uv run python script.py   # Run Python script
-uv run pytest            # Run tests
+uv run python script.py   # Execute Python script
+uv run pytest            # Run test suite
 uv run ruff check        # Run linter
 
-# Building
-uv build                  # Build project
-uv publish               # Publish to PyPI
+# PEP 723 Script Management
+uv add package-name --script script.py     # Add dependency to script
+uv remove package-name --script script.py  # Remove dependency from script
 ```
 
-## RUFF Commands
+## Code Quality Tools
+
+### RUFF Configuration
+
+Our project uses RUFF with these settings:
+
+- **Line length**: 88 characters
+- **Rule sets**: E (pycodestyle errors), F (pyflakes), W (warnings), N (naming), I (import sorting), UP (pyupgrade), B (bugbear), C4 (comprehensions), SIM (simplifications)
 
 ```bash
-# Linting
+# Linting Workflow
 uv run ruff check              # Check all files
-uv run ruff check --fix        # Auto-fix issues
-uv run ruff check --watch      # Watch mode
+uv run ruff check --fix        # Auto-fix issues where possible
+uv run ruff check --watch      # Continuous checking
 uv run ruff check <file>       # Check specific file
 
-# Formatting
+# Formatting Workflow  
 uv run ruff format             # Format all files
-uv run ruff format --check     # Check formatting only
+uv run ruff format --check     # Verify formatting only
 uv run ruff format <file>      # Format specific file
 
-# Combined (recommended order)
+# Recommended Combined Workflow
 uv run ruff check --fix && uv run ruff format
 ```
 
-## TY Commands
+### TY Type Checking (Development Only)
+
+**Note**: TY is in alpha/preview. Use for development feedback but not in CI/CD.
 
 ```bash
-# Type Checking
-uv run ty                      # Check project
-uv run ty <file>              # Check specific file
-uv run ty --watch             # Watch mode
-
-# Configuration
+uv run ty                      # Check entire project
+uv run ty <file>              # Check specific file  
+uv run ty --watch             # Continuous type checking
 uv run ty --python-version 3.10  # Specify Python version
-uv run ty --ignore <rule>        # Ignore specific rule
-uv run ty --error <rule>         # Treat rule as error
 ```
 
-## Development Workflow
+## Development Workflows
 
 ### Starting New Work
 
 ```bash
-git checkout -b feature/description
+# Branch creation and setup
+git checkout -b feature/descriptive-name
 uv sync --dev
-# Check for existing scratchpads
+
+# Check for existing context
+ls scratchpads/issues/        # Look for related issue work
+ls scratchpads/planning/      # Check feature planning docs
 ```
 
-### During Development
+### Active Development Cycle
+
+**Fast Iteration** (use during coding):
 
 ```bash
-# Quick checks during coding:
-uv run python scripts/dev.py format      # Fix formatting
-uv run python scripts/dev.py fix         # Fix auto-fixable lint issues
+# Code formatting and basic fixes
+uv run python scripts/dev.py format
+uv run python scripts/dev.py fix
 
-# In separate terminals for continuous feedback:
-uv run ty --watch             # Continuous type checking
-uv run ruff check --watch     # Continuous linting
-
-# Run tests frequently:
-uv run python scripts/dev.py test
-uv run pytest tests/test_specific.py
+# Run relevant tests
+uv run pytest tests/test_specific.py -v
+uv run pytest tests/ -k "test_function_name"
 ```
 
-### Before Committing
+**Continuous Feedback** (run in separate terminals):
 
 ```bash
-# Full pipeline check (mirrors CI/CD):
+# Terminal 1: Continuous type checking
+uv run ty --watch
+
+# Terminal 2: Continuous linting  
+uv run ruff check --watch
+
+# Terminal 3: Test watching (if using pytest-watch)
+uv run ptw tests/
+```
+
+### Pre-Commit Validation
+
+**Required before commits**:
+
+```bash
+# Full pipeline check (mirrors CI/CD exactly)
 uv run python scripts/dev.py full
 
-# Or manual steps:
+# Manual alternative if needed
 uv run ruff check --fix && uv run ruff format && uv run ty && uv run pytest
-
-# Or with pre-commit hooks:
-git commit  # pre-commit runs automatically
 ```
 
-### Troubleshooting
+**Commit best practices**:
 
-```bash
-# If dev script fails:
-uv run python scripts/dev.py install     # Reinstall dependencies
-uv pip list | grep -E "(pytest|ruff|ty)" # Check tool availability
-
-# Individual tool debugging:
-uv run ruff --version
-uv run pytest --version  
-uv run ty --version
-```
-
-## CI/CD Pipeline
-
-Our GitHub Actions pipeline (`.github/workflows/ci.yaml`) runs the same checks as `scripts/dev.py full`:
-
-- **Lint & Format** - Ruff check and format validation
-- **Test Suite** - pytest on multiple Python versions
-- **Build Check** - Verify package builds correctly
-
-Note: Type checking with TY is not included in CI/CD as it's still in preview/alpha
-
-**Triggers**: Push to main, PRs to main, manual dispatch
+- Ensure all checks pass locally before pushing
+- Use conventional commit messages: `feat:`, `fix:`, `docs:`, `refactor:`
+- Reference issues: `Closes #123` or `Fixes #456`
 
 ## Scratchpad System
 
-Organize complex work with markdown scratchpads:
+Use structured markdown files for complex work planning and documentation.
 
-```
+### Directory Structure
+
+```bash
 scratchpads/
-├── issues/      # Issue tracking (use /project:fix-issue command)
-├── planning/    # Feature planning
-└── research/    # Technical exploration
+├── issues/          # Issue-specific work (/project:fix-issue command)
+├── planning/        # Feature planning and design
+└── research/        # Technical exploration and spikes
 ```
 
-**Format**: `scratchpads/{type}/{description}.md`
+### Naming Convention
 
-**Template**:
+`scratchpads/{type}/{brief-description}.md`
+
+Examples:
+
+- `scratchpads/issues/fix-data-validation-bug-123.md`
+- `scratchpads/planning/user-authentication-system.md`  
+- `scratchpads/research/performance-optimization-analysis.md`
+
+### Standard Template
 
 ```markdown
 # [Task Name]
 
 ## Objective
-[What needs to be done]
+[Clear description of what needs to be accomplished]
+
+## Context
+[Background information, links to issues, previous work]
 
 ## Plan
-- [ ] Step 1
-- [ ] Step 2
+- [ ] Step 1: [Specific actionable item]
+- [ ] Step 2: [Specific actionable item]
+- [ ] Step 3: [Specific actionable item]
 
-## Notes
-[Findings, decisions, code snippets]
+## Implementation Notes
+[Code snippets, architectural decisions, API changes]
+
+## Testing Strategy
+[How to verify the solution works]
+
+## Review Points
+[Areas requiring special attention during code review]
 ```
 
-## Project Configuration
+## Custom Slash Commands
 
-- **Python**: >=3.10 (see .python-version)
-- **Ruff**: line-length=88, rules: E,F,W,N,I,UP,B,C4,SIM
-- **TY**: Basic type checking with gradual adoption
-- **Layout**: Source code in `src/`
-- **Virtual env**: `.venv/`
+Available project-specific commands:
 
-## Key Files
+### `/project:fix-issue <issue-number>`
 
-- `@README.md` - Project structure
-- `@.github/copilot-instructions.md` - Coding standards
-- `@pyproject.toml` - Project configuration
-- `@scripts/dev.py` - Development orchestration script
-- `@.claude/commands/fix-issue.md` - Issue workflow command
+Complete issue-driven development workflow following TDD principles.
 
-## Extended Thinking
+**Usage**: `/project:fix-issue 123`
 
-For complex problems, use trigger words:
+**What it does**:
 
-- "think" - Basic extended thinking
-- "think hard/more/harder" - Deeper analysis
+1. Analyzes GitHub issue via `gh issue view`
+2. Searches codebase for relevant context
+3. Creates implementation plan in scratchpad
+4. Implements solution using TDD approach
+5. Creates pull request with proper documentation
 
-## Quick Reference
+### `/project:create-pr [description]`  
+
+Generate comprehensive pull request with best practices.
+
+**Usage**: `/project:create-pr "Add user authentication"`
+
+**Features**:
+
+- Auto-detects linked issues from branch name
+- Generates structured PR description
+- Adds appropriate reviewers and labels
+- Includes security and testing checklists
+
+## CI/CD Pipeline
+
+Our GitHub Actions pipeline (`.github/workflows/ci.yaml`) runs identical checks to `scripts/dev.py full`:
+
+**Validation Steps**:
+
+1. **Lint & Format Check** - Ruff validation on code style
+2. **Test Suite** - pytest across multiple Python versions (3.10, 3.11, 3.12)  
+3. **Build Verification** - Package build validation
+
+**Triggers**:
+
+- Push to main branch
+- Pull requests targeting main
+- Manual workflow dispatch
+
+**Key Difference**: Type checking with TY is excluded from CI/CD due to alpha status.
+
+## Advanced Analysis with Gemini
+
+For comprehensive codebase analysis that exceeds Claude's context limits, use Gemini CLI:
+
+### When to Use Gemini
+
+- Analyzing >50 files or >100KB total codebase
+- Comprehensive security audits  
+- Architecture assessments across entire project
+- Performance analysis of large systems
+- When explicitly requested: "use gemini"
+
+### Gemini Command Patterns
 
 ```bash
-# Most common development workflow:
-uv sync --dev                          # Setup
-uv run python scripts/dev.py full      # Full check (like CI/CD)
+# Security analysis
+gemini -p "@src/ @api/ Complete security analysis with specific vulnerabilities and fixes"
 
-# Fast iteration during coding:
-uv run python scripts/dev.py format    # Format code
-uv run python scripts/dev.py fix       # Fix lint issues
-uv run python scripts/dev.py test      # Run tests
+# Performance optimization
+gemini -p "@src/ @config/ Identify bottlenecks with optimization strategies"  
 
-# Before committing:
-uv run python scripts/dev.py full      # Ensure CI/CD will pass
+# Architecture assessment
+gemini -p "@src/ Analyze patterns and technical debt with actionable recommendations"
+
+# Feature verification
+gemini -p "@src/feature/ @tests/ Verify implementation completeness with gap analysis"
+
+# Full project analysis
+gemini --all_files -p "Comprehensive code quality assessment with prioritized recommendations"
 ```
 
-## Error Handling
+### File Inclusion Syntax
 
-The `scripts/dev.py` includes graceful error handling:
+- `@src/main.py` - Single file
+- `@src/` - Entire directory  
+- `@./` - Complete project
+- `@src/ @tests/` - Multiple directories
 
-- **Missing tools**: Warns and continues instead of failing
-- **Detailed output**: Shows exact commands and exit codes
-- **Summary report**: Clear ✅/❌ status for all checks
-- **CI compatibility**: Same commands work locally and in GitHub Actions
+## Extended Thinking for Complex Problems
+
+Use thinking triggers for deep analysis:
+
+| Trigger | Depth | Use Case |
+|---------|-------|----------|
+| "think" | Basic | Standard problem analysis |
+| "think hard" | Deep | Complex architectural decisions |
+| "think more" | Extended | Multi-faceted problem solving |
+| "think harder" | Maximum | Critical system design choices |
+
+**Best for**: Complex debugging, architectural planning, performance optimization, security analysis.
+
+## Configuration Reference
+
+### Python Requirements
+
+- **Minimum Version**: Python >=3.10 (see `.python-version`)
+- **Virtual Environment**: `.venv/` (managed by UV)
+- **Source Layout**: `src/` directory structure
+
+### Tool Configuration
+
+- **RUFF**: Line length 88, comprehensive rule set (E,F,W,N,I,UP,B,C4,SIM)
+- **TY**: Basic type checking with gradual adoption
+- **pytest**: Test discovery in `tests/` directory
+- **UV**: Lock file at `uv.lock`, dependencies in `pyproject.toml`
+
+### Key Configuration Files
+
+- `@pyproject.toml` - Project dependencies and tool settings
+- `@.python-version` - Python version specification
+- `@scripts/dev.py` - Development workflow automation
+- `@.github/workflows/ci.yaml` - CI/CD pipeline configuration
+
+## Troubleshooting
+
+### Common Issues and Solutions
+
+**Development script fails**:
+
+```bash
+# Reinstall dependencies
+uv run python scripts/dev.py install
+
+# Verify tool availability  
+uv pip list | grep -E "(pytest|ruff|ty)"
+
+# Check individual tools
+uv run ruff --version
+uv run pytest --version
+uv run ty --version
+```
+
+**Import errors after adding dependencies**:
+
+```bash
+# Sync environment with lockfile
+uv sync --dev
+
+# Clear cache if needed
+uv cache clean
+```
+
+**Test failures in CI but not locally**:
+
+```bash
+# Run exact CI commands locally
+uv sync --dev
+uv run ruff format --check --diff  
+uv run ruff check
+uv run pytest tests/ -v
+```
+
+**Type checking inconsistencies**:
+
+```bash
+# TY is alpha - inconsistencies expected
+# Focus on runtime correctness over type perfection
+# Use TY output as guidance, not strict requirements
+```
+
+### Error Handling Philosophy
+
+The `scripts/dev.py` includes robust error handling:
+
+- **Graceful degradation**: Warns about missing tools instead of failing
+- **Detailed diagnostics**: Shows exact commands and exit codes
+- **Clear reporting**: ✅/❌ status summary for all operations
+- **CI compatibility**: Identical behavior locally and in GitHub Actions
+
+## Best Practices Summary
+
+### Daily Development
+
+1. **Start with**: `uv sync --dev` to ensure consistent environment
+2. **During coding**: Use fast iteration commands (`format`, `fix`, `test`)
+3. **Before committing**: Always run `uv run python scripts/dev.py full`
+4. **Use scratchpads**: Document complex work for context preservation
+
+### Code Quality
+
+1. **Format early and often**: Run `ruff format` frequently
+2. **Fix automatically**: Use `ruff check --fix` for auto-fixable issues  
+3. **Test incrementally**: Run specific tests during development
+4. **Think deeply**: Use extended thinking for complex architectural decisions
+
+### Collaboration  
+
+1. **Document decisions**: Use scratchpads for complex reasoning
+2. **Create clear PRs**: Use `/project:create-pr` for consistent formatting
+3. **Link issues**: Always reference relevant GitHub issues
+4. **Review thoroughly**: Focus on areas highlighted in PR descriptions

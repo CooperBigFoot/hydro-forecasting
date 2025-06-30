@@ -20,7 +20,12 @@
       "Bash(do echo \"=== $region ===\")",
       "Bash(done)",
       "Bash(rm:*)",
-      "Bash(mv:*)"
+      "Bash(mv:*)",
+      "Bash(git checkout:*)",
+      "Bash(uv cache clean:*)",
+      "Bash(uv sync:*)",
+      "Bash(git config:*)",
+      "Bash(git reset:*)"
     ],
     "deny": []
   }

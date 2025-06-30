@@ -977,6 +977,7 @@ def plot_horizon_performance_boxplots(
 
     # Create dual legend
     from matplotlib.patches import Rectangle
+    from matplotlib.lines import Line2D
 
     legend_handles = []
     legend_labels = []
@@ -1239,6 +1240,7 @@ def plot_median_performance_across_models(
     title: str | None = None,
     show_whiskers: bool = True,
     whisker_linewidth: float = 1.5,
+    whisker_color: str = "#A9A9A9",
     cap_size: float = 4,
     annotate_values: bool = True,
     annotate_delta: bool = True,
@@ -1262,6 +1264,7 @@ def plot_median_performance_across_models(
         title: Custom title for the plot (auto-generated if None)
         show_whiskers: Whether to display error bars showing standard deviation
         whisker_linewidth: Line width of the error bars
+        whisker_color: Color of the error bars (default: "#A9A9A9")
         cap_size: Size of the caps on error bars
         annotate_values: Whether to annotate median values on bars
         annotate_delta: Whether to annotate percentage change from baseline
@@ -1402,7 +1405,7 @@ def plot_median_performance_across_models(
                 medians,
                 yerr=stds,
                 fmt="none",
-                ecolor="#A9A9A9",
+                ecolor=whisker_color,
                 capsize=cap_size,
                 elinewidth=whisker_linewidth,
                 capthick=whisker_linewidth,
