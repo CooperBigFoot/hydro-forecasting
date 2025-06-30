@@ -1221,14 +1221,7 @@ def plot_rolling_forecast(
     ax.set_xlabel("")
     ax.set_ylabel("Value")
 
-    ax.legend(
-        loc="lower center",
-        bbox_to_anchor=(0.5, -0.25),
-        ncol=3,
-        frameon=False,
-        fancybox=True,
-        shadow=False
-    )
+    ax.legend(loc="lower center", bbox_to_anchor=(0.5, -0.25), ncol=3, frameon=False, fancybox=True, shadow=False)
 
     ax.grid(True, alpha=0.3, linestyle="--")
     ax.set_axisbelow(True)

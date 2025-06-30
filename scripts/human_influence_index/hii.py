@@ -17,9 +17,7 @@ from hydro_forecasting.data.caravanify_parquet import (
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(
-        description="Calculate Human Influence Index (HII) for specified regions"
-    )
+    parser = argparse.ArgumentParser(description="Calculate Human Influence Index (HII) for specified regions")
     parser.add_argument(
         "--regions",
         type=str,
@@ -33,7 +31,7 @@ def main():
     # Parse command-line arguments
     args = parse_args()
     regions = [r.strip() for r in args.regions.split(",")]
-    
+
     print(f"Processing regions: {', '.join(regions)}")
 
     # Anthropogenic attributes to extract

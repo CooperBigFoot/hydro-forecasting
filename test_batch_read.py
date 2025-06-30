@@ -3,8 +3,9 @@
 Test script to check time periods in cached model predictions.
 """
 
-import pandas as pd
 from pathlib import Path
+
+import pandas as pd
 
 # Path to the cached predictions
 cache_path = Path("/Users/cooper/Desktop/hydro-forecasting/data_cache/model_evaluation_cache_kyrgyzstan/predictions")
@@ -22,29 +23,29 @@ print("-" * 80)
 
 for model in models:
     parquet_file = cache_path / f"{model}.parquet"
-    
+
     if parquet_file.exists():
         # Load the predictions
         df = pd.read_parquet(parquet_file)
-        
+
         # Filter for specific gauge and horizon
         filtered_df = df[(df["gauge_id"] == gauge_id) & (df["horizon"] == horizon)]
-        
+
         if not filtered_df.empty:
             # Get date range
             min_date = filtered_df["date"].min()
             max_date = filtered_df["date"].max()
             num_samples = len(filtered_df)
-            
+
             print(f"\n{model}:")
             print(f"  Date range: {min_date} to {max_date}")
             print(f"  Number of samples: {num_samples}")
-            
+
             # Check for any NaT (Not a Time) values
             nat_count = filtered_df["date"].isna().sum()
             if nat_count > 0:
                 print(f"  WARNING: {nat_count} NaT values found!")
-                
+
             # Show first few and last few dates
             print(f"  First 5 dates: {filtered_df['date'].head().tolist()}")
             print(f"  Last 5 dates: {filtered_df['date'].tail().tolist()}")
@@ -58,16 +59,16 @@ print("\nChecking overall statistics for all models...")
 
 for model in models:
     parquet_file = cache_path / f"{model}.parquet"
-    
+
     if parquet_file.exists():
         df = pd.read_parquet(parquet_file)
-        
+
         print(f"\n{model} overall stats:")
         print(f"  Total rows: {len(df)}")
         print(f"  Date range: {df['date'].min()} to {df['date'].max()}")
         print(f"  Unique gauges: {df['gauge_id'].nunique()}")
         print(f"  Unique horizons: {sorted(df['horizon'].unique())}")
-        
+
         # Check specifically for the gauge
         gauge_df = df[df["gauge_id"] == gauge_id]
         if not gauge_df.empty:
@@ -90,23 +91,19 @@ for model in models:
 if all_dfs:
     print(f"\nComparing date ranges for gauge {gauge_id}:")
     date_ranges = {}
-    
+
     for model, df in all_dfs.items():
         gauge_df = df[(df["gauge_id"] == gauge_id) & (df["horizon"] == horizon)]
         if not gauge_df.empty:
-            date_ranges[model] = {
-                "min": gauge_df["date"].min(),
-                "max": gauge_df["date"].max(),
-                "count": len(gauge_df)
-            }
-    
+            date_ranges[model] = {"min": gauge_df["date"].min(), "max": gauge_df["date"].max(), "count": len(gauge_df)}
+
     # Find the overall min and max dates
     if date_ranges:
         overall_min = min(dr["min"] for dr in date_ranges.values())
         overall_max = max(dr["max"] for dr in date_ranges.values())
-        
+
         print(f"\nOverall date range across all models: {overall_min} to {overall_max}")
-        
+
         # Check which models have different ranges
         for model, dr in date_ranges.items():
             if dr["min"] != overall_min or dr["max"] != overall_max:

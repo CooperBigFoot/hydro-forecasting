@@ -3,9 +3,10 @@
 Example of using the updated plot_rolling_forecast function with multiple models.
 """
 
-from hydro_forecasting.model_evaluation.visualization import plot_rolling_forecast
 import matplotlib.pyplot as plt
 import seaborn as sns
+
+from hydro_forecasting.model_evaluation.visualization import plot_rolling_forecast
 
 # Example usage with your notebook setup:
 
@@ -13,7 +14,7 @@ import seaborn as sns
 fig, ax = plot_rolling_forecast(
     results,
     model_names="tsmixer_benchmark",  # Can still pass a single string
-    gauge_id="CA_15102", 
+    gauge_id="CA_15102",
     horizon=10,
     figsize=(10, 5),
     colors={"tsmixer_benchmark": "#009E73"},  # Model-specific color
@@ -25,13 +26,13 @@ fig, ax = plot_rolling_forecast(
     results,
     model_names=["tsmixer_benchmark", "tft_benchmark", "ealstm_benchmark", "tide_benchmark"],
     gauge_id="CA_15102",
-    horizon=10, 
+    horizon=10,
     figsize=(12, 6),
     colors={
         "tsmixer_benchmark": "#009E73",
         "tft_benchmark": "#9370DB",
-        "ealstm_benchmark": "#CD5C5C", 
-        "tide_benchmark": "#4682B4"
+        "ealstm_benchmark": "#CD5C5C",
+        "tide_benchmark": "#4682B4",
     },
     observed_color="#2E4057",
 )
