@@ -1,1 +1,0 @@
-run_4/attempt_0/ealstm-run4-attempt_0-epoch=78-val_loss=0.0675.ckpt

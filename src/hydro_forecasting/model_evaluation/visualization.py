@@ -1312,11 +1312,7 @@ def plot_median_performance_across_models(
         approach_data[approach].append(model_result)
 
     # Determine horizons to plot
-    if horizons is None:
-        horizons = sorted(all_horizons_set)
-    else:
-        # Filter to only available horizons
-        horizons = sorted([h for h in horizons if h in all_horizons_set])
+    horizons = sorted(all_horizons_set) if horizons is None else sorted([h for h in horizons if h in all_horizons_set])
 
     if not horizons:
         raise ValueError("No valid horizons found in the data")
