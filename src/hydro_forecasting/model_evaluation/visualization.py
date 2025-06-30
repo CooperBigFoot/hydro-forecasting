@@ -1015,26 +1015,34 @@ def plot_horizon_performance_boxplots(
 
 def plot_rolling_forecast(
     results: dict[str, Any],
-    model_name: str,
+    model_names: str | list[str],
     gauge_id: str,
     horizon: int,
     figsize: tuple[int, int] = (15, 7),
     title: str | None = None,
-    color_scheme: dict[str, str] | None = None,
+    colors: dict[str, str] | None = None,
+    observed_color: str = "black",
+    season_color: str = "#d3d3d3",
     start_of_season: int | None = None,
     end_of_season: int | None = None,
 ) -> tuple[plt.Figure, plt.Axes]:
     """
-    Create a time-series plot comparing observed values against model's rolling forecasts.
+    Create a time-series plot comparing observed values against one or more models' rolling forecasts.
+
+    When multiple models are provided, the function harmonizes the date range to show only
+    the period where all models have predictions available.
 
     Args:
         results: Dictionary from TSForecastEvaluator with model results
-        model_name: Name of the model to plot (must exist in results)
+        model_names: Name of the model or list of model names to plot (must exist in results)
         gauge_id: Identifier for the gauge/basin to plot
         horizon: Forecast horizon to plot (e.g., 1, 5, 10)
         figsize: Figure size as (width, height)
         title: Custom plot title (auto-generated if None)
-        color_scheme: Dictionary mapping 'observed', 'predicted', and 'season' to colors
+        colors: Dictionary mapping model names to colors (e.g., {"tsmixer": "#009E73", "tft": "#9370DB"})
+               If None, default colors will be assigned
+        observed_color: Color for observed values line (default: "black")
+        season_color: Color for seasonal shading (default: "#d3d3d3")
         start_of_season: Start month of seasonal period (1-12, optional)
         end_of_season: End month of seasonal period (1-12, optional)
 
@@ -1042,46 +1050,106 @@ def plot_rolling_forecast(
         Tuple of (figure, axes) objects
 
     Raises:
-        ValueError: If model_name not found or no data for specified gauge/horizon
+        ValueError: If model(s) not found or no data for specified gauge/horizon
     """
 
-    # Check if model exists in results
-    if model_name not in results:
-        available_models = list(results.keys())
-        raise ValueError(f"Model '{model_name}' not found in results. Available models: {available_models}")
-
-    # Extract predictions DataFrame for the specified model
-    model_results = results[model_name]
-    if "predictions_df" not in model_results:
-        raise ValueError(f"No predictions_df found for model '{model_name}'")
-
-    predictions_df = model_results["predictions_df"]
-
-    # Filter for the specific gauge and horizon
-    filtered_df = predictions_df[
-        (predictions_df["gauge_id"] == gauge_id) & (predictions_df["horizon"] == horizon)
-    ].copy()
-
-    # Check if we have data after filtering
-    if filtered_df.empty:
-        available_gauges = predictions_df["gauge_id"].unique()
-        available_horizons = predictions_df["horizon"].unique()
-        raise ValueError(
-            f"No data found for gauge '{gauge_id}' and horizon {horizon} "
-            f"in model '{model_name}'. Available gauges: {list(available_gauges)}, "
-            f"Available horizons: {list(available_horizons)}"
-        )
-
-    # Sort by date for proper time series plotting
-    filtered_df = filtered_df.sort_values("date")
-
-    # Set default color scheme if not provided
-    if color_scheme is None:
-        color_scheme: dict[str, str] = {"observed": "black", "predicted": "red", "season": "#d3d3d3"}
+    # Convert single model name to list for uniform processing
+    if isinstance(model_names, str):
+        model_names = [model_names]
+        single_model = True
     else:
-        # Ensure season color exists in provided color scheme
-        if "season" not in color_scheme:
-            color_scheme["season"] = "#d3d3d3"
+        single_model = False
+
+    # Check if all models exist in results
+    missing_models = [name for name in model_names if name not in results]
+    if missing_models:
+        available_models = list(results.keys())
+        raise ValueError(f"Models not found in results: {missing_models}. Available models: {available_models}")
+
+    # Extract and filter predictions for each model
+    filtered_dfs = {}
+    for model_name in model_names:
+        model_results = results[model_name]
+        if "predictions_df" not in model_results:
+            raise ValueError(f"No predictions_df found for model '{model_name}'")
+
+        predictions_df = model_results["predictions_df"]
+
+        # Filter for the specific gauge and horizon
+        filtered_df = predictions_df[
+            (predictions_df["gauge_id"] == gauge_id) & (predictions_df["horizon"] == horizon)
+        ].copy()
+
+        # Check if we have data after filtering
+        if filtered_df.empty:
+            available_gauges = predictions_df["gauge_id"].unique()
+            available_horizons = predictions_df["horizon"].unique()
+            raise ValueError(
+                f"No data found for gauge '{gauge_id}' and horizon {horizon} "
+                f"in model '{model_name}'. Available gauges: {list(available_gauges)}, "
+                f"Available horizons: {list(available_horizons)}"
+            )
+
+        # Sort by date for proper time series plotting
+        filtered_df = filtered_df.sort_values("date")
+        filtered_dfs[model_name] = filtered_df
+
+    # Find common date range across all models
+    if len(model_names) > 1:
+        # Get min and max dates for each model
+        date_ranges = {model: (df["date"].min(), df["date"].max()) for model, df in filtered_dfs.items()}
+
+        # Find the latest start date and earliest end date
+        common_start = max(start for start, _ in date_ranges.values())
+        common_end = min(end for _, end in date_ranges.values())
+
+        # Check if there's any overlap
+        if common_start > common_end:
+            raise ValueError(
+                "No overlapping date range found across models. Date ranges: "
+                + ", ".join(f"{model}: {start} to {end}" for model, (start, end) in date_ranges.items())
+            )
+
+        # Filter all dataframes to common date range
+        for model_name in model_names:
+            mask = (filtered_dfs[model_name]["date"] >= common_start) & (filtered_dfs[model_name]["date"] <= common_end)
+            filtered_dfs[model_name] = filtered_dfs[model_name][mask]
+
+        print(f"Harmonized date range: {common_start} to {common_end}")
+
+    # For single model, just use its data as is
+    if single_model:
+        filtered_df = filtered_dfs[model_names[0]]
+    else:
+        # For multiple models, use the first model's data as reference for observed values
+        filtered_df = filtered_dfs[model_names[0]]
+
+        # Verify that observed values are consistent across all models
+        for _, model_name in enumerate(model_names[1:], 1):
+            other_df = filtered_dfs[model_name]
+            # Merge on date to compare observed values
+            merged = filtered_df[["date", "observed"]].merge(
+                other_df[["date", "observed"]], on="date", suffixes=("_ref", f"_{model_name}")
+            )
+
+            # Check if observed values match (within floating point tolerance)
+            if not np.allclose(merged["observed_ref"], merged[f"observed_{model_name}"], rtol=1e-5, equal_nan=True):
+                print(f"Warning: Observed values differ between {model_names[0]} and {model_name}")
+
+    # Set up colors for models
+    if colors is None:
+        # Default colors if none provided
+        default_colors = ["#FF6B35", "#4682B4", "#009E73", "#9370DB", "#CD5C5C", "#FF8C00"]
+        colors = {model: default_colors[i % len(default_colors)] for i, model in enumerate(model_names)}
+    else:
+        # Check if all models have colors assigned
+        missing_colors = [model for model in model_names if model not in colors]
+        if missing_colors:
+            # Assign default colors to models without specified colors
+            default_colors = ["#FF6B35", "#4682B4", "#009E73", "#9370DB", "#CD5C5C", "#FF8C00"]
+            start_idx = len([m for m in model_names if m in colors])
+            for i, model in enumerate(missing_colors):
+                colors[model] = default_colors[(start_idx + i) % len(default_colors)]
 
     # Create the plot
     fig, ax = plt.subplots(figsize=figsize)
@@ -1105,44 +1173,326 @@ def plot_rolling_forecast(
             ax.axvspan(
                 season_start_date,
                 season_end_date,
-                color=color_scheme["season"],
+                color=season_color,
                 alpha=0.2,
                 zorder=0,
                 label="Season" if not season_labeled else "",
             )
             season_labeled = True
 
-    # Plot observed and predicted values
+    # Plot observed values (only once)
     ax.plot(
         filtered_df["date"],
         filtered_df["observed"],
-        color=color_scheme.get("observed", "black"),
-        linewidth=1.5,
+        color=observed_color,
+        linewidth=2,
         label="Observed",
-        alpha=0.8,
+        alpha=1,
+        zorder=5,
     )
 
-    ax.plot(
-        filtered_df["date"],
-        filtered_df["predicted"],
-        color=color_scheme.get("predicted", "red"),
-        linewidth=1.5,
-        label="Predicted",
-        alpha=0.8,
-    )
+    # Plot predicted values for each model
+    for model_name in model_names:
+        model_df = filtered_dfs[model_name]
+        model_color = colors.get(model_name, "#FF6B35")
+
+        # Extract model architecture from name for cleaner labels
+        # e.g., "tsmixer_benchmark" -> "TSMixer"
+        display_name = model_name.split("_")[0].upper() if "_" in model_name else model_name
+
+        ax.plot(
+            model_df["date"],
+            model_df["predicted"],
+            color=model_color,
+            linewidth=2,
+            label=display_name,
+            alpha=0.9,
+            zorder=4,
+        )
 
     # Set title
     if title is None:
-        title = f"{horizon}-Day Rolling Forecast for {model_name} at Gauge {gauge_id}"
+        if single_model:
+            title = f"{horizon}-Day Rolling Forecast for {model_names[0]} at Gauge {gauge_id}"
+        else:
+            title = f"{horizon}-Day Rolling Forecast Comparison at Gauge {gauge_id}"
     ax.set_title(title, pad=20)
 
     ax.set_xlabel("")
     ax.set_ylabel("Value")
 
-    ax.legend(loc="best", frameon=False, fancybox=True, shadow=False)
+    ax.legend(
+        loc="lower center",
+        bbox_to_anchor=(0.5, -0.25),
+        ncol=3,
+        frameon=False,
+        fancybox=True,
+        shadow=False
+    )
 
     ax.grid(True, alpha=0.3, linestyle="--")
     ax.set_axisbelow(True)
+
+    return fig, ax
+
+
+def plot_median_performance_across_models(
+    results: dict[str, Any],
+    horizons: list[int] | None = None,
+    metric: str = "NSE",
+    approach_mapping: dict[str, str] | None = None,
+    colors: list[str] | None = None,
+    figsize: tuple[int, int] = (10, 6),
+    title: str | None = None,
+    show_whiskers: bool = True,
+    whisker_linewidth: float = 1.5,
+    cap_size: float = 4,
+    annotate_values: bool = True,
+    annotate_delta: bool = True,
+    delta_fontsize: int = 12,
+    y_label: str | None = None,
+) -> tuple[plt.Figure, plt.Axes]:
+    """
+    Plot median performance across models for selected horizons with optional variance whiskers.
+
+    Creates a bar chart showing median performance values across all models for each horizon,
+    with error bars representing the standard deviation across models.
+
+    Args:
+        results: Dictionary from TSForecastEvaluator with model results
+        horizons: List of forecast horizons to plot (e.g., [1, 5, 10]). If None, uses all available.
+        metric: Performance metric to plot (e.g., "NSE", "RMSE")
+        approach_mapping: Optional mapping of model patterns to approach names
+                         e.g., {"benchmark": "Baseline", "regional": "With Kyrgyz Data"}
+        colors: List of colors for different approaches. Default colors if None.
+        figsize: Figure size as (width, height)
+        title: Custom title for the plot (auto-generated if None)
+        show_whiskers: Whether to display error bars showing standard deviation
+        whisker_linewidth: Line width of the error bars
+        cap_size: Size of the caps on error bars
+        annotate_values: Whether to annotate median values on bars
+        annotate_delta: Whether to annotate percentage change from baseline
+        delta_fontsize: Font size for delta annotations
+        y_label: Custom y-axis label (auto-generated if None)
+
+    Returns:
+        Tuple of (figure, axes) objects
+    """
+    # Default approach mapping
+    if approach_mapping is None:
+        approach_mapping = {
+            "benchmark": "Baseline",
+            "pretrained": "Pretrained",
+            "finetuned": "Fine-tuned",
+        }
+
+    # Default colors
+    if colors is None:
+        colors = ["#BCE784", "#5DD39E", "#348AA7"]
+
+    # Parse model names and group by approach
+    approach_data = {}
+    all_horizons_set = set()
+
+    for model_name, model_result in results.items():
+        if "metrics_by_gauge" not in model_result:
+            continue
+
+        # Determine approach based on model name
+        approach = None
+        for pattern in approach_mapping:
+            if pattern in model_name:
+                approach = pattern
+                break
+
+        if approach is None:
+            continue
+
+        if approach not in approach_data:
+            approach_data[approach] = []
+
+        # Collect all horizons available in the data
+        metrics_by_gauge = model_result["metrics_by_gauge"]
+        for gauge_data in metrics_by_gauge.values():
+            all_horizons_set.update(gauge_data.keys())
+
+        approach_data[approach].append(model_result)
+
+    # Determine horizons to plot
+    if horizons is None:
+        horizons = sorted(all_horizons_set)
+    else:
+        # Filter to only available horizons
+        horizons = sorted([h for h in horizons if h in all_horizons_set])
+
+    if not horizons:
+        raise ValueError("No valid horizons found in the data")
+
+    # Calculate median and std for each approach and horizon
+    plot_data = {}
+    for approach, model_results in approach_data.items():
+        plot_data[approach] = {}
+
+        for horizon in horizons:
+            all_values = []
+
+            # Collect all metric values for this approach and horizon
+            for model_result in model_results:
+                metrics_by_gauge = model_result["metrics_by_gauge"]
+
+                for gauge_data in metrics_by_gauge.values():
+                    if horizon in gauge_data and metric.lower() in gauge_data[horizon]:
+                        value = gauge_data[horizon][metric.lower()]
+                        if not np.isnan(value):
+                            all_values.append(value)
+
+            if all_values:
+                plot_data[approach][horizon] = {
+                    "median": np.median(all_values),
+                    "std": np.std(all_values),
+                    "count": len(all_values),
+                }
+
+    # Create the plot
+    fig, ax = plt.subplots(figsize=figsize)
+
+    # Set up bar positions
+    bar_width = 0.25
+    horizon_positions = np.arange(len(horizons))
+
+    # Order approaches to ensure baseline is first
+    ordered_approaches = []
+    if "benchmark" in plot_data:
+        ordered_approaches.append("benchmark")
+    for approach in approach_mapping:
+        if approach != "benchmark" and approach in plot_data:
+            ordered_approaches.append(approach)
+
+    # Store baseline values for delta calculation
+    baseline_values = {}
+
+    # Plot bars for each approach
+    for i, approach in enumerate(ordered_approaches):
+        approach_label = approach_mapping.get(approach, approach.capitalize())
+        color = colors[i % len(colors)]
+
+        medians = []
+        stds = []
+        positions = []
+
+        for j, horizon in enumerate(horizons):
+            if horizon in plot_data[approach]:
+                data = plot_data[approach][horizon]
+                medians.append(data["median"])
+                stds.append(data["std"])
+                positions.append(horizon_positions[j] + (i - len(ordered_approaches) / 2 + 0.5) * bar_width)
+
+                # Store baseline values
+                if approach == "benchmark":
+                    baseline_values[horizon] = data["median"]
+            else:
+                # Add zero values to maintain alignment
+                medians.append(0)
+                stds.append(0)
+                positions.append(horizon_positions[j] + (i - len(ordered_approaches) / 2 + 0.5) * bar_width)
+
+        # Create bars
+        ax.bar(
+            positions,
+            medians,
+            width=bar_width * 0.9,
+            color=color,
+            label=approach_label,
+            alpha=0.8,
+        )
+
+        # Add error bars if requested
+        if show_whiskers:
+            ax.errorbar(
+                positions,
+                medians,
+                yerr=stds,
+                fmt="none",
+                ecolor="#A9A9A9",
+                capsize=cap_size,
+                elinewidth=whisker_linewidth,
+                capthick=whisker_linewidth,
+                alpha=0.7,
+            )
+
+        # Annotate values if requested
+        if annotate_values:
+            for pos, median, std in zip(positions, medians, stds, strict=True):
+                if median > 0:  # Only annotate non-zero values
+                    y_pos = median + std * 1.1 if show_whiskers else median * 1.05
+                    ax.text(
+                        pos,
+                        y_pos,
+                        f"{median:.2f}",
+                        ha="center",
+                        va="bottom",
+                        fontsize=9,
+                    )
+
+        # Add delta annotations for non-baseline approaches
+        if annotate_delta and approach != "benchmark":
+            for pos, median, horizon in zip(positions, medians, horizons, strict=True):
+                if horizon in baseline_values and baseline_values[horizon] > 0 and median > 0:
+                    baseline = baseline_values[horizon]
+                    delta = ((median - baseline) / baseline) * 100
+
+                    # Use neutral color for delta annotations
+                    delta_color = "#505050"
+
+                    ax.text(
+                        pos,
+                        median * 0.5,
+                        f"{delta:+.1f}%",
+                        ha="center",
+                        va="center",
+                        fontsize=delta_fontsize,
+                        color=delta_color,
+                    )
+
+    # Customize plot
+    ax.set_xticks(horizon_positions)
+    ax.set_xticklabels(horizons)
+    ax.set_xlabel("Forecast Horizon (Days)", fontsize=12)
+
+    # Set y-label
+    if y_label:
+        ax.set_ylabel(y_label, fontsize=12)
+    else:
+        unit = "(mm/d)" if metric.upper() in ["MAE", "RMSE", "MSE"] else ""
+        ax.set_ylabel(f"{metric.upper()} {unit}".strip(), fontsize=12)
+
+    # Set title
+    if title:
+        ax.set_title(title, fontsize=14, fontweight="bold")
+    else:
+        ax.set_title(f"Median {metric.upper()} Performance Across Models", fontsize=14, fontweight="bold")
+
+    # Add grid
+    ax.grid(axis="y", linestyle="--", alpha=0.3)
+    ax.set_axisbelow(True)
+
+    # Add legend
+    ax.legend(
+        bbox_to_anchor=(0.5, -0.15),
+        loc="upper center",
+        ncol=len(ordered_approaches),
+        frameon=False,
+        fontsize=11,
+    )
+
+    # Make tick labels readable
+    ax.tick_params(axis="both", labelsize=10)
+
+    # Adjust y-axis limits to leave room for annotations
+    y_min, y_max = ax.get_ylim()
+    ax.set_ylim(y_min, y_max * 1.1)
+
+    plt.tight_layout()
 
     return fig, ax
 

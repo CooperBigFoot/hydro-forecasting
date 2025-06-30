@@ -6,7 +6,14 @@
       "Bash(git add:*)",
       "Bash(git commit:*)",
       "Bash(git clean:*)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Bash(uv pip:*)",
+      "mcp__ide__executeCode",
+      "Bash(cat:*)",
+      "Bash(jupyter:*)",
+      "Bash(uv run:*)",
+      "Bash(python:*)",
+      "Bash(ulimit:*)"
     ],
     "deny": []
   }
