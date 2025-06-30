@@ -1,22 +1,22 @@
-input_len: 310
+input_len: 260
 output_len: 10
 input_size: 10
 static_size: 10
 future_input_size: 9
-learning_rate: 9.034196087426496e-05
+learning_rate: 0.0008417102605953998
 group_identifier: gauge_id
 use_rev_in: true
-hidden_size: 72
-lstm_layers: 3
-num_attention_heads: 3
-dropout: 0.2991177029469814
-hidden_continuous_size: 72
-attn_dropout: 0.21740094075040878
-add_relative_index: false
+hidden_size: 48
+lstm_layers: 1
+num_attention_heads: 1
+dropout: 0.08924363837727661
+hidden_continuous_size: 48
+attn_dropout: 0.08783790424444939
+add_relative_index: true
 quantiles:
 - 0.5
-context_length_ratio: 0.5505901303596912
-encoder_layers: 1
+context_length_ratio: 0.7811777174921186
+encoder_layers: 2
 scheduler_patience: 5
 scheduler_factor: 0.5
 region_time_series_base_dirs:
@@ -25,7 +25,7 @@ region_static_attributes_base_dirs:
   CA: /workspace/CaravanifyParquet/CA/post_processed/attributes/CA
 path_to_preprocessing_output_directory: /workspace/hydro-forecasting/experiments/finetune/data_cache/tajikistan
 batch_size: 2048
-input_length: 310
+input_length: 260
 output_length: 10
 forcing_features:
 - snow_depth_water_equivalent_mean

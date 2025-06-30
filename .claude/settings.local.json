@@ -13,7 +13,8 @@
       "Bash(jupyter:*)",
       "Bash(uv run:*)",
       "Bash(python:*)",
-      "Bash(ulimit:*)"
+      "Bash(ulimit:*)",
+      "Bash(git pull:*)"
     ],
     "deny": []
   }

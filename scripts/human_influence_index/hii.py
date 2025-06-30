@@ -1,3 +1,4 @@
+import argparse
 import sys
 from pathlib import Path
 
@@ -15,18 +16,25 @@ from hydro_forecasting.data.caravanify_parquet import (
 )
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Calculate Human Influence Index (HII) for specified regions"
+    )
+    parser.add_argument(
+        "--regions",
+        type=str,
+        required=True,
+        help="Comma-separated list of regions (e.g., CL,CA,USA,camelsaus)",
+    )
+    return parser.parse_args()
+
+
 def main():
-    # Define regions to process
-    regions = [
-        "CL",
-        "CA",
-        "USA",
-        "camelsaus",
-        "camelsgb",
-        "camelsbr",
-        "hysets",
-        "lamah",
-    ]
+    # Parse command-line arguments
+    args = parse_args()
+    regions = [r.strip() for r in args.regions.split(",")]
+    
+    print(f"Processing regions: {', '.join(regions)}")
 
     # Anthropogenic attributes to extract
     anthro_columns = [
