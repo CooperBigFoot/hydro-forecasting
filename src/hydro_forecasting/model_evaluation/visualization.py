@@ -4,6 +4,7 @@ import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from matplotlib.patches import Rectangle
 
 
 def generate_brightness_gradient(hex_color: str, count: int) -> list[str]:
@@ -974,10 +975,6 @@ def plot_horizon_performance_boxplots(
     # Add grid
     ax.grid(True, axis="y", alpha=0.3, linestyle="--")
     ax.set_axisbelow(True)
-
-    # Create dual legend
-    from matplotlib.patches import Rectangle
-    from matplotlib.lines import Line2D
 
     legend_handles = []
     legend_labels = []
