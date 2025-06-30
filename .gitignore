@@ -32,6 +32,14 @@ experiments/low-medium-hii/data_cache
 experiments/*/data_cache
 experiments/*/lightning_logs
 
+# Ignore all log directories but keep checkpoints
+experiments/**/logs/
+**/**/logs/
+*.tfevents.*
+
+# Ignore hparams files in logs
+**/hparams.yaml
+
 images
 
 experiments/*/deprecated

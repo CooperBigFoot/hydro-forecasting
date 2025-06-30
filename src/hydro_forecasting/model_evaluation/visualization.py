@@ -4,6 +4,7 @@ import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from matplotlib.patches import Rectangle
 
 
 def generate_brightness_gradient(hex_color: str, count: int) -> list[str]:
@@ -975,9 +976,6 @@ def plot_horizon_performance_boxplots(
     ax.grid(True, axis="y", alpha=0.3, linestyle="--")
     ax.set_axisbelow(True)
 
-    # Create dual legend
-    from matplotlib.patches import Rectangle
-
     legend_handles = []
     legend_labels = []
 
@@ -1239,6 +1237,7 @@ def plot_median_performance_across_models(
     title: str | None = None,
     show_whiskers: bool = True,
     whisker_linewidth: float = 1.5,
+    whisker_color: str = "#A9A9A9",
     cap_size: float = 4,
     annotate_values: bool = True,
     annotate_delta: bool = True,
@@ -1262,6 +1261,7 @@ def plot_median_performance_across_models(
         title: Custom title for the plot (auto-generated if None)
         show_whiskers: Whether to display error bars showing standard deviation
         whisker_linewidth: Line width of the error bars
+        whisker_color: Color of the error bars (default: "#A9A9A9")
         cap_size: Size of the caps on error bars
         annotate_values: Whether to annotate median values on bars
         annotate_delta: Whether to annotate percentage change from baseline
@@ -1402,7 +1402,7 @@ def plot_median_performance_across_models(
                 medians,
                 yerr=stds,
                 fmt="none",
-                ecolor="#A9A9A9",
+                ecolor=whisker_color,
                 capsize=cap_size,
                 elinewidth=whisker_linewidth,
                 capthick=whisker_linewidth,
