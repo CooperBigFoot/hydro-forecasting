@@ -1,1 +1,1 @@
-run_0/attempt_0/tide-run0-attempt_0-epoch=20-val_loss=0.2158.ckpt
+run_0/attempt_0/tide-run0-attempt_0-epoch=04-val_loss=0.2213.ckpt
