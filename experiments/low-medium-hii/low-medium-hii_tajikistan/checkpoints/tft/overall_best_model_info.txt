@@ -1,0 +1,1 @@
+run_0/attempt_1/tft-run0-attempt_1-epoch=87-val_loss=0.0874.ckpt
