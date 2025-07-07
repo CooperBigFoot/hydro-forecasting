@@ -1,1 +1,0 @@
-run_0/attempt_1/ealstm-run0-attempt_1-epoch=157-val_loss=0.0943.ckpt
