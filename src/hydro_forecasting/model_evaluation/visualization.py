@@ -6,6 +6,8 @@ import numpy as np
 import pandas as pd
 from matplotlib.patches import Rectangle
 
+from .eval_utils import _parse_model_results
+
 
 def generate_brightness_gradient(hex_color: str, count: int) -> list[str]:
     """
@@ -57,6 +59,162 @@ def generate_brightness_gradient(hex_color: str, count: int) -> list[str]:
             # Convert back to hex
             hex_result = f"#{new_r:02X}{new_g:02X}{new_b:02X}"
             colors.append(hex_result)
+
+    return colors
+
+
+# Helper functions for time series plotting
+def _extract_and_filter_predictions(model_result: dict[str, Any], gauge_id: str, horizon: int) -> pd.DataFrame | None:
+    """
+    Extract and filter predictions for a specific gauge and horizon.
+
+    Args:
+        model_result: Single model result dictionary
+        gauge_id: Identifier for the gauge/basin
+        horizon: Forecast horizon
+
+    Returns:
+        Filtered DataFrame or None if no data available
+    """
+    if "predictions_df" not in model_result:
+        return None
+
+    predictions_df = model_result["predictions_df"]
+
+    # Filter for specific gauge and horizon
+    filtered_df = predictions_df[
+        (predictions_df["gauge_id"] == gauge_id) & (predictions_df["horizon"] == horizon)
+    ].copy()
+
+    if filtered_df.empty:
+        return None
+
+    # Sort by date for proper time series plotting
+    return filtered_df.sort_values("date")
+
+
+def _harmonize_date_ranges(dataframes: list[pd.DataFrame]) -> tuple[pd.Timestamp, pd.Timestamp]:
+    """
+    Find common date range across multiple dataframes.
+
+    Args:
+        dataframes: List of DataFrames with 'date' column
+
+    Returns:
+        Tuple of (common_start_date, common_end_date)
+
+    Raises:
+        ValueError: If no overlapping date range exists
+    """
+    if not dataframes:
+        raise ValueError("No dataframes provided")
+
+    if len(dataframes) == 1:
+        df = dataframes[0]
+        return df["date"].min(), df["date"].max()
+
+    # Get min and max dates for each dataframe
+    date_ranges = [(df["date"].min(), df["date"].max()) for df in dataframes]
+
+    # Find the latest start date and earliest end date
+    common_start = max(start for start, _ in date_ranges)
+    common_end = min(end for _, end in date_ranges)
+
+    # Check if there's any overlap
+    if common_start > common_end:
+        raise ValueError(
+            "No overlapping date range found. Date ranges: "
+            + ", ".join(f"[{start} to {end}]" for start, end in date_ranges)
+        )
+
+    return common_start, common_end
+
+
+def _filter_to_common_dates(
+    dataframes: dict[str, pd.DataFrame] | list[pd.DataFrame], common_start: pd.Timestamp, common_end: pd.Timestamp
+) -> dict[str, pd.DataFrame] | list[pd.DataFrame]:
+    """
+    Filter dataframes to common date range.
+
+    Args:
+        dataframes: Dictionary or list of DataFrames
+        common_start: Start date
+        common_end: End date
+
+    Returns:
+        Filtered dataframes in same format as input
+    """
+    date_mask = lambda df: (df["date"] >= common_start) & (df["date"] <= common_end)
+
+    if isinstance(dataframes, dict):
+        return {key: df[date_mask(df)] for key, df in dataframes.items()}
+    else:
+        return [df[date_mask(df)] for df in dataframes]
+
+
+def _add_seasonal_shading(
+    ax: plt.Axes,
+    dates_df: pd.DataFrame,
+    start_of_season: int | None,
+    end_of_season: int | None,
+    season_color: str = "#d3d3d3",
+) -> None:
+    """
+    Add seasonal background shading to a plot.
+
+    Args:
+        ax: Matplotlib axes object
+        dates_df: DataFrame with 'date' column
+        start_of_season: Start month (1-12) or None
+        end_of_season: End month (1-12) or None
+        season_color: Color for seasonal shading
+    """
+    if start_of_season is None or end_of_season is None:
+        return
+
+    unique_years = sorted(dates_df["date"].dt.year.unique())
+    season_labeled = False
+
+    for year in unique_years:
+        season_start_date = mdates.datetime.datetime(year, start_of_season, 1)
+        end_year = year + 1 if end_of_season < start_of_season else year
+        season_end_date = mdates.datetime.datetime(end_year, end_of_season, 1)
+
+        ax.axvspan(
+            season_start_date,
+            season_end_date,
+            color=season_color,
+            alpha=0.2,
+            zorder=0,
+            label="Season" if not season_labeled else "",
+        )
+        season_labeled = True
+
+
+def _setup_default_colors(items: list[str], provided_colors: dict[str, str] | None = None) -> dict[str, str]:
+    """
+    Set up colors for plotting items, using provided colors or defaults.
+
+    Args:
+        items: List of items needing colors (model names, variants, etc.)
+        provided_colors: Optional dictionary of item->color mappings
+
+    Returns:
+        Complete color mapping for all items
+    """
+    default_colors = ["#FF6B35", "#4682B4", "#009E73", "#9370DB", "#CD5C5C", "#FF8C00"]
+
+    if provided_colors is None:
+        return {item: default_colors[i % len(default_colors)] for i, item in enumerate(items)}
+
+    # Fill in missing colors
+    colors = provided_colors.copy()
+    missing_items = [item for item in items if item not in colors]
+
+    if missing_items:
+        start_idx = len([item for item in items if item in colors])
+        for i, item in enumerate(missing_items):
+            colors[item] = default_colors[(start_idx + i) % len(default_colors)]
 
     return colors
 
@@ -297,14 +455,17 @@ def plot_basin_performance_scatter(
     results: dict[str, Any],
     benchmark_pattern: str,
     challenger_pattern: str,
-    horizon: int,
+    horizon: int | list[int],
     metric: str = "NSE",
     architectures: list[str] | None = None,
     colors: dict[str, str] | None = None,
     figsize: tuple[int, int] = (10, 8),
     debug: bool = False,
+    relative: bool = False,
     significance_band_width: float = 1.0,
-) -> tuple[plt.Figure, plt.Axes]:
+    x_limits: tuple[float, float] | None = None,
+    y_limits: tuple[float, float] | None = None,
+) -> tuple[plt.Figure, plt.Axes | np.ndarray]:
     """
     Create a scatter plot comparing basin-level performance between benchmark and challenger models.
 
@@ -312,17 +473,29 @@ def plot_basin_performance_scatter(
         results: Dictionary from TSForecastEvaluator with model results
         benchmark_pattern: Pattern to identify benchmark models (e.g., "benchmark", "pretrained")
         challenger_pattern: Pattern to identify challenger models (e.g., "finetuned", "pretrained")
-        horizon: Forecast horizon to plot (e.g., 5, 10)
+        horizon: Forecast horizon(s) to plot. Can be a single int (e.g., 5) or list of ints (e.g., [1, 5, 10])
+                When a list is provided, creates a grid with max 3 columns
         metric: Performance metric to plot (e.g., "NSE", "RMSE")
         architectures: List of architectures to include (auto-detected if None)
         colors: Dictionary mapping architecture to color (default colors if None)
         figsize: Figure size as (width, height)
         debug: Whether to show gauge IDs as labels on scatter points
+        relative: If True, plot relative change ((challenger - benchmark) / benchmark) instead of absolute delta
         significance_band_width: Multiplier for standard error to define significance band width (e.g., 1.0 for ±1 SE, 1.96 for ±95% CI)
+        x_limits: Optional tuple of (x_min, x_max) to set fixed x-axis limits for all subplots
+        y_limits: Optional tuple of (y_min, y_max) to set fixed y-axis limits for all subplots
 
     Returns:
-        Tuple of (figure, axes) objects
+        Tuple of (figure, axes) objects. If horizon is a list, axes will be a numpy array
     """
+
+    # Convert single horizon to list for uniform processing
+    if isinstance(horizon, int):
+        horizons = [horizon]
+        single_horizon = True
+    else:
+        horizons = horizon
+        single_horizon = False
 
     # Parse model names to extract architectures and patterns
     model_data = {}
@@ -348,143 +521,271 @@ def plot_basin_performance_scatter(
         default_colors = ["#4682B4", "#CD5C5C", "#009E73", "#9370DB", "#FF8C00", "#8B4513"]
         colors = {arch: default_colors[i % len(default_colors)] for i, arch in enumerate(architectures)}
 
-    # Create the plot
-    fig, ax = plt.subplots(figsize=figsize)
+    # Create grid layout if multiple horizons
+    if single_horizon:
+        fig, ax = plt.subplots(figsize=figsize)
+        axes = ax
+    else:
+        # Calculate grid dimensions (max 3 columns)
+        n_horizons = len(horizons)
+        n_cols = min(n_horizons, 3)
+        n_rows = (n_horizons + n_cols - 1) // n_cols  # Ceiling division
 
-    # Collect all scatter plot data
-    all_benchmark_values = []
-    all_delta_values = []
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize)
 
-    for arch in architectures:
-        if arch not in model_data:
-            continue
+        # Handle edge cases for subplot array
+        if n_rows == 1 and n_cols == 1:
+            axes = np.array([[axes]])
+        elif n_rows == 1:
+            axes = axes.reshape(1, -1)
+        elif n_cols == 1:
+            axes = axes.reshape(-1, 1)
 
-        # Check if both benchmark and challenger patterns exist for this architecture
-        if benchmark_pattern not in model_data[arch] or challenger_pattern not in model_data[arch]:
-            continue
+        # Hide extra subplots if grid is not full
+        for idx in range(n_horizons, n_rows * n_cols):
+            row = idx // n_cols
+            col = idx % n_cols
+            axes[row, col].set_visible(False)
 
-        benchmark_metrics_by_gauge = model_data[arch][benchmark_pattern]["metrics_by_gauge"]
-        challenger_metrics_by_gauge = model_data[arch][challenger_pattern]["metrics_by_gauge"]
+    # Helper function to plot on a single axis
+    def plot_single_horizon(
+        ax, horizon_value, show_legend=True, x_limits=None, y_limits=None, show_y_label=True, relative=False
+    ):
+        # Collect all scatter plot data for this horizon
+        all_benchmark_values = []
+        all_delta_values = []
 
-        # Find common basins between benchmark and challenger
-        benchmark_basins = set(benchmark_metrics_by_gauge.keys())
-        challenger_basins = set(challenger_metrics_by_gauge.keys())
-        common_basins = benchmark_basins.intersection(challenger_basins)
+        for arch in architectures:
+            if arch not in model_data:
+                continue
 
-        if not common_basins:
-            continue
+            # Check if both benchmark and challenger patterns exist for this architecture
+            if benchmark_pattern not in model_data[arch] or challenger_pattern not in model_data[arch]:
+                continue
 
-        # Extract performance values for common basins
-        benchmark_values = []
-        delta_values = []
-        basin_ids = []  # For debug labels
+            benchmark_metrics_by_gauge = model_data[arch][benchmark_pattern]["metrics_by_gauge"]
+            challenger_metrics_by_gauge = model_data[arch][challenger_pattern]["metrics_by_gauge"]
 
-        for basin_id in common_basins:
-            # Check if horizon and metric exist for both models
-            benchmark_data = benchmark_metrics_by_gauge[basin_id]
-            challenger_data = challenger_metrics_by_gauge[basin_id]
+            # Find common basins between benchmark and challenger
+            benchmark_basins = set(benchmark_metrics_by_gauge.keys())
+            challenger_basins = set(challenger_metrics_by_gauge.keys())
+            common_basins = benchmark_basins.intersection(challenger_basins)
 
-            if (
-                horizon in benchmark_data
-                and metric in benchmark_data[horizon]
-                and horizon in challenger_data
-                and metric in challenger_data[horizon]
-            ):
-                benchmark_val = benchmark_data[horizon][metric]
-                challenger_val = challenger_data[horizon][metric]
+            if not common_basins:
+                continue
 
-                # Skip if either value is NaN
-                if not (np.isnan(benchmark_val) or np.isnan(challenger_val)):
-                    delta_val = challenger_val - benchmark_val
-                    benchmark_values.append(benchmark_val)
-                    delta_values.append(delta_val)
-                    basin_ids.append(basin_id)
+            # Extract performance values for common basins
+            benchmark_values = []
+            delta_values = []
+            basin_ids = []  # For debug labels
 
-        if benchmark_values and delta_values:
-            # Create scatter plot for this architecture
-            ax.scatter(
-                benchmark_values,
-                delta_values,
-                color=colors[arch],
-                label=arch.upper(),
-                s=80,
-                edgecolors=colors[arch],
-                linewidth=0.5,
+            for basin_id in common_basins:
+                # Check if horizon and metric exist for both models
+                benchmark_data = benchmark_metrics_by_gauge[basin_id]
+                challenger_data = challenger_metrics_by_gauge[basin_id]
+
+                if (
+                    horizon_value in benchmark_data
+                    and metric in benchmark_data[horizon_value]
+                    and horizon_value in challenger_data
+                    and metric in challenger_data[horizon_value]
+                ):
+                    benchmark_val = benchmark_data[horizon_value][metric]
+                    challenger_val = challenger_data[horizon_value][metric]
+
+                    # Skip if either value is NaN
+                    if not (np.isnan(benchmark_val) or np.isnan(challenger_val)):
+                        # Skip if benchmark is 0 when calculating relative change
+                        if relative and benchmark_val == 0:
+                            continue
+
+                        if relative:
+                            delta_val = (challenger_val - benchmark_val) / benchmark_val
+                        else:
+                            delta_val = challenger_val - benchmark_val
+                        benchmark_values.append(benchmark_val)
+                        delta_values.append(delta_val)
+                        basin_ids.append(basin_id)
+
+            if benchmark_values and delta_values:
+                # Create scatter plot for this architecture
+                ax.scatter(
+                    benchmark_values,
+                    delta_values,
+                    color=colors[arch],
+                    label=arch.upper() if show_legend else None,
+                    s=80,
+                    edgecolors=colors[arch],
+                    linewidth=0.5,
+                )
+
+                # Add debug labels if requested
+                if debug:
+                    for x, y, basin_id in zip(benchmark_values, delta_values, basin_ids, strict=True):
+                        ax.annotate(
+                            basin_id,
+                            (x, y),
+                            xytext=(5, 5),  # Offset in points
+                            textcoords="offset points",
+                            ha="left",
+                            va="bottom",
+                            bbox={"boxstyle": "round,pad=0.2", "facecolor": "white", "alpha": 0.7, "edgecolor": "none"},
+                        )
+
+                # Collect values for overall plot limits
+                all_benchmark_values.extend(benchmark_values)
+                all_delta_values.extend(delta_values)
+
+        # Calculate standard error of differences for significance band
+        if all_delta_values:
+            delta_std_error = np.std(all_delta_values) / np.sqrt(len(all_delta_values))
+            significance_threshold = delta_std_error * significance_band_width
+        else:
+            significance_threshold = 0
+
+        # Customize plot
+        ax.set_xlabel(f"{metric.upper()} - {benchmark_pattern.capitalize()} Models")
+        if show_y_label:
+            if relative:
+                ax.set_ylabel(
+                    f"Relative Δ{metric.upper()} (%) ({challenger_pattern.capitalize()} - {benchmark_pattern.capitalize()})"
+                )
+            else:
+                ax.set_ylabel(
+                    f"Δ{metric.upper()} ({challenger_pattern.capitalize()} - {benchmark_pattern.capitalize()})"
+                )
+
+        # Add title for multi-horizon case
+        if not single_horizon:
+            ax.set_title(f"Horizon: {horizon_value} days", fontsize=12, pad=10)
+
+        # Set limits with margin
+        if all_benchmark_values and all_delta_values:
+            # X-axis limits
+            if x_limits is not None:
+                ax.set_xlim(x_limits)
+                x_min, x_max = x_limits
+            else:
+                x_min, x_max = min(all_benchmark_values), max(all_benchmark_values)
+                x_margin = (x_max - x_min) * 0.05
+                ax.set_xlim(x_min - x_margin, x_max + x_margin)
+
+            # Y-axis limits
+            if y_limits is not None:
+                ax.set_ylim(y_limits)
+                y_min, y_max = y_limits
+            else:
+                y_min, y_max = min(all_delta_values), max(all_delta_values)
+                y_margin = max(abs(y_min), abs(y_max)) * 0.05
+                ax.set_ylim(y_min - y_margin, y_max + y_margin)
+
+            # Add shaded area for no significant change (±significance_band_width standard errors)
+            if x_limits is not None:
+                x_range = np.linspace(x_min, x_max, 100)
+            else:
+                x_range = np.linspace(x_min - x_margin, x_max + x_margin, 100)
+            ax.fill_between(
+                x_range,
+                -significance_threshold,
+                significance_threshold,
+                color="lightgray",
+                alpha=0.3,
+                label=f"No Significant {'Relative ' if relative else ''}Change (±{significance_band_width:.1f} SE)"
+                if show_legend
+                else None,
             )
 
-            # Add debug labels if requested
-            if debug:
-                for x, y, basin_id in zip(benchmark_values, delta_values, basin_ids, strict=True):
-                    ax.annotate(
-                        basin_id,
-                        (x, y),
-                        xytext=(5, 5),  # Offset in points
-                        textcoords="offset points",
-                        ha="left",
-                        va="bottom",
-                        bbox={"boxstyle": "round,pad=0.2", "facecolor": "white", "alpha": 0.7, "edgecolor": "none"},
-                    )
+            # Add horizontal line at y=0 (no improvement/degradation)
+            ax.axhline(
+                y=0,
+                color="darkgray",
+                linestyle="--",
+                alpha=0.7,
+                linewidth=1.5,
+                label="No Change" if show_legend else None,
+            )
 
-            # Collect values for overall plot limits
-            all_benchmark_values.extend(benchmark_values)
-            all_delta_values.extend(delta_values)
+        # Add grid
+        ax.grid(True, alpha=0.3, linestyle="--")
+        ax.set_axisbelow(True)
 
-    # Calculate standard error of differences for significance band
-    if all_delta_values:
-        delta_std_error = np.std(all_delta_values) / np.sqrt(len(all_delta_values))
-        significance_threshold = delta_std_error * significance_band_width
+        # Add legend only if requested and there are multiple architectures
+        if show_legend and len(architectures) > 1:
+            ax.legend(
+                # loc="lower center",
+                bbox_to_anchor=(0.5, -0.0),
+                ncol=len(architectures),
+                frameon=False,
+                fancybox=True,
+                shadow=False,
+                facecolor="white",
+                edgecolor="gray",
+            )
+
+    # Plot for single or multiple horizons
+    if single_horizon:
+        plot_single_horizon(
+            axes, horizons[0], show_legend=True, x_limits=x_limits, y_limits=y_limits, relative=relative
+        )
     else:
-        significance_threshold = 0
+        # Create a single legend for all subplots
+        legend_created = False
 
-    # Customize plot
-    ax.set_xlabel(f"{metric.upper()} - {benchmark_pattern.capitalize()} Models")
-    ax.set_ylabel(f"Δ{metric.upper()} ({challenger_pattern.capitalize()} - {benchmark_pattern.capitalize()})")
+        for idx, horizon_val in enumerate(horizons):
+            row = idx // n_cols
+            col = idx % n_cols
+            ax = axes[row, col]
 
-    # Set limits with margin
-    if all_benchmark_values and all_delta_values:
-        # X-axis limits
-        x_min, x_max = min(all_benchmark_values), max(all_benchmark_values)
-        x_margin = (x_max - x_min) * 0.05
-        ax.set_xlim(x_min - x_margin, x_max + x_margin)
+            # Only show y-label for first column when y_limits are provided
+            show_y_label = (col == 0) if y_limits is not None else True
 
-        # Y-axis limits
-        y_min, y_max = min(all_delta_values), max(all_delta_values)
-        y_margin = max(abs(y_min), abs(y_max)) * 0.05
-        ax.set_ylim(y_min - y_margin, y_max + y_margin)
+            # Only show legend on the first subplot
+            plot_single_horizon(
+                ax,
+                horizon_val,
+                show_legend=(idx == 0),
+                x_limits=x_limits,
+                y_limits=y_limits,
+                show_y_label=show_y_label,
+                relative=relative,
+            )
 
-        # Add shaded area for no significant change (±significance_band_width standard errors)
-        x_range = np.linspace(x_min - x_margin, x_max + x_margin, 100)
-        ax.fill_between(
-            x_range,
-            -significance_threshold,
-            significance_threshold,
-            color="lightgray",
-            alpha=0.3,
-            label=f"No Significant Change (±{significance_band_width:.1f} SE)",
-        )
+            if idx == 0:
+                legend_created = True
 
-        # Add horizontal line at y=0 (no improvement/degradation)
-        ax.axhline(y=0, color="darkgray", linestyle="--", alpha=0.7, linewidth=1.5, label="No Change")
+        # If we want a single legend for the entire figure
+        if legend_created and len(architectures) > 1:
+            # Get legend handles and labels from the first subplot
+            handles, labels = axes[0, 0].get_legend_handles_labels()
 
-    # Add grid
-    ax.grid(True, alpha=0.3, linestyle="--")
-    ax.set_axisbelow(True)
+            # Remove individual subplot legends
+            for row in range(n_rows):
+                for col in range(n_cols):
+                    if axes[row, col].get_legend():
+                        axes[row, col].get_legend().remove()
 
-    # Add legend
-    if len(architectures) > 1:
-        ax.legend(
-            loc="lower center",
-            bbox_to_anchor=(0.5, -0.25),
-            ncol=len(architectures),
-            frameon=False,
-            fancybox=True,
-            shadow=False,
-            facecolor="white",
-            edgecolor="gray",
-        )
+            # Create figure-level legend
+            fig.legend(
+                handles,
+                labels,
+                loc="lower center",
+                bbox_to_anchor=(0.5, -0.2),
+                ncol=len(architectures),
+                frameon=False,
+                fancybox=True,
+                shadow=False,
+            )
+
     # Adjust layout
+    if single_horizon:
+        plt.tight_layout()
+    else:
+        plt.tight_layout()
+        # Make room for figure legend
+        if len(architectures) > 1:
+            plt.subplots_adjust(bottom=0.1)
 
-    return fig, ax
+    return fig, axes
 
 
 def plot_model_cdf_grid(
@@ -836,7 +1137,7 @@ def plot_horizon_performance_boxplots(
 
     # Add dummy color if present
     if dummy_data:
-        color_map[("Dummy", "baseline")] = "lightgray"
+        color_map[("Dummy", "baseline")] = "#FFD700"
 
     # Add architecture-variant color combinations
     for arch in architectures:
@@ -880,7 +1181,7 @@ def plot_horizon_performance_boxplots(
                 pos = h_idx - (total_models - 1) * box_width / 2
                 boxplot_data.append(dummy_horizon_data["value"].values)
                 positions.append(pos)
-                colors_list.append("lightgray")
+                colors_list.append("#FFD700")
                 labels.append("Dummy")
 
         # Add architecture-variant combinations
@@ -986,13 +1287,17 @@ def plot_horizon_performance_boxplots(
 
     # Add dummy if present
     if dummy_data:
-        legend_handles.append(Rectangle((0, 0), 1, 1, facecolor="lightgray", alpha=0.8, edgecolor="black"))
+        legend_handles.append(Rectangle((0, 0), 1, 1, facecolor="#FFD700", alpha=0.8, edgecolor="black"))
         legend_labels.append("Dummy Model")
 
     # Variant section (using sample gradients)
     sample_gradients = generate_brightness_gradient("#000000", len(variants))
     for idx, variant in enumerate(variants):
-        legend_handles.append(Rectangle((0, 0), 1, 1, facecolor=sample_gradients[idx], alpha=0.8, edgecolor="black"))
+        # Use 95% alpha for the first variant (black), 80% for others
+        alpha_value = 0.95 if idx == 0 else 0.8
+        legend_handles.append(
+            Rectangle((0, 0), 1, 1, facecolor=sample_gradients[idx], alpha=alpha_value, edgecolor="black")
+        )
         legend_labels.append(variant_mapping.get(variant, variant.capitalize()))
 
     # Create legend
@@ -1023,6 +1328,8 @@ def plot_rolling_forecast(
     season_color: str = "#d3d3d3",
     start_of_season: int | None = None,
     end_of_season: int | None = None,
+    start_date: str | pd.Timestamp | None = None,
+    end_date: str | pd.Timestamp | None = None,
 ) -> tuple[plt.Figure, plt.Axes]:
     """
     Create a time-series plot comparing observed values against one or more models' rolling forecasts.
@@ -1043,6 +1350,8 @@ def plot_rolling_forecast(
         season_color: Color for seasonal shading (default: "#d3d3d3")
         start_of_season: Start month of seasonal period (1-12, optional)
         end_of_season: End month of seasonal period (1-12, optional)
+        start_date: Start date for plotting (string 'YYYY-MM-DD' or pd.Timestamp, optional)
+        end_date: End date for plotting (string 'YYYY-MM-DD' or pd.Timestamp, optional)
 
     Returns:
         Tuple of (figure, axes) objects
@@ -1050,7 +1359,6 @@ def plot_rolling_forecast(
     Raises:
         ValueError: If model(s) not found or no data for specified gauge/horizon
     """
-
     # Convert single model name to list for uniform processing
     if isinstance(model_names, str):
         model_names = [model_names]
@@ -1064,22 +1372,18 @@ def plot_rolling_forecast(
         available_models = list(results.keys())
         raise ValueError(f"Models not found in results: {missing_models}. Available models: {available_models}")
 
-    # Extract and filter predictions for each model
+    # Extract and filter predictions for each model using helper function
     filtered_dfs = {}
     for model_name in model_names:
-        model_results = results[model_name]
-        if "predictions_df" not in model_results:
-            raise ValueError(f"No predictions_df found for model '{model_name}'")
+        model_result = results[model_name]
+        filtered_df = _extract_and_filter_predictions(model_result, gauge_id, horizon)
 
-        predictions_df = model_results["predictions_df"]
+        if filtered_df is None:
+            # Get more detailed error info for better error message
+            if "predictions_df" not in model_result:
+                raise ValueError(f"No predictions_df found for model '{model_name}'")
 
-        # Filter for the specific gauge and horizon
-        filtered_df = predictions_df[
-            (predictions_df["gauge_id"] == gauge_id) & (predictions_df["horizon"] == horizon)
-        ].copy()
-
-        # Check if we have data after filtering
-        if filtered_df.empty:
+            predictions_df = model_result["predictions_df"]
             available_gauges = predictions_df["gauge_id"].unique()
             available_horizons = predictions_df["horizon"].unique()
             raise ValueError(
@@ -1088,95 +1392,64 @@ def plot_rolling_forecast(
                 f"Available horizons: {list(available_horizons)}"
             )
 
-        # Sort by date for proper time series plotting
-        filtered_df = filtered_df.sort_values("date")
         filtered_dfs[model_name] = filtered_df
 
-    # Find common date range across all models
+    # Harmonize date ranges if multiple models
     if len(model_names) > 1:
-        # Get min and max dates for each model
-        date_ranges = {model: (df["date"].min(), df["date"].max()) for model, df in filtered_dfs.items()}
-
-        # Find the latest start date and earliest end date
-        common_start = max(start for start, _ in date_ranges.values())
-        common_end = min(end for _, end in date_ranges.values())
-
-        # Check if there's any overlap
-        if common_start > common_end:
-            raise ValueError(
-                "No overlapping date range found across models. Date ranges: "
-                + ", ".join(f"{model}: {start} to {end}" for model, (start, end) in date_ranges.items())
-            )
-
-        # Filter all dataframes to common date range
-        for model_name in model_names:
-            mask = (filtered_dfs[model_name]["date"] >= common_start) & (filtered_dfs[model_name]["date"] <= common_end)
-            filtered_dfs[model_name] = filtered_dfs[model_name][mask]
-
+        common_start, common_end = _harmonize_date_ranges(list(filtered_dfs.values()))
+        filtered_dfs = _filter_to_common_dates(filtered_dfs, common_start, common_end)
         print(f"Harmonized date range: {common_start} to {common_end}")
 
-    # For single model, just use its data as is
-    if single_model:
-        filtered_df = filtered_dfs[model_names[0]]
-    else:
-        # For multiple models, use the first model's data as reference for observed values
-        filtered_df = filtered_dfs[model_names[0]]
+    # Get reference dataframe for observed values
+    filtered_df = filtered_dfs[model_names[0]]
 
-        # Verify that observed values are consistent across all models
-        for _, model_name in enumerate(model_names[1:], 1):
+    # Verify observed values consistency across models
+    if not single_model:
+        for model_name in model_names[1:]:
             other_df = filtered_dfs[model_name]
             # Merge on date to compare observed values
             merged = filtered_df[["date", "observed"]].merge(
                 other_df[["date", "observed"]], on="date", suffixes=("_ref", f"_{model_name}")
             )
-
             # Check if observed values match (within floating point tolerance)
             if not np.allclose(merged["observed_ref"], merged[f"observed_{model_name}"], rtol=1e-5, equal_nan=True):
                 print(f"Warning: Observed values differ between {model_names[0]} and {model_name}")
 
-    # Set up colors for models
-    if colors is None:
-        # Default colors if none provided
-        default_colors = ["#FF6B35", "#4682B4", "#009E73", "#9370DB", "#CD5C5C", "#FF8C00"]
-        colors = {model: default_colors[i % len(default_colors)] for i, model in enumerate(model_names)}
-    else:
-        # Check if all models have colors assigned
-        missing_colors = [model for model in model_names if model not in colors]
-        if missing_colors:
-            # Assign default colors to models without specified colors
-            default_colors = ["#FF6B35", "#4682B4", "#009E73", "#9370DB", "#CD5C5C", "#FF8C00"]
-            start_idx = len([m for m in model_names if m in colors])
-            for i, model in enumerate(missing_colors):
-                colors[model] = default_colors[(start_idx + i) % len(default_colors)]
+    # Apply date filtering if specified
+    if start_date is not None or end_date is not None:
+        # Convert string dates to pandas timestamps if needed
+        if start_date is not None and isinstance(start_date, str):
+            start_date = pd.to_datetime(start_date)
+        if end_date is not None and isinstance(end_date, str):
+            end_date = pd.to_datetime(end_date)
+
+        # Apply filtering to all dataframes
+        for model_name in model_names:
+            df = filtered_dfs[model_name]
+            date_mask = pd.Series([True] * len(df), index=df.index)
+
+            if start_date is not None:
+                date_mask &= df["date"] >= start_date
+            if end_date is not None:
+                date_mask &= df["date"] <= end_date
+
+            filtered_dfs[model_name] = df[date_mask]
+
+        # Update reference dataframe
+        filtered_df = filtered_dfs[model_names[0]]
+
+        # Check if we still have data after filtering
+        if filtered_df.empty:
+            raise ValueError(f"No data found in the specified date range: {start_date} to {end_date}")
+
+    # Set up colors using helper function
+    colors = _setup_default_colors(model_names, colors)
 
     # Create the plot
     fig, ax = plt.subplots(figsize=figsize)
 
-    # Add seasonal background shading if both start and end months are provided
-    if start_of_season is not None and end_of_season is not None:
-        # Get unique years from the data
-        unique_years = sorted(filtered_df["date"].dt.year.unique())
-        season_labeled = False  # Flag to label only the first span
-
-        for year in unique_years:
-            # Define the start date for the current year's season
-            season_start_date = mdates.datetime.datetime(year, start_of_season, 1)
-
-            # Determine the year for the end of the season
-            # If the season crosses a year boundary (e.g., Dec-Feb), the end year is the next year
-            end_year = year + 1 if end_of_season < start_of_season else year
-            season_end_date = mdates.datetime.datetime(end_year, end_of_season, 1)
-
-            # Draw the shaded span
-            ax.axvspan(
-                season_start_date,
-                season_end_date,
-                color=season_color,
-                alpha=0.2,
-                zorder=0,
-                label="Season" if not season_labeled else "",
-            )
-            season_labeled = True
+    # Add seasonal background shading using helper function
+    _add_seasonal_shading(ax, filtered_df, start_of_season, end_of_season, season_color)
 
     # Plot observed values (only once)
     ax.plot(
@@ -1227,10 +1500,277 @@ def plot_rolling_forecast(
     return fig, ax
 
 
+def plot_ensemble_rolling_forecast(
+    results: dict[str, Any],
+    gauge_id: str,
+    horizon: int,
+    variants: list[str] | None = None,
+    architectures: list[str] | None = None,
+    figsize: tuple[int, int] = (15, 7),
+    title: str | None = None,
+    colors: dict[str, str] | None = None,
+    observed_color: str = "black",
+    season_color: str = "#d3d3d3",
+    start_of_season: int | None = None,
+    end_of_season: int | None = None,
+    confidence_level: float = 0.9,
+    show_individual_models: bool = False,
+    alpha_fill: float = 0.3,
+    start_date: str | pd.Timestamp | None = None,
+    end_date: str | pd.Timestamp | None = None,
+) -> tuple[plt.Figure, plt.Axes]:
+    """
+    Create a time-series plot comparing observed values against ensemble predictions with confidence intervals.
+
+    This function plots:
+    - Observed values as a single line
+    - For each variant (benchmark, regional, etc.): mean ensemble prediction + confidence interval
+
+    Args:
+        results: Dictionary from TSForecastEvaluator with model results
+        gauge_id: Identifier for the gauge/basin to plot
+        horizon: Forecast horizon to plot (e.g., 1, 5, 10)
+        variants: List of variants to include (e.g., ["benchmark", "regional"]). If None, auto-detected.
+        architectures: List of architectures to include. If None, all architectures are included.
+        figsize: Figure size as (width, height)
+        title: Custom plot title (auto-generated if None)
+        colors: Dictionary mapping variants to colors. If None, default colors assigned.
+        observed_color: Color for observed values line (default: "black")
+        season_color: Color for seasonal shading (default: "#d3d3d3")
+        start_of_season: Start month of seasonal period (1-12, optional)
+        end_of_season: End month of seasonal period (1-12, optional)
+        confidence_level: Confidence level for intervals (default: 0.9 for 90% CI)
+        show_individual_models: Whether to show individual model predictions as thin lines
+        alpha_fill: Transparency for confidence interval shading
+        start_date: Start date for plotting (string 'YYYY-MM-DD' or pd.Timestamp, optional)
+        end_date: End date for plotting (string 'YYYY-MM-DD' or pd.Timestamp, optional)
+
+    Returns:
+        Tuple of (figure, axes) objects
+
+    Raises:
+        ValueError: If no data found for specified gauge/horizon
+    """
+    # Parse model names using helper function
+    model_data = _parse_model_results(results)
+
+    # Auto-detect variants and architectures if not provided
+    if architectures is None:
+        architectures = sorted(model_data.keys())
+    if variants is None:
+        variants = sorted({v for arch_data in model_data.values() for v in arch_data})
+
+    # Set up colors for variants using helper function
+    colors = _setup_default_colors(variants, colors)
+
+    # Collect predictions for each variant across all architectures
+    variant_predictions = {}
+    observed_df = None
+
+    for variant in variants:
+        variant_predictions[variant] = []
+
+        # Collect predictions from all architectures for this variant
+        for arch in architectures:
+            if arch in model_data and variant in model_data[arch]:
+                model_result = model_data[arch][variant]
+
+                # Use helper function to extract and filter predictions
+                filtered_df = _extract_and_filter_predictions(model_result, gauge_id, horizon)
+
+                if filtered_df is not None:
+                    variant_predictions[variant].append(filtered_df)
+
+                    # Store observed values (should be same across all models)
+                    if observed_df is None:
+                        observed_df = filtered_df[["date", "observed"]].copy()
+
+    # Check if we have any data
+    if observed_df is None:
+        raise ValueError(f"No data found for gauge '{gauge_id}' and horizon {horizon}")
+
+    # Find common date range across all variant predictions
+    all_dfs = [df for dfs in variant_predictions.values() for df in dfs]
+    if len(all_dfs) > 1:
+        common_start, common_end = _harmonize_date_ranges(all_dfs)
+
+        # Filter observed_df and all prediction dataframes to common date range
+        date_mask = (observed_df["date"] >= common_start) & (observed_df["date"] <= common_end)
+        observed_df = observed_df[date_mask]
+
+        for variant in variant_predictions:
+            variant_predictions[variant] = _filter_to_common_dates(
+                variant_predictions[variant], common_start, common_end
+            )
+
+    # Apply date filtering if specified
+    if start_date is not None or end_date is not None:
+        # Convert string dates to pandas timestamps if needed
+        if start_date is not None and isinstance(start_date, str):
+            start_date = pd.to_datetime(start_date)
+        if end_date is not None and isinstance(end_date, str):
+            end_date = pd.to_datetime(end_date)
+
+        # Apply filtering to observed dataframe
+        date_mask = pd.Series([True] * len(observed_df), index=observed_df.index)
+        if start_date is not None:
+            date_mask &= observed_df["date"] >= start_date
+        if end_date is not None:
+            date_mask &= observed_df["date"] <= end_date
+
+        observed_df = observed_df[date_mask]
+
+        # Apply filtering to all variant predictions
+        for variant in variant_predictions:
+            filtered_variant_dfs = []
+            for df in variant_predictions[variant]:
+                date_mask = pd.Series([True] * len(df), index=df.index)
+                if start_date is not None:
+                    date_mask &= df["date"] >= start_date
+                if end_date is not None:
+                    date_mask &= df["date"] <= end_date
+
+                filtered_df = df[date_mask]
+                if not filtered_df.empty:
+                    filtered_variant_dfs.append(filtered_df)
+
+            variant_predictions[variant] = filtered_variant_dfs
+
+        # Check if we still have data after filtering
+        if observed_df.empty:
+            raise ValueError(f"No data found in the specified date range: {start_date} to {end_date}")
+
+    # Create the plot
+    fig, ax = plt.subplots(figsize=figsize)
+
+    # Add seasonal background shading using helper function
+    _add_seasonal_shading(ax, observed_df, start_of_season, end_of_season, season_color)
+
+    # Plot observed values FIRST (bottom layer)
+    ax.plot(
+        observed_df["date"],
+        observed_df["observed"],
+        color=observed_color,
+        linewidth=2,
+        label="Observed",
+        alpha=1,
+        zorder=1,  # Lower z-order so it's behind ensemble predictions
+    )
+
+    # Plot ensemble predictions for each variant
+    for variant in variants:
+        if not variant_predictions[variant]:
+            continue
+
+        variant_color = colors.get(variant, "#4682B4")
+
+        # Combine predictions from all architectures for this variant
+        # Align all predictions to the same dates
+        dates = observed_df["date"].values
+        all_predictions = []
+
+        for df in variant_predictions[variant]:
+            # Merge to ensure alignment
+            merged = observed_df[["date"]].merge(df[["date", "predicted"]], on="date", how="left")
+            if not merged["predicted"].isna().all():
+                all_predictions.append(merged["predicted"].values)
+
+        if not all_predictions:
+            continue
+
+        # Convert to numpy array for easier manipulation
+        predictions_array = np.array(all_predictions)
+
+        # Calculate ensemble statistics
+        ensemble_mean = np.nanmean(predictions_array, axis=0)
+
+        # Calculate confidence intervals
+        lower_percentile = (1 - confidence_level) / 2
+        upper_percentile = 1 - lower_percentile
+
+        ensemble_lower = np.nanpercentile(predictions_array, lower_percentile * 100, axis=0)
+        ensemble_upper = np.nanpercentile(predictions_array, upper_percentile * 100, axis=0)
+
+        # Plot confidence interval first (lower z-order within variant)
+        ax.fill_between(
+            dates,
+            ensemble_lower,
+            ensemble_upper,
+            color=variant_color,
+            alpha=alpha_fill,
+            label=f"{int(confidence_level * 100)}% CI",
+            zorder=2,  # Above observations but below mean lines
+        )
+
+        # Plot mean line on top of CI
+        ax.plot(
+            dates,
+            ensemble_mean,
+            color=variant_color,
+            linewidth=2,
+            label=f"{variant.capitalize()} Ensemble",
+            alpha=0.9,
+            zorder=3,  # On top of CI bands
+        )
+
+        # Optionally show individual model predictions
+        if show_individual_models:
+            for i, prediction in enumerate(predictions_array):
+                ax.plot(
+                    dates,
+                    prediction,
+                    color=variant_color,
+                    linewidth=0.5,
+                    alpha=0.3,
+                    zorder=2,  # Same level as CI bands
+                )
+
+    # Set title
+    if title is None:
+        title = f"{horizon}-Day Ensemble Rolling Forecast at Gauge {gauge_id}"
+    ax.set_title(title, pad=20)
+
+    ax.set_xlabel("")
+    ax.set_ylabel("Value")
+
+    # Custom legend handling to avoid duplicate CI labels
+    handles, labels = ax.get_legend_handles_labels()
+    unique_labels = []
+    unique_handles = []
+    ci_label_added = False
+
+    for handle, label in zip(handles, labels, strict=False):
+        if "CI" in label:
+            if not ci_label_added:
+                unique_labels.append(f"{int(confidence_level * 100)}% CI")
+                unique_handles.append(handle)
+                ci_label_added = True
+        else:
+            unique_labels.append(label)
+            unique_handles.append(handle)
+
+    ax.legend(
+        unique_handles,
+        unique_labels,
+        loc="lower center",
+        bbox_to_anchor=(0.5, -0.25),
+        ncol=min(4, len(unique_labels)),
+        frameon=False,
+        fancybox=True,
+        shadow=False,
+    )
+
+    ax.grid(True, alpha=0.3, linestyle="--")
+    ax.set_axisbelow(True)
+
+    return fig, ax
+
+
 def plot_median_performance_across_models(
     results: dict[str, Any],
     horizons: list[int] | None = None,
     metric: str = "NSE",
+    architectures: list[str] | None = None,
     approach_mapping: dict[str, str] | None = None,
     colors: list[str] | None = None,
     figsize: tuple[int, int] = (10, 6),
@@ -1250,12 +1790,21 @@ def plot_median_performance_across_models(
     Creates a bar chart showing median performance values across all models for each horizon,
     with error bars representing the standard deviation across models.
 
+    Special metric support:
+        - "RSC": Calculates Remaining Skill Captured relative to benchmark approach.
+                 RSC = (NSE_challenger - NSE_benchmark) / (1 - NSE_benchmark) * 100
+                 Requires a "benchmark" key in approach_mapping.
+                 Shows how much of the remaining skill (after benchmark) is captured.
+
     Args:
         results: Dictionary from TSForecastEvaluator with model results
         horizons: List of forecast horizons to plot (e.g., [1, 5, 10]). If None, uses all available.
-        metric: Performance metric to plot (e.g., "NSE", "RMSE")
+        metric: Performance metric to plot (e.g., "NSE", "RMSE", "RSC")
+        architectures: List of model architectures to include (e.g., ["LSTM", "GRU"]).
+                      If None, includes all architectures found in results.
         approach_mapping: Optional mapping of model patterns to approach names
                          e.g., {"benchmark": "Baseline", "regional": "With Kyrgyz Data"}
+                         For RSC metric, must include a "benchmark" key.
         colors: List of colors for different approaches. Default colors if None.
         figsize: Figure size as (width, height)
         title: Custom title for the plot (auto-generated if None)
@@ -1264,7 +1813,7 @@ def plot_median_performance_across_models(
         whisker_color: Color of the error bars (default: "#A9A9A9")
         cap_size: Size of the caps on error bars
         annotate_values: Whether to annotate median values on bars
-        annotate_delta: Whether to annotate percentage change from baseline
+        annotate_delta: Whether to annotate percentage change from baseline (disabled for RSC)
         delta_fontsize: Font size for delta annotations
         y_label: Custom y-axis label (auto-generated if None)
 
@@ -1283,6 +1832,10 @@ def plot_median_performance_across_models(
     if colors is None:
         colors = ["#BCE784", "#5DD39E", "#348AA7"]
 
+    # Check if we're calculating RSC
+    calculate_rsc = metric.upper() == "RSC"
+    actual_metric = "nse" if calculate_rsc else metric.lower()
+
     # Parse model names and group by approach
     approach_data = {}
     all_horizons_set = set()
@@ -1290,6 +1843,17 @@ def plot_median_performance_across_models(
     for model_name, model_result in results.items():
         if "metrics_by_gauge" not in model_result:
             continue
+
+        # Extract architecture from model name if architectures filter is specified
+        if architectures is not None:
+            # Model names are typically formatted as "Architecture_variant"
+            if "_" in model_name:
+                model_arch = model_name.split("_", 1)[0]
+                if model_arch not in architectures:
+                    continue
+            else:
+                # Skip models without proper naming format when filtering
+                continue
 
         # Determine approach based on model name
         approach = None
@@ -1330,8 +1894,8 @@ def plot_median_performance_across_models(
                 metrics_by_gauge = model_result["metrics_by_gauge"]
 
                 for gauge_data in metrics_by_gauge.values():
-                    if horizon in gauge_data and metric.lower() in gauge_data[horizon]:
-                        value = gauge_data[horizon][metric.lower()]
+                    if horizon in gauge_data and actual_metric in gauge_data[horizon]:
+                        value = gauge_data[horizon][actual_metric]
                         if not np.isnan(value):
                             all_values.append(value)
 
@@ -1341,6 +1905,51 @@ def plot_median_performance_across_models(
                     "std": np.std(all_values),
                     "count": len(all_values),
                 }
+
+    # If calculating RSC, transform the NSE values to RSC
+    if calculate_rsc:
+        # First, check if benchmark exists
+        if "benchmark" not in plot_data:
+            raise ValueError("Cannot calculate RSC without a benchmark approach in the data")
+
+        # Create new plot_data with RSC values
+        rsc_data = {}
+
+        for approach in plot_data:
+            rsc_data[approach] = {}
+
+            for horizon in plot_data[approach]:
+                if horizon not in plot_data["benchmark"]:
+                    continue
+
+                nse_benchmark = plot_data["benchmark"][horizon]["median"]
+
+                if approach == "benchmark":
+                    # Benchmark RSC is always 0
+                    rsc_data[approach][horizon] = {
+                        "median": 0.0,
+                        "std": 0.0,  # No variance for benchmark RSC
+                        "count": plot_data[approach][horizon]["count"],
+                    }
+                else:
+                    # Calculate RSC for non-benchmark approaches
+                    nse_challenger = plot_data[approach][horizon]["median"]
+
+                    if nse_benchmark < 1.0:
+                        rsc_value = (nse_challenger - nse_benchmark) / (1 - nse_benchmark)
+                    else:
+                        # If benchmark NSE is 1.0, RSC is undefined (set to 0)
+                        rsc_value = 0.0
+
+                    # Convert to percentage
+                    rsc_data[approach][horizon] = {
+                        "median": rsc_value * 100,
+                        "std": 0.0,  # For now, we don't calculate std for RSC
+                        "count": plot_data[approach][horizon]["count"],
+                    }
+
+        # Replace plot_data with RSC data
+        plot_data = rsc_data
 
     # Create the plot
     fig, ax = plt.subplots(figsize=figsize)
@@ -1412,7 +2021,18 @@ def plot_median_performance_across_models(
         # Annotate values if requested
         if annotate_values:
             for pos, median, std in zip(positions, medians, stds, strict=True):
-                if median > 0:  # Only annotate non-zero values
+                if calculate_rsc:
+                    # For RSC, always annotate (including 0 for benchmark)
+                    y_pos = median + std * 1.1 if show_whiskers else median * 1.05 if median > 0 else 0.5
+                    ax.text(
+                        pos,
+                        y_pos,
+                        f"{median:.1f}%",
+                        ha="center",
+                        va="bottom",
+                        fontsize=9,
+                    )
+                elif median > 0:  # Only annotate non-zero values for other metrics
                     y_pos = median + std * 1.1 if show_whiskers else median * 1.05
                     ax.text(
                         pos,
@@ -1423,8 +2043,8 @@ def plot_median_performance_across_models(
                         fontsize=9,
                     )
 
-        # Add delta annotations for non-baseline approaches
-        if annotate_delta and approach != "benchmark":
+        # Add delta annotations for non-baseline approaches (skip if calculating RSC)
+        if annotate_delta and approach != "benchmark" and not calculate_rsc:
             for pos, median, horizon in zip(positions, medians, horizons, strict=True):
                 if horizon in baseline_values and baseline_values[horizon] > 0 and median > 0:
                     baseline = baseline_values[horizon]
@@ -1452,14 +2072,20 @@ def plot_median_performance_across_models(
     if y_label:
         ax.set_ylabel(y_label, fontsize=12)
     else:
-        unit = "(mm/d)" if metric.upper() in ["MAE", "RMSE", "MSE"] else ""
-        ax.set_ylabel(f"{metric.upper()} {unit}".strip(), fontsize=12)
+        if calculate_rsc:
+            ax.set_ylabel("Remaining Skill Captured (%)", fontsize=12)
+        else:
+            unit = "(mm/d)" if metric.upper() in ["MAE", "RMSE", "MSE"] else ""
+            ax.set_ylabel(f"{metric.upper()} {unit}".strip(), fontsize=12)
 
     # Set title
     if title:
         ax.set_title(title, fontsize=14, fontweight="bold")
     else:
-        ax.set_title(f"Median {metric.upper()} Performance Across Models", fontsize=14, fontweight="bold")
+        if calculate_rsc:
+            ax.set_title("Remaining Skill Captured Across Models", fontsize=14, fontweight="bold")
+        else:
+            ax.set_title(f"Median {metric.upper()} Performance Across Models", fontsize=14, fontweight="bold")
 
     # Add grid
     ax.grid(axis="y", linestyle="--", alpha=0.3)
@@ -1479,7 +2105,11 @@ def plot_median_performance_across_models(
 
     # Adjust y-axis limits to leave room for annotations
     y_min, y_max = ax.get_ylim()
-    ax.set_ylim(y_min, y_max * 1.1)
+    if calculate_rsc:
+        # For RSC, ensure we show negative values if they exist
+        ax.set_ylim(min(y_min, -10), y_max * 1.1)
+    else:
+        ax.set_ylim(y_min, y_max * 1.1)
 
     plt.tight_layout()
 
@@ -1745,3 +2375,205 @@ def plot_performance_vs_static_attributes(
     plt.tight_layout()
 
     return fig, axes
+
+
+def remaining_skill_captured_vs_horizon(
+    results: dict[str, Any],
+    benchmark_pattern: str,
+    challenger_pattern: str,
+    horizons: list[int] | None = None,
+    architectures: list[str] | None = None,
+    colors: dict[str, str] | None = None,
+    figsize: tuple[int, int] = (10, 6),
+    show_median_labels: bool = True,
+) -> tuple[plt.Figure, plt.Axes]:
+    """
+    Create grouped boxplots showing remaining skill captured by challenger models vs benchmark models across horizons.
+
+    This metric accounts for diminishing returns as NSE approaches 1.0 by calculating:
+    (NSE_challenger - NSE_benchmark) / (1 - NSE_benchmark)
+
+    Each architecture gets its own boxplot at each horizon, positioned side-by-side.
+
+    Args:
+        results: Dictionary from TSForecastEvaluator with model results
+        benchmark_pattern: Pattern to identify benchmark models (e.g., "benchmark", "pretrained")
+        challenger_pattern: Pattern to identify challenger models (e.g., "regional", "finetuned")
+        horizons: List of forecast horizons to plot. If None, uses all available horizons.
+        architectures: List of architectures to include. If None, auto-detected from results.
+        colors: Dictionary mapping architecture to color. If None, default colors assigned.
+        figsize: Figure size as (width, height)
+        show_median_labels: Whether to show median values as text on boxes
+
+    Returns:
+        Tuple of (figure, axes) objects
+    """
+    # Parse model results
+    model_data = _parse_model_results(results)
+
+    # Auto-detect architectures if not provided
+    if architectures is None:
+        architectures = sorted(model_data.keys())
+
+    # Auto-detect horizons if not provided
+    if horizons is None:
+        # Find all horizons from first model
+        horizons = []
+        for arch in architectures:
+            if arch in model_data:
+                for _, model_result in model_data[arch].items():
+                    if "metrics_by_gauge" in model_result:
+                        # Get horizons from first gauge
+                        first_gauge = next(iter(model_result["metrics_by_gauge"].values()))
+                        horizons = sorted(first_gauge.keys())
+                        break
+                if horizons:
+                    break
+
+    # Default colors
+    if colors is None:
+        default_colors = ["#4682B4", "#CD5C5C", "#009E73", "#9370DB", "#FF8C00", "#8B4513"]
+        colors = {arch: default_colors[i % len(default_colors)] for i, arch in enumerate(architectures)}
+
+    # Collect remaining skill captured data for each architecture and horizon
+    arch_horizon_data = {}
+
+    for arch in architectures:
+        if arch not in model_data:
+            continue
+
+        # Check if both benchmark and challenger exist for this architecture
+        if benchmark_pattern not in model_data[arch] or challenger_pattern not in model_data[arch]:
+            continue
+
+        arch_horizon_data[arch] = {horizon: [] for horizon in horizons}
+
+        benchmark_metrics = model_data[arch][benchmark_pattern]["metrics_by_gauge"]
+        challenger_metrics = model_data[arch][challenger_pattern]["metrics_by_gauge"]
+
+        # Find common basins
+        common_basins = set(benchmark_metrics.keys()) & set(challenger_metrics.keys())
+
+        for basin_id in common_basins:
+            benchmark_basin = benchmark_metrics[basin_id]
+            challenger_basin = challenger_metrics[basin_id]
+
+            for horizon in horizons:
+                if (
+                    horizon in benchmark_basin
+                    and horizon in challenger_basin
+                    and "nse" in benchmark_basin[horizon]
+                    and "nse" in challenger_basin[horizon]
+                ):
+                    nse_benchmark = benchmark_basin[horizon]["nse"]
+                    nse_challenger = challenger_basin[horizon]["nse"]
+
+                    # Skip if values are NaN or if benchmark NSE is 1.0 (perfect)
+                    if not (np.isnan(nse_benchmark) or np.isnan(nse_challenger) or nse_benchmark >= 1.0):
+                        # Calculate remaining skill captured
+                        remaining_skill = (nse_challenger - nse_benchmark) / (1 - nse_benchmark)
+                        arch_horizon_data[arch][horizon].append(remaining_skill)
+
+    # Create figure
+    fig, ax = plt.subplots(figsize=figsize)
+
+    # Check if we have any data
+    if not arch_horizon_data:
+        ax.text(
+            0.5, 0.5, "No data available", ha="center", va="center", transform=ax.transAxes, fontsize=14, color="gray"
+        )
+        ax.set_xlabel("Forecast Horizon (days)")
+        ax.set_ylabel("Remaining Skill Captured")
+        return fig, ax
+
+    # Calculate box width based on number of architectures
+    n_architectures = len(arch_horizon_data)
+    if n_architectures <= 4:
+        box_width = 0.15
+    elif n_architectures <= 8:
+        box_width = 0.10
+    else:
+        box_width = 0.08
+
+    # Prepare data for grouped boxplots
+    boxplot_data = []
+    positions = []
+    colors_list = []
+
+    for h_idx, horizon in enumerate(horizons):
+        arch_idx = 0
+        for arch in architectures:
+            if arch in arch_horizon_data and arch_horizon_data[arch][horizon]:
+                # Calculate position for this architecture's box
+                pos = h_idx + (arch_idx - (n_architectures - 1) / 2) * box_width
+
+                boxplot_data.append(arch_horizon_data[arch][horizon])
+                positions.append(pos)
+                colors_list.append(colors.get(arch, "#4682B4"))
+
+                arch_idx += 1
+
+    if not boxplot_data:
+        ax.text(
+            0.5, 0.5, "No data available", ha="center", va="center", transform=ax.transAxes, fontsize=14, color="gray"
+        )
+        ax.set_xlabel("Forecast Horizon (days)")
+        ax.set_ylabel("Remaining Skill Captured")
+        return fig, ax
+
+    # Create boxplots
+    bp = ax.boxplot(
+        boxplot_data,
+        positions=positions,
+        widths=box_width * 0.9,
+        patch_artist=True,
+        boxprops={"alpha": 0.8},
+        medianprops={"color": "black"},
+    )
+
+    # Color the boxes
+    for patch, color in zip(bp["boxes"], colors_list, strict=True):
+        patch.set_facecolor(color)
+        patch.set_edgecolor("black")
+        patch.set_linewidth(0.8)
+
+    # Add median labels if requested
+    if show_median_labels and len(boxplot_data) <= 20:  # Don't overcrowd
+        for data, pos in zip(boxplot_data, positions, strict=True):
+            if len(data) > 0:
+                median_val = np.median(data)
+                ax.text(
+                    pos,
+                    median_val + (ax.get_ylim()[1] - ax.get_ylim()[0]) * 0.02,
+                    f"{median_val:.3f}",
+                    ha="center",
+                    va="bottom",
+                    fontsize=8,
+                    fontweight="bold",
+                    color="black",
+                )
+
+    # Add horizontal line at y=0
+    ax.axhline(y=0, color="black", linestyle="--", alpha=0.5, linewidth=1)
+
+    # Customize plot
+    ax.set_xlabel("Forecast Horizon (days)")
+    ax.set_ylabel("Remaining Skill Captured")
+    ax.set_xticks(list(range(len(horizons))))
+    ax.set_xticklabels([str(h) for h in horizons])
+    ax.grid(True, alpha=0.3, axis="y")
+
+    # Create legend
+    legend_elements = []
+    for arch in architectures:
+        if arch in arch_horizon_data:
+            from matplotlib.patches import Patch
+
+            legend_elements.append(Patch(facecolor=colors.get(arch, "#4682B4"), edgecolor="black", label=arch.upper()))
+
+    if legend_elements:
+        ax.legend(handles=legend_elements, loc="lower left", frameon=False, ncol=min(4, len(legend_elements)))
+
+    plt.tight_layout()
+
+    return fig, ax

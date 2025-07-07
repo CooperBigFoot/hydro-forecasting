@@ -26,7 +26,13 @@
       "Bash(uv sync:*)",
       "Bash(git config:*)",
       "Bash(git reset:*)",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "Bash(/Users/cooper/Desktop/hydro-forecasting/.venv/bin/python3 -c \"import sys; print(sys.executable); import hydro_forecasting; print(''Package imported successfully'')\")",
+      "Bash(pip install:*)",
+      "Bash(top:*)",
+      "Bash(cp:*)",
+      "Bash(ipython profile create:*)",
+      "Bash(sed:*)"
     ],
     "deny": []
   }
