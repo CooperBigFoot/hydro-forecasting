@@ -4,6 +4,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+from scipy.stats import wilcoxon
 
 from .eval_utils import _parse_model_results, calculate_metric_statistics, extract_metric_values
 
@@ -95,40 +96,7 @@ def generate_performance_summary(
                 std = np.std(values)
                 model_data[arch][variant][metric] = {"median": median, "std": std, "count": len(values)}
 
-    # Create DataFrame
-    rows = []
-    all_medians_by_metric = {metric: [] for metric in metrics}  # Track all medians for overall calculation
-
-    for arch in sorted(model_data.keys()):
-        for variant in sorted(model_data[arch].keys()):
-            row_data = {"Architecture": arch, "Variant": variant}
-
-            for metric in metrics:
-                if metric in model_data[arch][variant]:
-                    stats = model_data[arch][variant][metric]
-                    median = stats["median"]
-                    std = stats["std"]
-
-                    # Track median for overall calculation
-                    all_medians_by_metric[metric].append(median)
-
-                    # Format the value
-                    if metric == "pbias":
-                        # For PBIAS, use absolute value for comparison but show actual value
-                        row_data[f"{metric}_raw"] = median
-                        row_data[f"{metric}_abs"] = abs(median)
-                    else:
-                        row_data[f"{metric}_raw"] = median
-
-                    row_data[metric] = f"{median:.{decimal_places}f} ± {std:.{decimal_places}f}"
-                else:
-                    row_data[metric] = "N/A"
-                    row_data[f"{metric}_raw"] = np.nan
-
-            rows.append(row_data)
-
-    # Create DataFrame with multi-index
-    df = pd.DataFrame(rows)
+    # First, identify best variants for highlighting and statistical testing
 
     # Identify best variants for highlighting
     best_variants = {}
@@ -160,22 +128,159 @@ def generate_performance_summary(
                 if best_variant is not None:
                     best_variants[arch][metric] = best_variant
 
-    # Create DataFrame first (without overall row)
+    # Collect paired performance data by basin for statistical testing
+    # For each basin, we calculate the median performance metric across all forecast horizons
+    # to get a single representative value per basin for the statistical test
+    paired_data = {}
+    for arch in model_data:
+        paired_data[arch] = {}
+        for metric in metrics:
+            paired_data[arch][metric] = {}
+            
+            # Get list of all basins that have data for all variants
+            all_basins = set()
+            variant_basins = {}
+            
+            for variant in model_data[arch]:
+                variant_basins[variant] = set()
+                if "metrics_by_gauge" in results.get(f"{arch.lower()}_{variant}", {}):
+                    metrics_by_gauge = results[f"{arch.lower()}_{variant}"]["metrics_by_gauge"]
+                    for gauge_id, gauge_data in metrics_by_gauge.items():
+                        # Check if this gauge has the metric for any horizon
+                        has_metric = False
+                        for horizon_data in gauge_data.values():
+                            if metric in horizon_data and not np.isnan(horizon_data[metric]):
+                                has_metric = True
+                                break
+                        if has_metric:
+                            variant_basins[variant].add(gauge_id)
+                            all_basins.add(gauge_id)
+            
+            # Find basins common to all variants
+            common_basins = None
+            for variant, basins in variant_basins.items():
+                if common_basins is None:
+                    common_basins = basins.copy()
+                else:
+                    common_basins = common_basins.intersection(basins)
+            
+            if not common_basins:
+                continue
+            
+            # Collect paired values for each variant
+            for variant in model_data[arch]:
+                values = []
+                if f"{arch.lower()}_{variant}" in results:
+                    metrics_by_gauge = results[f"{arch.lower()}_{variant}"].get("metrics_by_gauge", {})
+                    
+                    for gauge_id in sorted(common_basins):  # Sort for consistent ordering
+                        gauge_values = []
+                        if gauge_id in metrics_by_gauge:
+                            for horizon_data in metrics_by_gauge[gauge_id].values():
+                                if metric in horizon_data and not np.isnan(horizon_data[metric]):
+                                    gauge_values.append(horizon_data[metric])
+                        
+                        # Use median across horizons for this gauge
+                        if gauge_values:
+                            values.append(np.median(gauge_values))
+                    
+                paired_data[arch][metric][variant] = np.array(values)
+
+    # Perform statistical significance testing
+    significance_markers = {}
+    for arch in model_data:
+        significance_markers[arch] = {}
+        for metric in metrics:
+            significance_markers[arch][metric] = {}
+            
+            # Skip if no best variant identified
+            if arch not in best_variants or metric not in best_variants[arch]:
+                continue
+                
+            best_variant = best_variants[arch][metric]
+            
+            # Skip if no paired data available
+            if (arch not in paired_data or metric not in paired_data[arch] or 
+                best_variant not in paired_data[arch][metric]):
+                continue
+            
+            best_values = paired_data[arch][metric][best_variant]
+            
+            # Compare each variant to the best
+            for variant in model_data[arch]:
+                if variant == best_variant:
+                    significance_markers[arch][metric][variant] = False  # Best variant doesn't get asterisk
+                    continue
+                
+                if variant not in paired_data[arch][metric]:
+                    significance_markers[arch][metric][variant] = False
+                    continue
+                
+                variant_values = paired_data[arch][metric][variant]
+                
+                # Ensure same number of paired observations
+                if len(best_values) != len(variant_values) or len(best_values) < 5:
+                    # Need at least 5 pairs for Wilcoxon test
+                    significance_markers[arch][metric][variant] = False
+                    continue
+                
+                # Check if samples are identical to avoid Wilcoxon test errors
+                if np.array_equal(best_values, variant_values):
+                    # Identical samples mean p-value = 1.0 (definitely not different)
+                    significance_markers[arch][metric][variant] = True
+                else:
+                    try:
+                        # Perform Wilcoxon signed-rank test
+                        _, p_value = wilcoxon(best_values, variant_values)
+                        
+                        # Mark with asterisk if NOT significantly different (p >= 0.05)
+                        significance_markers[arch][metric][variant] = p_value >= 0.05
+                    except Exception:
+                        # If test fails for any reason, don't mark with asterisk
+                        significance_markers[arch][metric][variant] = False
+
+    # Now create DataFrame with all the calculated information
+    rows = []
+    all_medians_by_metric = {metric: [] for metric in metrics}  # Track all medians for overall calculation
+
+    for arch in sorted(model_data.keys()):
+        for variant in sorted(model_data[arch].keys()):
+            row_data = {"Architecture": arch, "Variant": variant}
+
+            for metric in metrics:
+                if metric in model_data[arch][variant]:
+                    stats = model_data[arch][variant][metric]
+                    median = stats["median"]
+                    std = stats["std"]
+
+                    # Track median for overall calculation
+                    all_medians_by_metric[metric].append(median)
+
+                    # Format the value
+                    if metric == "pbias":
+                        # For PBIAS, use absolute value for comparison but show actual value
+                        row_data[f"{metric}_raw"] = median
+                        row_data[f"{metric}_abs"] = abs(median)
+                    else:
+                        row_data[f"{metric}_raw"] = median
+
+                    # Add asterisk if not significantly different from best
+                    value_str = f"{median:.{decimal_places}f} ± {std:.{decimal_places}f}"
+                    if (arch in significance_markers and
+                        metric in significance_markers[arch] and
+                        variant in significance_markers[arch][metric] and
+                        significance_markers[arch][metric][variant]):
+                        value_str += "*"
+
+                    row_data[metric] = value_str
+                else:
+                    row_data[metric] = "N/A"
+                    row_data[f"{metric}_raw"] = np.nan
+
+            rows.append(row_data)
+
+    # Create DataFrame
     df = pd.DataFrame(rows)
-
-    # Apply highlighting to DataFrame
-    if highlight_best:
-        for idx, row in df.iterrows():
-            arch = row["Architecture"]
-            variant = row["Variant"]
-
-            if arch != "OVERALL":
-                # Highlight best within each architecture
-                for metric in metrics:
-                    if arch in best_variants and metric in best_variants[arch]:
-                        if best_variants[arch][metric] == variant:
-                            # Add bold markers for best values
-                            df.at[idx, metric] = "**" + df.at[idx, metric] + "**"
 
     # Calculate overall median per variant
     variant_medians = {}
@@ -191,7 +296,7 @@ def generate_performance_summary(
                     if metric in model_data[arch][variant]:
                         variant_medians[variant][metric].append(model_data[arch][variant][metric]["median"])
 
-    # Add overall rows for each variant
+    # Add overall rows for each variant (without statistical testing)
     overall_rows = []
     for variant in all_variants:
         overall_row = {"Architecture": "OVERALL", "Variant": variant}
@@ -200,7 +305,11 @@ def generate_performance_summary(
             if variant_medians[variant][metric]:
                 median_of_medians = np.median(variant_medians[variant][metric])
                 std_of_medians = np.std(variant_medians[variant][metric])
-                overall_row[metric] = f"{median_of_medians:.{decimal_places}f} ± {std_of_medians:.{decimal_places}f}"
+                
+                # Format without asterisk (no statistical testing for OVERALL)
+                value_str = f"{median_of_medians:.{decimal_places}f} ± {std_of_medians:.{decimal_places}f}"
+                
+                overall_row[metric] = value_str
                 overall_row[f"{metric}_raw"] = median_of_medians
             else:
                 overall_row[metric] = "N/A"
@@ -210,6 +319,58 @@ def generate_performance_summary(
 
     # Append overall rows to DataFrame
     df = pd.concat([df, pd.DataFrame(overall_rows)], ignore_index=True)
+
+    # Apply highlighting to DataFrame (including OVERALL rows)
+    if highlight_best:
+        # First, identify best OVERALL variant for each metric
+        best_overall_variants = {}
+        for metric in metrics:
+            best_value = None
+            best_variant = None
+
+            # Check each OVERALL row
+            for _, row in df[df["Architecture"] == "OVERALL"].iterrows():
+                variant = row["Variant"]
+                if f"{metric}_raw" in row and not pd.isna(row[f"{metric}_raw"]):
+                    value = row[f"{metric}_raw"]
+
+                    if metric == "pbias":
+                        value = abs(value)
+
+                    is_better = higher_is_better.get(metric, True)
+
+                    if (
+                        best_value is None
+                        or (is_better and value > best_value)
+                        or (not is_better and value < best_value)
+                    ):
+                        best_value = value
+                        best_variant = variant
+
+            if best_variant is not None:
+                best_overall_variants[metric] = best_variant
+
+        # Apply highlighting to all rows
+        for idx, row in df.iterrows():
+            arch = row["Architecture"]
+            variant = row["Variant"]
+
+            if arch == "OVERALL":
+                # Highlight best OVERALL variants
+                for metric in metrics:
+                    if metric in best_overall_variants and best_overall_variants[metric] == variant:
+                        # Add bold markers for best values
+                        df.at[idx, metric] = "**" + df.at[idx, metric] + "**"
+            else:
+                # Highlight best within each architecture
+                for metric in metrics:
+                    if (
+                        arch in best_variants
+                        and metric in best_variants[arch]
+                        and best_variants[arch][metric] == variant
+                    ):
+                        # Add bold markers for best values
+                        df.at[idx, metric] = "**" + df.at[idx, metric] + "**"
 
     # Create LaTeX table
     latex_rows = []
@@ -257,9 +418,14 @@ def generate_performance_summary(
             value_clean = value.replace("**", "")
 
             # Add bold for best values in LaTeX
-            if (
-                arch != "OVERALL"
-                and arch in best_variants
+            if arch == "OVERALL":
+                # Check if this is the best OVERALL variant
+                if metric in best_overall_variants and best_overall_variants[metric] == variant:
+                    value_formatted = f"\\textbf{{{value_clean}}}"
+                else:
+                    value_formatted = value_clean
+            elif (
+                arch in best_variants
                 and metric in best_variants[arch]
                 and best_variants[arch][metric] == variant
             ):
@@ -277,7 +443,9 @@ def generate_performance_summary(
     latex_rows.append("\\end{tabular}")
     latex_rows.append("\\vspace{0.1cm}")
     latex_rows.append(
-        "\\footnotesize{\\textbf{Note:} Bold values indicate the best performance for each architecture and metric.}"
+        "\\footnotesize{\\textbf{Note:} Bold values indicate the best performance for each architecture and metric. "
+        "An asterisk (*) indicates that a model's performance is not statistically significantly different "
+        "from the best-performing model (p ≥ 0.05, Wilcoxon signed-rank test).}"
     )
     latex_rows.append("\\label{tab:performance_summary}")
     latex_rows.append("\\end{table}")
