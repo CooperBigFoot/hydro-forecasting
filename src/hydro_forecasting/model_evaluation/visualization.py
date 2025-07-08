@@ -462,7 +462,6 @@ def plot_basin_performance_scatter(
     figsize: tuple[int, int] = (10, 8),
     debug: bool = False,
     relative: bool = False,
-    significance_band_width: float = 1.0,
     x_limits: tuple[float, float] | None = None,
     y_limits: tuple[float, float] | None = None,
 ) -> tuple[plt.Figure, plt.Axes | np.ndarray]:
@@ -481,7 +480,6 @@ def plot_basin_performance_scatter(
         figsize: Figure size as (width, height)
         debug: Whether to show gauge IDs as labels on scatter points
         relative: If True, plot relative change ((challenger - benchmark) / benchmark) instead of absolute delta
-        significance_band_width: Multiplier for standard error to define significance band width (e.g., 1.0 for ±1 SE, 1.96 for ±95% CI)
         x_limits: Optional tuple of (x_min, x_max) to set fixed x-axis limits for all subplots
         y_limits: Optional tuple of (y_min, y_max) to set fixed y-axis limits for all subplots
 
@@ -636,19 +634,14 @@ def plot_basin_performance_scatter(
                 all_benchmark_values.extend(benchmark_values)
                 all_delta_values.extend(delta_values)
 
-        # Calculate standard error of differences for significance band
-        if all_delta_values:
-            delta_std_error = np.std(all_delta_values) / np.sqrt(len(all_delta_values))
-            significance_threshold = delta_std_error * significance_band_width
-        else:
-            significance_threshold = 0
+        # Removed significance band calculation per user request
 
         # Customize plot
         ax.set_xlabel(f"{metric.upper()} - {benchmark_pattern.capitalize()} Models")
         if show_y_label:
             if relative:
                 ax.set_ylabel(
-                    f"Relative Δ{metric.upper()} (%) ({challenger_pattern.capitalize()} - {benchmark_pattern.capitalize()})"
+                    f"Relative Δ{metric.upper()} ({challenger_pattern.capitalize()} - {benchmark_pattern.capitalize()})"
                 )
             else:
                 ax.set_ylabel(
@@ -657,7 +650,8 @@ def plot_basin_performance_scatter(
 
         # Add title for multi-horizon case
         if not single_horizon:
-            ax.set_title(f"Horizon: {horizon_value} days", fontsize=12, pad=10)
+            day_text = "day" if horizon_value == 1 else "days"
+            ax.set_title(f"Horizon: {horizon_value} {day_text}", fontsize=12, pad=10)
 
         # Set limits with margin
         if all_benchmark_values and all_delta_values:
@@ -679,21 +673,7 @@ def plot_basin_performance_scatter(
                 y_margin = max(abs(y_min), abs(y_max)) * 0.05
                 ax.set_ylim(y_min - y_margin, y_max + y_margin)
 
-            # Add shaded area for no significant change (±significance_band_width standard errors)
-            if x_limits is not None:
-                x_range = np.linspace(x_min, x_max, 100)
-            else:
-                x_range = np.linspace(x_min - x_margin, x_max + x_margin, 100)
-            ax.fill_between(
-                x_range,
-                -significance_threshold,
-                significance_threshold,
-                color="lightgray",
-                alpha=0.3,
-                label=f"No Significant {'Relative ' if relative else ''}Change (±{significance_band_width:.1f} SE)"
-                if show_legend
-                else None,
-            )
+            # Removed significance band visualization per user request
 
             # Add horizontal line at y=0 (no improvement/degradation)
             ax.axhline(
@@ -714,7 +694,7 @@ def plot_basin_performance_scatter(
             ax.legend(
                 # loc="lower center",
                 bbox_to_anchor=(0.5, -0.0),
-                ncol=len(architectures),
+                ncol=len(architectures) + 1,
                 frameon=False,
                 fancybox=True,
                 shadow=False,
@@ -770,7 +750,7 @@ def plot_basin_performance_scatter(
                 labels,
                 loc="lower center",
                 bbox_to_anchor=(0.5, -0.2),
-                ncol=len(architectures),
+                ncol=len(architectures) + 1,
                 frameon=False,
                 fancybox=True,
                 shadow=False,
@@ -2380,10 +2360,11 @@ def plot_performance_vs_static_attributes(
 def remaining_skill_captured_vs_horizon(
     results: dict[str, Any],
     benchmark_pattern: str,
-    challenger_pattern: str,
+    challenger_patterns: str | list[str],
     horizons: list[int] | None = None,
     architectures: list[str] | None = None,
     colors: dict[str, str] | None = None,
+    challenger_mapping: dict[str, str] | None = None,
     figsize: tuple[int, int] = (10, 6),
     show_median_labels: bool = True,
 ) -> tuple[plt.Figure, plt.Axes]:
@@ -2393,15 +2374,17 @@ def remaining_skill_captured_vs_horizon(
     This metric accounts for diminishing returns as NSE approaches 1.0 by calculating:
     (NSE_challenger - NSE_benchmark) / (1 - NSE_benchmark)
 
-    Each architecture gets its own boxplot at each horizon, positioned side-by-side.
+    Each architecture gets its own group of boxplots at each horizon, with one boxplot per challenger pattern.
 
     Args:
         results: Dictionary from TSForecastEvaluator with model results
         benchmark_pattern: Pattern to identify benchmark models (e.g., "benchmark", "pretrained")
-        challenger_pattern: Pattern to identify challenger models (e.g., "regional", "finetuned")
+        challenger_patterns: Pattern(s) to identify challenger models. Can be a single string
+                           (e.g., "finetuned") or list of strings (e.g., ["regional", "finetuned"])
         horizons: List of forecast horizons to plot. If None, uses all available horizons.
         architectures: List of architectures to include. If None, auto-detected from results.
         colors: Dictionary mapping architecture to color. If None, default colors assigned.
+        challenger_mapping: Custom display names for challengers {"regional": "Regional Models"}
         figsize: Figure size as (width, height)
         show_median_labels: Whether to show median values as text on boxes
 
@@ -2410,6 +2393,14 @@ def remaining_skill_captured_vs_horizon(
     """
     # Parse model results
     model_data = _parse_model_results(results)
+    
+    # Convert single challenger pattern to list for uniform processing
+    if isinstance(challenger_patterns, str):
+        challenger_patterns = [challenger_patterns]
+    
+    # Default challenger mapping
+    if challenger_mapping is None:
+        challenger_mapping = {pattern: pattern.capitalize() for pattern in challenger_patterns}
 
     # Auto-detect architectures if not provided
     if architectures is None:
@@ -2435,50 +2426,56 @@ def remaining_skill_captured_vs_horizon(
         default_colors = ["#4682B4", "#CD5C5C", "#009E73", "#9370DB", "#FF8C00", "#8B4513"]
         colors = {arch: default_colors[i % len(default_colors)] for i, arch in enumerate(architectures)}
 
-    # Collect remaining skill captured data for each architecture and horizon
-    arch_horizon_data = {}
+    # Collect remaining skill captured data for each architecture, challenger, and horizon
+    arch_challenger_horizon_data = {}
 
     for arch in architectures:
         if arch not in model_data:
             continue
 
-        # Check if both benchmark and challenger exist for this architecture
-        if benchmark_pattern not in model_data[arch] or challenger_pattern not in model_data[arch]:
+        # Check if benchmark exists for this architecture
+        if benchmark_pattern not in model_data[arch]:
             continue
-
-        arch_horizon_data[arch] = {horizon: [] for horizon in horizons}
-
+            
+        arch_challenger_horizon_data[arch] = {}
         benchmark_metrics = model_data[arch][benchmark_pattern]["metrics_by_gauge"]
-        challenger_metrics = model_data[arch][challenger_pattern]["metrics_by_gauge"]
+        
+        # Process each challenger pattern
+        for challenger_pattern in challenger_patterns:
+            if challenger_pattern not in model_data[arch]:
+                continue
+                
+            arch_challenger_horizon_data[arch][challenger_pattern] = {horizon: [] for horizon in horizons}
+            challenger_metrics = model_data[arch][challenger_pattern]["metrics_by_gauge"]
 
-        # Find common basins
-        common_basins = set(benchmark_metrics.keys()) & set(challenger_metrics.keys())
+            # Find common basins
+            common_basins = set(benchmark_metrics.keys()) & set(challenger_metrics.keys())
 
-        for basin_id in common_basins:
-            benchmark_basin = benchmark_metrics[basin_id]
-            challenger_basin = challenger_metrics[basin_id]
+            for basin_id in common_basins:
+                benchmark_basin = benchmark_metrics[basin_id]
+                challenger_basin = challenger_metrics[basin_id]
 
-            for horizon in horizons:
-                if (
-                    horizon in benchmark_basin
-                    and horizon in challenger_basin
-                    and "nse" in benchmark_basin[horizon]
-                    and "nse" in challenger_basin[horizon]
-                ):
-                    nse_benchmark = benchmark_basin[horizon]["nse"]
-                    nse_challenger = challenger_basin[horizon]["nse"]
+                for horizon in horizons:
+                    if (
+                        horizon in benchmark_basin
+                        and horizon in challenger_basin
+                        and "nse" in benchmark_basin[horizon]
+                        and "nse" in challenger_basin[horizon]
+                    ):
+                        nse_benchmark = benchmark_basin[horizon]["nse"]
+                        nse_challenger = challenger_basin[horizon]["nse"]
 
-                    # Skip if values are NaN or if benchmark NSE is 1.0 (perfect)
-                    if not (np.isnan(nse_benchmark) or np.isnan(nse_challenger) or nse_benchmark >= 1.0):
-                        # Calculate remaining skill captured
-                        remaining_skill = (nse_challenger - nse_benchmark) / (1 - nse_benchmark)
-                        arch_horizon_data[arch][horizon].append(remaining_skill)
+                        # Skip if values are NaN or if benchmark NSE is 1.0 (perfect)
+                        if not (np.isnan(nse_benchmark) or np.isnan(nse_challenger) or nse_benchmark >= 1.0):
+                            # Calculate remaining skill captured
+                            remaining_skill = (nse_challenger - nse_benchmark) / (1 - nse_benchmark)
+                            arch_challenger_horizon_data[arch][challenger_pattern][horizon].append(remaining_skill)
 
     # Create figure
     fig, ax = plt.subplots(figsize=figsize)
 
     # Check if we have any data
-    if not arch_horizon_data:
+    if not arch_challenger_horizon_data:
         ax.text(
             0.5, 0.5, "No data available", ha="center", va="center", transform=ax.transAxes, fontsize=14, color="gray"
         )
@@ -2486,31 +2483,57 @@ def remaining_skill_captured_vs_horizon(
         ax.set_ylabel("Remaining Skill Captured")
         return fig, ax
 
-    # Calculate box width based on number of architectures
-    n_architectures = len(arch_horizon_data)
-    if n_architectures <= 4:
-        box_width = 0.15
-    elif n_architectures <= 8:
-        box_width = 0.10
-    else:
+    # Calculate box width based on number of architectures and challengers
+    n_architectures = len(arch_challenger_horizon_data)
+    n_challengers = len(challenger_patterns)
+    total_boxes_per_horizon = n_architectures * n_challengers
+    
+    if total_boxes_per_horizon <= 6:
+        box_width = 0.12
+    elif total_boxes_per_horizon <= 12:
         box_width = 0.08
+    else:
+        box_width = 0.06
+        
+    # Create color gradients for each architecture
+    arch_gradients = {}
+    for arch in architectures:
+        if arch in arch_challenger_horizon_data:
+            arch_gradients[arch] = generate_brightness_gradient(colors[arch], n_challengers)
 
     # Prepare data for grouped boxplots
     boxplot_data = []
     positions = []
     colors_list = []
+    labels_list = []
 
     for h_idx, horizon in enumerate(horizons):
         arch_idx = 0
         for arch in architectures:
-            if arch in arch_horizon_data and arch_horizon_data[arch][horizon]:
-                # Calculate position for this architecture's box
-                pos = h_idx + (arch_idx - (n_architectures - 1) / 2) * box_width
+            if arch not in arch_challenger_horizon_data:
+                continue
+                
+            # Process each challenger for this architecture
+            challenger_idx = 0
+            for challenger_pattern in challenger_patterns:
+                if (challenger_pattern in arch_challenger_horizon_data[arch] and 
+                    arch_challenger_horizon_data[arch][challenger_pattern][horizon]):
+                    
+                    # Calculate position with grouping by architecture
+                    # First level: horizons (h_idx)
+                    # Second level: architectures (arch_idx)
+                    # Third level: challengers within architecture (challenger_idx)
+                    group_center = h_idx + (arch_idx - (n_architectures - 1) / 2) * (box_width * n_challengers + 0.05)
+                    pos = group_center + (challenger_idx - (n_challengers - 1) / 2) * box_width
 
-                boxplot_data.append(arch_horizon_data[arch][horizon])
-                positions.append(pos)
-                colors_list.append(colors.get(arch, "#4682B4"))
-
+                    boxplot_data.append(arch_challenger_horizon_data[arch][challenger_pattern][horizon])
+                    positions.append(pos)
+                    colors_list.append(arch_gradients[arch][challenger_idx])
+                    labels_list.append(f"{arch}_{challenger_pattern}")
+                    
+                    challenger_idx += 1
+                    
+            if challenger_idx > 0:  # Only increment if we added boxes for this architecture
                 arch_idx += 1
 
     if not boxplot_data:
@@ -2563,16 +2586,44 @@ def remaining_skill_captured_vs_horizon(
     ax.set_xticklabels([str(h) for h in horizons])
     ax.grid(True, alpha=0.3, axis="y")
 
-    # Create legend
+    # Create legend with architectures and challenger patterns
+    from matplotlib.patches import Patch
+    import matplotlib.lines as mlines
+    
     legend_elements = []
+    
+    # Add architecture legend elements (base colors)
+    arch_elements = []
     for arch in architectures:
-        if arch in arch_horizon_data:
-            from matplotlib.patches import Patch
-
-            legend_elements.append(Patch(facecolor=colors.get(arch, "#4682B4"), edgecolor="black", label=arch.upper()))
-
+        if arch in arch_challenger_horizon_data:
+            arch_elements.append(
+                Patch(facecolor=colors.get(arch, "#4682B4"), edgecolor="black", label=arch.upper())
+            )
+    
+    # Add challenger pattern legend elements (using black gradient like plot_horizon_performance_boxplots)
+    # Only show challenger patterns in legend if there are multiple challengers
+    challenger_elements = []
+    if len(challenger_patterns) > 1:
+        # Generate black gradient for challenger patterns
+        black_gradients = generate_brightness_gradient("#000000", len(challenger_patterns))
+        
+        for idx, challenger_pattern in enumerate(challenger_patterns):
+            label = challenger_mapping.get(challenger_pattern, challenger_pattern.capitalize())
+            # Create a patch with the black gradient color
+            challenger_elements.append(
+                Patch(facecolor=black_gradients[idx], edgecolor="black", label=label)
+            )
+    
+    # Combine legend elements
+    legend_elements = arch_elements + challenger_elements
+    
     if legend_elements:
-        ax.legend(handles=legend_elements, loc="lower left", frameon=False, ncol=min(4, len(legend_elements)))
+        ax.legend(
+            handles=legend_elements, 
+            loc="lower left", 
+            frameon=False, 
+            ncol=3
+        )
 
     plt.tight_layout()
 
