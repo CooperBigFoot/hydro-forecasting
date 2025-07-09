@@ -286,7 +286,7 @@ def plot_clusters(
 
     # Set up colors
     if plot_config.centroid_colors is None:
-        centroid_colors = sns.color_palette("colorblind", n_clusters)
+        centroid_colors = sns.color_palette("viridis", n_clusters)
     else:
         centroid_colors = plot_config.centroid_colors
 
@@ -400,6 +400,11 @@ def plot_clusters(
     for j in range(n_clusters, len(axes_flat)):
         fig.delaxes(axes_flat[j])
 
+    if legend_handles:
+        legend_handles[0].set_linewidth(plot_config.centroid_linewidth)  # Member line handle
+        legend_handles[0].set_alpha(1.0)
+
+
     # Add legend
     fig.legend(
         handles=legend_handles,
@@ -461,6 +466,7 @@ def main():
         grid_alpha=0.2,
         subplot_adjust_bottom=0.08,
         max_series_per_cluster=400,
+        # centroid_colors=["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#e377c2", "#6b2e2e", "#bcbd22", "#17becf", "#a65628"] 
     )
 
 
