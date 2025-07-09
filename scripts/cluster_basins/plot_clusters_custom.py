@@ -51,10 +51,10 @@ class PlotConfig:
     zero_line_width: float = 0.5
 
     # Font settings
-    # title_fontsize: int = 12
-    # axis_label_fontsize: int = 10
-    # tick_label_fontsize: int = 8
-    # legend_fontsize: int = 10
+    title_fontsize: int = 12
+    axis_label_fontsize: int = 12
+    tick_label_fontsize: int = 12
+    legend_fontsize: int = 12
     font_family: str = "sans-serif"
 
     # Axis labels
@@ -71,7 +71,7 @@ class PlotConfig:
     legend_location: str = "lower center"
     legend_ncol: int = 2
     legend_frameon: bool = False
-    legend_bbox_anchor: tuple[float, float] = (0.5, 0.02)
+    legend_bbox_anchor: tuple[float, float] = (0.5, 0)
 
     # Layout
     subplot_adjust_bottom: float = 0.1
@@ -297,13 +297,18 @@ def plot_clusters(
     # Create figure
     fig, axes = plt.subplots(rows, cols, figsize=plot_config.figure_size, squeeze=False)
 
-    # # Set font properties
-    # plt.rcParams.update(
-    #     {
-    #         # "font.family": plot_config.font_family,
-    #         # "font.size": plot_config.axis_label_fontsize,
-    #     }
-    # )
+    # Set font properties globally
+    plt.rcParams.update(
+        {
+            "font.family": plot_config.font_family,
+            "font.size": plot_config.axis_label_fontsize,
+            "axes.titlesize": plot_config.title_fontsize,
+            "axes.labelsize": plot_config.axis_label_fontsize,
+            "xtick.labelsize": plot_config.tick_label_fontsize,
+            "ytick.labelsize": plot_config.tick_label_fontsize,
+            "legend.fontsize": plot_config.legend_fontsize,
+        }
+    )
 
     # Flatten axes for easier indexing
     axes_flat = axes.flatten()
@@ -384,8 +389,8 @@ def plot_clusters(
         if plot_config.y_min is not None or plot_config.y_max is not None:
             ax.set_ylim(plot_config.y_min, plot_config.y_max)
 
-        # Tick label size
-        ax.tick_params(axis="both")
+        # Tick label size (already set via rcParams, but explicit setting as backup)
+        ax.tick_params(axis="both", labelsize=plot_config.tick_label_fontsize)
 
         # Remove spines if requested
         if plot_config.remove_spines:
@@ -403,6 +408,7 @@ def plot_clusters(
         ncol=plot_config.legend_ncol,
         bbox_to_anchor=plot_config.legend_bbox_anchor,
         frameon=plot_config.legend_frameon,
+        fontsize=plot_config.legend_fontsize,
     )
 
     # Layout adjustments
@@ -441,16 +447,16 @@ def main():
 
     # Plot configuration - easily customizable for thesis style
     plot_config = PlotConfig(
-        figure_size=(12, 14),
+        figure_size=(10, 12),
         dpi=300,
         max_cols=3,
         member_color="gray",
         member_alpha=0.3,
         centroid_linewidth=2.5,
-        # title_fontsize=12,
-        # axis_label_fontsize=12,
-        # tick_label_fontsize=12,
-        # legend_fontsize=12,
+        title_fontsize=12,
+        axis_label_fontsize=12,
+        tick_label_fontsize=12,
+        legend_fontsize=12,
         show_grid=True,
         grid_alpha=0.2,
         subplot_adjust_bottom=0.08,
