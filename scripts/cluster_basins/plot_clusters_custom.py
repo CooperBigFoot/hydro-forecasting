@@ -51,10 +51,10 @@ class PlotConfig:
     zero_line_width: float = 0.5
 
     # Font settings
-    title_fontsize: int = 12
-    axis_label_fontsize: int = 10
-    tick_label_fontsize: int = 8
-    legend_fontsize: int = 10
+    # title_fontsize: int = 12
+    # axis_label_fontsize: int = 10
+    # tick_label_fontsize: int = 8
+    # legend_fontsize: int = 10
     font_family: str = "sans-serif"
 
     # Axis labels
@@ -297,13 +297,13 @@ def plot_clusters(
     # Create figure
     fig, axes = plt.subplots(rows, cols, figsize=plot_config.figure_size, squeeze=False)
 
-    # Set font properties
-    plt.rcParams.update(
-        {
-            # "font.family": plot_config.font_family,
-            "font.size": plot_config.axis_label_fontsize,
-        }
-    )
+    # # Set font properties
+    # plt.rcParams.update(
+    #     {
+    #         # "font.family": plot_config.font_family,
+    #         # "font.size": plot_config.axis_label_fontsize,
+    #     }
+    # )
 
     # Flatten axes for easier indexing
     axes_flat = axes.flatten()
@@ -356,7 +356,7 @@ def plot_clusters(
             legend_labels.append("Cluster centroid")
 
         # Styling
-        ax.set_title(f"Cluster {cluster_id}", fontsize=plot_config.title_fontsize)
+        ax.set_title(f"Cluster {cluster_id}")
 
         # Add zero line
         ax.axhline(
@@ -375,17 +375,17 @@ def plot_clusters(
         # Axis labels
         is_bottom_plot = row == rows - 1 or (col == cluster_id % cols and (cluster_id + cols) >= n_clusters)
         if is_bottom_plot:
-            ax.set_xlabel(plot_config.x_label, fontsize=plot_config.axis_label_fontsize)
+            ax.set_xlabel(plot_config.x_label)
 
         if col == 0:
-            ax.set_ylabel(plot_config.y_label, fontsize=plot_config.axis_label_fontsize)
+            ax.set_ylabel(plot_config.y_label)
 
         # Set axis limits if specified
         if plot_config.y_min is not None or plot_config.y_max is not None:
             ax.set_ylim(plot_config.y_min, plot_config.y_max)
 
         # Tick label size
-        ax.tick_params(axis="both", labelsize=plot_config.tick_label_fontsize)
+        ax.tick_params(axis="both")
 
         # Remove spines if requested
         if plot_config.remove_spines:
@@ -403,7 +403,6 @@ def plot_clusters(
         ncol=plot_config.legend_ncol,
         bbox_to_anchor=plot_config.legend_bbox_anchor,
         frameon=plot_config.legend_frameon,
-        fontsize=plot_config.legend_fontsize,
     )
 
     # Layout adjustments
@@ -448,10 +447,10 @@ def main():
         member_color="gray",
         member_alpha=0.3,
         centroid_linewidth=2.5,
-        title_fontsize=12,
-        axis_label_fontsize=12,
-        tick_label_fontsize=12,
-        legend_fontsize=12,
+        # title_fontsize=12,
+        # axis_label_fontsize=12,
+        # tick_label_fontsize=12,
+        # legend_fontsize=12,
         show_grid=True,
         grid_alpha=0.2,
         subplot_adjust_bottom=0.08,
