@@ -78,8 +78,8 @@ class PlotConfig:
     use_tight_layout: bool = True
 
     # Plot limits
-    y_min: float | None = None
-    y_max: float | None = None
+    y_min: float | None = -3
+    y_max: float | None = 7.5
 
     # Max series to plot per cluster
     max_series_per_cluster: int = 200
