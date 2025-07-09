@@ -136,11 +136,11 @@ def generate_performance_summary(
         paired_data[arch] = {}
         for metric in metrics:
             paired_data[arch][metric] = {}
-            
+
             # Get list of all basins that have data for all variants
             all_basins = set()
             variant_basins = {}
-            
+
             for variant in model_data[arch]:
                 variant_basins[variant] = set()
                 if "metrics_by_gauge" in results.get(f"{arch.lower()}_{variant}", {}):
@@ -155,7 +155,7 @@ def generate_performance_summary(
                         if has_metric:
                             variant_basins[variant].add(gauge_id)
                             all_basins.add(gauge_id)
-            
+
             # Find basins common to all variants
             common_basins = None
             for variant, basins in variant_basins.items():
@@ -163,27 +163,27 @@ def generate_performance_summary(
                     common_basins = basins.copy()
                 else:
                     common_basins = common_basins.intersection(basins)
-            
+
             if not common_basins:
                 continue
-            
+
             # Collect paired values for each variant
             for variant in model_data[arch]:
                 values = []
                 if f"{arch.lower()}_{variant}" in results:
                     metrics_by_gauge = results[f"{arch.lower()}_{variant}"].get("metrics_by_gauge", {})
-                    
+
                     for gauge_id in sorted(common_basins):  # Sort for consistent ordering
                         gauge_values = []
                         if gauge_id in metrics_by_gauge:
                             for horizon_data in metrics_by_gauge[gauge_id].values():
                                 if metric in horizon_data and not np.isnan(horizon_data[metric]):
                                     gauge_values.append(horizon_data[metric])
-                        
+
                         # Use median across horizons for this gauge
                         if gauge_values:
                             values.append(np.median(gauge_values))
-                    
+
                 paired_data[arch][metric][variant] = np.array(values)
 
     # Perform statistical significance testing
@@ -192,38 +192,38 @@ def generate_performance_summary(
         significance_markers[arch] = {}
         for metric in metrics:
             significance_markers[arch][metric] = {}
-            
+
             # Skip if no best variant identified
             if arch not in best_variants or metric not in best_variants[arch]:
                 continue
-                
+
             best_variant = best_variants[arch][metric]
-            
+
             # Skip if no paired data available
-            if (arch not in paired_data or metric not in paired_data[arch] or 
+            if (arch not in paired_data or metric not in paired_data[arch] or
                 best_variant not in paired_data[arch][metric]):
                 continue
-            
+
             best_values = paired_data[arch][metric][best_variant]
-            
+
             # Compare each variant to the best
             for variant in model_data[arch]:
                 if variant == best_variant:
                     significance_markers[arch][metric][variant] = False  # Best variant doesn't get asterisk
                     continue
-                
+
                 if variant not in paired_data[arch][metric]:
                     significance_markers[arch][metric][variant] = False
                     continue
-                
+
                 variant_values = paired_data[arch][metric][variant]
-                
+
                 # Ensure same number of paired observations
                 if len(best_values) != len(variant_values) or len(best_values) < 5:
                     # Need at least 5 pairs for Wilcoxon test
                     significance_markers[arch][metric][variant] = False
                     continue
-                
+
                 # Check if samples are identical to avoid Wilcoxon test errors
                 if np.array_equal(best_values, variant_values):
                     # Identical samples mean p-value = 1.0 (definitely not different)
@@ -232,7 +232,7 @@ def generate_performance_summary(
                     try:
                         # Perform Wilcoxon signed-rank test
                         _, p_value = wilcoxon(best_values, variant_values)
-                        
+
                         # Mark with asterisk if NOT significantly different (p >= 0.05)
                         significance_markers[arch][metric][variant] = p_value >= 0.05
                     except Exception:
@@ -305,10 +305,10 @@ def generate_performance_summary(
             if variant_medians[variant][metric]:
                 median_of_medians = np.median(variant_medians[variant][metric])
                 std_of_medians = np.std(variant_medians[variant][metric])
-                
+
                 # Format without asterisk (no statistical testing for OVERALL)
                 value_str = f"{median_of_medians:.{decimal_places}f} ± {std_of_medians:.{decimal_places}f}"
-                
+
                 overall_row[metric] = value_str
                 overall_row[f"{metric}_raw"] = median_of_medians
             else:

@@ -2393,11 +2393,11 @@ def remaining_skill_captured_vs_horizon(
     """
     # Parse model results
     model_data = _parse_model_results(results)
-    
+
     # Convert single challenger pattern to list for uniform processing
     if isinstance(challenger_patterns, str):
         challenger_patterns = [challenger_patterns]
-    
+
     # Default challenger mapping
     if challenger_mapping is None:
         challenger_mapping = {pattern: pattern.capitalize() for pattern in challenger_patterns}
@@ -2436,15 +2436,15 @@ def remaining_skill_captured_vs_horizon(
         # Check if benchmark exists for this architecture
         if benchmark_pattern not in model_data[arch]:
             continue
-            
+
         arch_challenger_horizon_data[arch] = {}
         benchmark_metrics = model_data[arch][benchmark_pattern]["metrics_by_gauge"]
-        
+
         # Process each challenger pattern
         for challenger_pattern in challenger_patterns:
             if challenger_pattern not in model_data[arch]:
                 continue
-                
+
             arch_challenger_horizon_data[arch][challenger_pattern] = {horizon: [] for horizon in horizons}
             challenger_metrics = model_data[arch][challenger_pattern]["metrics_by_gauge"]
 
@@ -2487,14 +2487,14 @@ def remaining_skill_captured_vs_horizon(
     n_architectures = len(arch_challenger_horizon_data)
     n_challengers = len(challenger_patterns)
     total_boxes_per_horizon = n_architectures * n_challengers
-    
+
     if total_boxes_per_horizon <= 6:
         box_width = 0.12
     elif total_boxes_per_horizon <= 12:
         box_width = 0.08
     else:
         box_width = 0.06
-        
+
     # Create color gradients for each architecture
     arch_gradients = {}
     for arch in architectures:
@@ -2512,13 +2512,13 @@ def remaining_skill_captured_vs_horizon(
         for arch in architectures:
             if arch not in arch_challenger_horizon_data:
                 continue
-                
+
             # Process each challenger for this architecture
             challenger_idx = 0
             for challenger_pattern in challenger_patterns:
-                if (challenger_pattern in arch_challenger_horizon_data[arch] and 
+                if (challenger_pattern in arch_challenger_horizon_data[arch] and
                     arch_challenger_horizon_data[arch][challenger_pattern][horizon]):
-                    
+
                     # Calculate position with grouping by architecture
                     # First level: horizons (h_idx)
                     # Second level: architectures (arch_idx)
@@ -2530,9 +2530,9 @@ def remaining_skill_captured_vs_horizon(
                     positions.append(pos)
                     colors_list.append(arch_gradients[arch][challenger_idx])
                     labels_list.append(f"{arch}_{challenger_pattern}")
-                    
+
                     challenger_idx += 1
-                    
+
             if challenger_idx > 0:  # Only increment if we added boxes for this architecture
                 arch_idx += 1
 
@@ -2588,10 +2588,9 @@ def remaining_skill_captured_vs_horizon(
 
     # Create legend with architectures and challenger patterns
     from matplotlib.patches import Patch
-    import matplotlib.lines as mlines
-    
+
     legend_elements = []
-    
+
     # Add architecture legend elements (base colors)
     arch_elements = []
     for arch in architectures:
@@ -2599,29 +2598,29 @@ def remaining_skill_captured_vs_horizon(
             arch_elements.append(
                 Patch(facecolor=colors.get(arch, "#4682B4"), edgecolor="black", label=arch.upper())
             )
-    
+
     # Add challenger pattern legend elements (using black gradient like plot_horizon_performance_boxplots)
     # Only show challenger patterns in legend if there are multiple challengers
     challenger_elements = []
     if len(challenger_patterns) > 1:
         # Generate black gradient for challenger patterns
         black_gradients = generate_brightness_gradient("#000000", len(challenger_patterns))
-        
+
         for idx, challenger_pattern in enumerate(challenger_patterns):
             label = challenger_mapping.get(challenger_pattern, challenger_pattern.capitalize())
             # Create a patch with the black gradient color
             challenger_elements.append(
                 Patch(facecolor=black_gradients[idx], edgecolor="black", label=label)
             )
-    
+
     # Combine legend elements
     legend_elements = arch_elements + challenger_elements
-    
+
     if legend_elements:
         ax.legend(
-            handles=legend_elements, 
-            loc="lower left", 
-            frameon=False, 
+            handles=legend_elements,
+            loc="lower left",
+            frameon=False,
             ncol=3
         )
 
