@@ -24,6 +24,7 @@ from hydro_forecasting.data.caravanify_parquet import (
     CaravanifyParquetConfig,
 )
 
+sns.set_context("paper", font_scale=1.3)
 
 @dataclass
 class PlotConfig:
@@ -70,7 +71,7 @@ class PlotConfig:
     legend_location: str = "lower center"
     legend_ncol: int = 2
     legend_frameon: bool = False
-    legend_bbox_anchor: tuple[float, float] = (0.5, 0)
+    legend_bbox_anchor: tuple[float, float] = (0.5, 0.02)
 
     # Layout
     subplot_adjust_bottom: float = 0.1
@@ -299,7 +300,7 @@ def plot_clusters(
     # Set font properties
     plt.rcParams.update(
         {
-            "font.family": plot_config.font_family,
+            # "font.family": plot_config.font_family,
             "font.size": plot_config.axis_label_fontsize,
         }
     )
@@ -447,10 +448,10 @@ def main():
         member_color="gray",
         member_alpha=0.3,
         centroid_linewidth=2.5,
-        title_fontsize=14,
-        # axis_label_fontsize=12,
-        # tick_label_fontsize=10,
-        # legend_fontsize=11,
+        title_fontsize=12,
+        axis_label_fontsize=12,
+        tick_label_fontsize=12,
+        legend_fontsize=12,
         show_grid=True,
         grid_alpha=0.2,
         subplot_adjust_bottom=0.08,
